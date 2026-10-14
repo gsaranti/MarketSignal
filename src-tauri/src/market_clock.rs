@@ -1,58 +1,35 @@
-//! Market session state: where the US equity market stands relative to its regular
-//! trading hours at the moment a report's baseline was gathered.
-//!
-//! Reports are generated **on demand**, at any hour (`docs/scheduling.md §Generating a
-//! Report`). The baseline scan stamps an `as_of` instant (`pipeline.rs`), but the agents
-//! previously received only the *cadence* (how long since the prior report) — never the
-//! wall-clock time or whether the market was open. A report generated mid-session then
-//! narrated the day in the past tense ("fell 0.95% on the session", "closed green")
-//! because nothing told it the session was still live. This type closes that gap: it
-//! classifies `as_of` against NYSE/Nasdaq regular hours (9:30 AM–4:00 PM
-//! America/New_York, Mon–Fri) and yields a posture block the main agent uses to get the
-//! tense right.
-//!
-//! It is the time-of-day sibling of [`crate::cadence::ReportCadence`] (elapsed interval):
-//! both are pure, app-layer classifications threaded into the agent prompt, deliberately
-//! kept out of the agents themselves so the spine stays unit-testable.
-//!
-//! Scope: the Eastern offset is DST-correct via `chrono-tz`, but market **holidays** and
-//! half-days are out of scope — a holiday classifies as a normal weekday. The cost of a
-//! rare wrong "open" label on a holiday is small next to a holiday table that needs yearly
-//! maintenance; revisit if it proves misleading in practice.
+//! Market session state and ET session dates: where the US equity market
+//! stands relative to its regular hours (9:30 AM–4:00 PM America/New_York,
+//! Mon–Fri) at a run's `as_of`, so the main agent narrates the day in the
+//! right tense. The Eastern offset is DST-correct; market holidays and
+//! half-days are deliberately out of scope (a holiday classifies as a normal
+//! weekday) rather than carrying a table that needs yearly maintenance.
 
 use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc, Weekday};
 use chrono_tz::America::New_York;
 use chrono_tz::Tz;
 
-/// The US/Eastern calendar date of a UTC instant — the market's session date.
-///
-/// Every persisted run/vintage instant is UTC RFC3339, but the trading day it
-/// belongs to is the ET day: an evening-ET run (after ~8 PM EDT / 7 PM EST) has
-/// already rolled to the next UTC date, so truncating the UTC string to its date
-/// prefix dates the run one session late. Everything that keys a vintage,
-/// evidence boundary, entry anchor, or basis bridge to a session dates through
-/// here (`docs/portfolio-analysis.md` §Outcome learning, §The quick check).
+/// The ET calendar date of a UTC instant, the market's session date. An
+/// evening-ET run has already rolled to the next UTC date, so a UTC date
+/// prefix would date it one session late. Every session-keyed date reads
+/// through here (`docs/portfolio-analysis.md` §Outcome learning, §The quick
+/// check).
 pub fn et_session_date(utc: DateTime<Utc>) -> NaiveDate {
     utc.with_timezone(&New_York).date_naive()
 }
 
-/// A UTC instant as its US/Eastern date and 24-hour time, `YYYY-MM-DD HH:MM ET` — the
-/// label each baseline-history point carries (`baseline_history`). The date is the ET
-/// session date [`et_session_date`] reads, so an evening-ET run labels as its own session
-/// rather than the next UTC date; the time keeps same-session regenerations distinct.
+/// `YYYY-MM-DD HH:MM ET`, the label each baseline-history point carries; the
+/// time keeps same-session regenerations distinct.
 pub fn et_stamp(utc: DateTime<Utc>) -> String {
     utc.with_timezone(&New_York)
         .format("%Y-%m-%d %H:%M ET")
         .to_string()
 }
 
-/// The ET session date of a persisted timestamp string.
-///
-/// A full RFC3339 instant converts to its US/Eastern calendar date; a string
-/// that does not parse as an instant falls back to its bare `YYYY-MM-DD` prefix
-/// (a date-only value carries no instant to convert, and a malformed timestamp
-/// degrades to the old prefix read rather than vanishing); `None` when neither
-/// parses.
+/// The ET session date of a persisted timestamp string. A string that does
+/// not parse as an RFC3339 instant falls back to its bare `YYYY-MM-DD` prefix,
+/// so a date-only value is taken as-is and a malformed timestamp degrades
+/// rather than vanishing; `None` when neither parses.
 pub fn et_date_of(stamp: &str) -> Option<NaiveDate> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(stamp) {
         return Some(dt.with_timezone(&New_York).date_naive());
@@ -62,58 +39,50 @@ pub fn et_date_of(stamp: &str) -> Option<NaiveDate> {
         .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
 }
 
-/// The calendar-month rule: `date` plus `months` calendar months, a day past
-/// the target month's end clamping to its last day (`docs/portfolio-analysis.md`
-/// §Outcome learning — the horizon dates). Mirrored by `addCalendarMonths` in
-/// `src/etDate.ts` on [`tests::CALENDAR_MONTH_CASES`], the case table both
-/// sides pin.
+/// `date` plus `months` calendar months, a day past the target month's end
+/// clamping to its last day (`docs/portfolio-analysis.md` §Outcome learning).
+/// The frontend `src/etDate.ts` is behaviorally equivalent on the pinned
+/// [`tests::CALENDAR_MONTH_CASES`], not a port: change one side and re-pin
+/// both case tables.
 pub fn add_calendar_months(date: NaiveDate, months: u32) -> Option<NaiveDate> {
     date.checked_add_months(chrono::Months::new(months))
 }
 
-/// Regular-session open, minutes since ET midnight (9:30 AM).
+/// Minutes since ET midnight.
 const SESSION_OPEN_MINUTES: u32 = 9 * 60 + 30;
-/// Regular-session close, minutes since ET midnight (4:00 PM).
+/// Minutes since ET midnight.
 const SESSION_CLOSE_MINUTES: u32 = 16 * 60;
-/// Regular-session length in hours (6.5h), used to caption progress through the day.
 const SESSION_HOURS: f64 = 6.5;
 
-/// Where `as_of` falls relative to the US equity market's regular trading hours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarketSession {
-    /// A weekday before the 9:30 AM ET open — the session has not started.
+    /// A weekday before the 9:30 AM ET open.
     PreOpen,
-    /// Within regular trading hours (9:30 AM–4:00 PM ET) — the session is live.
+    /// Within regular trading hours (9:30 AM–4:00 PM ET).
     Open,
-    /// A weekday after the 4:00 PM ET close — the session is finished.
+    /// A weekday after the 4:00 PM ET close.
     AfterClose,
-    /// Saturday or Sunday — closed for the weekend.
     Weekend,
 }
 
-/// The resolved session context for a run, or its absence.
 #[derive(Debug, Clone)]
 struct Snapshot {
-    /// `as_of` rendered in US/Eastern (the market's timezone), DST-correct.
+    /// `as_of` in US/Eastern.
     et: DateTime<Tz>,
     session: MarketSession,
-    /// Minutes since ET midnight — cached so the Open caption needn't recompute.
+    /// Minutes since ET midnight.
     minutes: u32,
 }
 
-/// The market-session state at the moment a run's baseline was gathered. `Default` is
-/// the no-context state (the offline/stub path, which has no real `as_of`): it carries no
-/// snapshot, so [`Self::main_agent_guidance`] yields `None` and the prompt omits the
-/// block — mirroring how [`crate::cadence::ReportCadence`]'s default is the first-report
-/// case. Cloned (not `Copy`) because it holds a `DateTime`; it is consumed once into
-/// `MainAgentInput`.
+/// `Default` is the no-context state (the offline/stub path has no real
+/// `as_of`): [`Self::main_agent_guidance`] yields `None` and the prompt omits
+/// the block.
 #[derive(Debug, Clone, Default)]
 pub struct MarketClock {
     snapshot: Option<Snapshot>,
 }
 
 impl MarketClock {
-    /// Classify the baseline's `as_of` instant against US/Eastern regular trading hours.
     pub fn from_utc(as_of: DateTime<Utc>) -> Self {
         let et = as_of.with_timezone(&New_York);
         let minutes = et.hour() * 60 + et.minute();
@@ -133,30 +102,23 @@ impl MarketClock {
         }
     }
 
-    /// The classified session, or `None` on the no-context (offline/stub) path.
+    /// `None` on the no-context path.
     pub fn session(&self) -> Option<MarketSession> {
         self.snapshot.as_ref().map(|s| s.session)
     }
 
-    /// The run's report date in market (US/Eastern) time as `YYYY-MM-DD`, or `None` on
-    /// the no-context default. This is the recency anchor handed to the news-selection
-    /// stages (the headline filter and the research router) so "current / prior day" is
-    /// measured against a real date rather than guessed from the spread of publish dates —
-    /// the gap Codex flagged where those stages were told to favor recency with nothing to
-    /// measure it against. ET (the market day), so a late-evening Pacific run still anchors
-    /// to the correct trading date.
+    /// The report date as `YYYY-MM-DD` in ET (the market day), so a late-evening
+    /// run still anchors to the correct trading date; the recency anchor for
+    /// the news-selection stages. `None` on the no-context path.
     pub fn report_date(&self) -> Option<String> {
         self.snapshot
             .as_ref()
             .map(|s| s.et.format("%Y-%m-%d").to_string())
     }
 
-    /// The market-session block appended to the main agent's prompt: it states the
-    /// wall-clock ET time and the market's state, and tells the Head Market Analyst the
-    /// **tense** to narrate the day in — present/provisional while the session is open
-    /// (today's move is intraday vs the prior close, not final), past tense once it has
-    /// closed. Always begins with the `Market session:` marker so the wiring is
-    /// assertable. `None` on the no-context path, so the prompt omits the block.
+    /// The session block appended to the main agent's prompt. Always begins
+    /// with the `Market session:` marker so the wiring is assertable; `None` on
+    /// the no-context path, so the prompt omits the block.
     pub fn main_agent_guidance(&self) -> Option<String> {
         let snap = self.snapshot.as_ref()?;
         let stamp = snap.et.format("%A, %B %-d, %Y, %-I:%M %p ET");
@@ -204,8 +166,7 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    /// Build a UTC instant for a test. June 2026 is EDT (UTC-4); January 2026 is EST
-    /// (UTC-5) — the two seasons exercise the DST handling.
+    /// June 2026 is EDT (UTC-4); January 2026 is EST (UTC-5).
     fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap()
     }
@@ -255,8 +216,6 @@ mod tests {
 
     #[test]
     fn dst_aware_eastern_offset() {
-        // The same UTC wall-clock (14:00) lands in different ET sessions by season,
-        // which only holds if the Eastern offset is DST-correct.
         // Winter: 2026-01-06 (Tue) 14:00 UTC = 09:00 EST (UTC-5) → before the open.
         let winter = MarketClock::from_utc(utc(2026, 1, 6, 14, 0));
         assert_eq!(winter.session(), Some(MarketSession::PreOpen));
@@ -293,8 +252,7 @@ mod tests {
                 .as_deref(),
             Some("2026-06-23"),
         );
-        // 2026-06-24 02:30 UTC = 2026-06-23 22:30 EDT — a late-evening ET run anchors to
-        // the ET trading day (the 23rd), not the UTC day, which is what news recency wants.
+        // 2026-06-24 02:30 UTC = 2026-06-23 22:30 EDT — the ET trading day is the 23rd.
         assert_eq!(
             MarketClock::from_utc(utc(2026, 6, 24, 2, 30))
                 .report_date()
@@ -306,7 +264,6 @@ mod tests {
 
     #[test]
     fn default_clock_yields_no_block() {
-        // The offline/stub path has no real `as_of`, so the block is omitted entirely.
         assert_eq!(MarketClock::default().session(), None);
         assert!(MarketClock::default().main_agent_guidance().is_none());
     }
@@ -342,12 +299,10 @@ mod tests {
 
     #[test]
     fn et_date_of_exotic_forms_pin_the_frontend_parity_contract() {
-        // The grammar the frontend mirrors byte-for-byte (src/etDate.ts,
-        // tests/etDate.test.ts — same cases): chrono's RFC3339 parse accepts
-        // space / 't' separators, lowercase 'z', fractional seconds, and the
-        // :60 leap second — each converting to the ET day (one earlier inside
-        // the evening window) — and rejects hour 24+, minute 60, second 61+,
-        // and a colon-less offset, degrading to the date prefix.
+        // The same cases pin the frontend mirror (src/etDate.ts,
+        // tests/etDate.test.ts): chrono's RFC3339 parse accepts space / 't'
+        // separators, lowercase 'z', fractional seconds and the :60 leap second,
+        // and rejects hour 24+, minute 60, second 61+ and a colon-less offset.
         let et = |s: &str| et_date_of(s).map(|d| d.to_string());
         assert_eq!(et("2026-08-06 01:30:00+00:00").as_deref(), Some("2026-08-05"));
         assert_eq!(et("2026-08-06t01:30:00+00:00").as_deref(), Some("2026-08-05"));
@@ -361,10 +316,8 @@ mod tests {
             Some("2026-08-05"),
             "the :60 leap second converts, not prefix-degrades",
         );
-        // Rejected instants degrade to the prefix — the shared fallback. The
-        // hour-24 case uses a negative offset so conversion and prefix would
-        // disagree (conversion would read 08-06): the prefix read proves the
-        // parse rejected it.
+        // The hour-24 case uses a negative offset so conversion (08-06) and
+        // prefix would disagree: the prefix read proves the parse rejected it.
         assert_eq!(et("2026-08-05T24:00:00-06:00").as_deref(), Some("2026-08-05"));
         assert_eq!(et("2026-08-06T25:00:00+00:00").as_deref(), Some("2026-08-06"));
         assert_eq!(et("2026-08-06T01:60:00+00:00").as_deref(), Some("2026-08-06"));
@@ -372,10 +325,7 @@ mod tests {
         assert_eq!(et("2026-08-06T01:30:00+0000").as_deref(), Some("2026-08-06"));
     }
 
-    /// The calendar-month rule's pinned cases — the same table
-    /// `tests/etDate.test.ts` pins on the frontend mirror: a plain add at each
-    /// horizon, month-end clamps into a short month, a leap day both ways, and
-    /// a year rollover.
+    /// The same table `tests/etDate.test.ts` pins on the frontend mirror.
     pub(super) const CALENDAR_MONTH_CASES: [(&str, u32, &str); 9] = [
         ("2026-01-05", 3, "2026-04-05"),
         ("2026-01-05", 12, "2027-01-05"),
@@ -398,22 +348,18 @@ mod tests {
 
     #[test]
     fn et_date_of_parses_instants_dates_and_degrades() {
-        // A full RFC3339 instant converts through the ET offset.
         assert_eq!(
             et_date_of("2026-08-05T01:30:00+00:00"),
             NaiveDate::from_ymd_opt(2026, 8, 4),
         );
-        // A date-only string carries no instant — taken as-is.
         assert_eq!(
             et_date_of("2026-08-05"),
             NaiveDate::from_ymd_opt(2026, 8, 5),
         );
-        // A malformed timestamp degrades to its date prefix rather than vanishing.
         assert_eq!(
             et_date_of("2026-08-05T99:99:99"),
             NaiveDate::from_ymd_opt(2026, 8, 5),
         );
-        // Garbage parses as nothing.
         assert_eq!(et_date_of("soon"), None);
         assert_eq!(et_date_of(""), None);
     }

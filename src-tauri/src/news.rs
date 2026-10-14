@@ -1,22 +1,7 @@
-//! The news-ingestion source contract: a structured raw-headline boundary for
-//! Step 7 (`docs/report-workflow.md §Step 7`).
-//!
-//! Mirrors the `data_sources` spine — the application layer owns all I/O, each
-//! news source is a trait the orchestrator drives, and a deterministic stub
-//! stands in for the live providers in offline tests. Three real adapters
-//! implement this trait — `tavily` (AI-oriented market / research headlines),
-//! `gdelt` (geopolitical and large-scale news-trend coverage), and `fmp_news`
-//! (FMP Articles, ticker-tagged company-level commentary) — and the
-//! `CompositeNewsSource` below nests to run them all and concatenate their
-//! headlines.
-//!
-//! Step 7 gathers a broad set of raw headlines (this module), then a fixed
-//! low-cost model dedupes / scores / clusters them down to the important stories
-//! (the `headline_filter` stage). This module owns the gathering half plus the
-//! deterministic exact-duplicate pre-pass (`dedupe_headlines`) that trims obvious
-//! repeats before the model ever sees them; `pipeline::assemble_research_packet`
-//! runs both halves at the head of the research phase, feeding research routing
-//! (Step 8).
+//! The news-ingestion source contract for Step 7's gathering half
+//! (`docs/report-workflow.md §Step 7`): a trait the `tavily` / `gdelt` / `fmp_news`
+//! adapters implement, the composite that concatenates them, and the deterministic
+//! exact-duplicate pre-pass (`dedupe_headlines`) run before the filtering model.
 
 use std::collections::HashSet;
 
@@ -24,10 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::cadence::ReportCadence;
 
-/// The market-news topics the gathering pass queries each provider for, derived
-/// from the Step-3 news categories (`docs/report-workflow.md §Step 3` —
-/// politics, geopolitics, China/trade, energy, earnings, AI/semiconductors, and
-/// major economic developments). Plain free-text queries, accepted by both
+/// The topics queried per provider, derived from the Step-3 news categories
+/// (`docs/report-workflow.md §Step 3`). Plain free-text queries, accepted by both
 /// Tavily's search API and GDELT's document query.
 pub const NEWS_TOPICS: &[&str] = &[
     "US stock market policy and politics",
@@ -39,33 +22,27 @@ pub const NEWS_TOPICS: &[&str] = &[
     "US economy inflation and the Federal Reserve",
 ];
 
-/// One raw headline gathered from a news source, before any filtering.
-/// Provider-agnostic: Tavily, GDELT, and FMP Articles all map their results into
-/// this shape, and the headline-filter stage will consume a flat list of them.
-/// `published` and `snippet` are best-effort — a provider that omits them leaves
-/// them `None`.
+/// One raw headline, provider-agnostic. `published` and `snippet` are best-effort: a
+/// provider that omits them leaves `None`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawHeadline {
     pub title: String,
     pub url: String,
-    /// The publisher / domain the headline came from (e.g. "reuters.com").
+    /// The publisher domain (e.g. "reuters.com").
     pub source: String,
     pub published: Option<String>,
     pub snippet: Option<String>,
 }
 
-/// The news-source stage. One method: gather a broad set of raw headlines over the
-/// run's [`ReportCadence`] — the adapters size their recency windows to the elapsed
-/// interval so an on-demand run isn't fed a fixed week of news regardless of when the
-/// last report ran (`cadence`). Sync, like the `MarketDataSource` trait — the blocking
-/// HTTP call inside each real adapter is offloaded via `spawn_blocking` at the Tauri
-/// command seam.
+/// The adapters size their recency windows to `cadence` so an on-demand run isn't fed
+/// a fixed week of news regardless of when the last report ran. Sync, like
+/// `MarketDataSource`: each adapter's blocking HTTP call is offloaded via
+/// `spawn_blocking` at the Tauri command seam.
 pub trait NewsSource {
     fn gather(&self, cadence: ReportCadence) -> anyhow::Result<Vec<RawHeadline>>;
 }
 
-/// Deterministic offline stand-in for the real news adapters. Returns a small,
-/// fixed set of headlines so the gather path and its tests run without live keys.
+/// Deterministic offline stand-in: a small fixed set of headlines.
 #[derive(Debug, Default)]
 pub struct StubNewsSource;
 
@@ -90,11 +67,9 @@ impl NewsSource for StubNewsSource {
     }
 }
 
-/// Compose two `NewsSource`s into one gather: run the `primary`, then the
-/// `secondary`, and concatenate their headlines (primary first). Mirrors
-/// `data_sources::CompositeMarketDataSource`. Either child's error propagates;
-/// per-provider degradation (GDELT's best-effort soft-skip) lives inside the
-/// adapter, so the composite stays a plain concatenation.
+/// Concatenate two sources' headlines, primary first. Either child's error propagates;
+/// per-provider degradation (GDELT's best-effort soft-skip) lives inside the adapter,
+/// so the composite stays a plain concatenation.
 pub struct CompositeNewsSource<P, S> {
     pub primary: P,
     pub secondary: S,
@@ -108,20 +83,16 @@ impl<P, S> CompositeNewsSource<P, S> {
 
 impl<P: NewsSource, S: NewsSource> NewsSource for CompositeNewsSource<P, S> {
     fn gather(&self, cadence: ReportCadence) -> anyhow::Result<Vec<RawHeadline>> {
-        // Both children size their windows to the same cadence.
         let mut headlines = self.primary.gather(cadence)?;
         headlines.extend(self.secondary.gather(cadence)?);
         Ok(headlines)
     }
 }
 
-/// Collapse obvious duplicate headlines before the filtering model sees them: a
-/// deterministic exact-duplicate pre-pass keyed first on a normalized URL, then
-/// on a normalized title. Keeps the first occurrence and preserves order, so the
-/// earliest provider's framing of a story survives. This trims the raw gather
-/// (the same story syndicated across outlets, or returned by overlapping topic
-/// queries) without displacing the model's later *semantic* dedup, relevance
-/// scoring, and clustering (`docs/report-workflow.md §Step 7`).
+/// A deterministic exact-duplicate pre-pass keyed first on a normalized URL, then on a
+/// normalized title, keeping the first occurrence in order so the earliest provider's
+/// framing survives. It trims syndicated repeats and overlapping topic queries without
+/// displacing the model's semantic dedup (`docs/report-workflow.md §Step 7`).
 pub fn dedupe_headlines(headlines: Vec<RawHeadline>) -> Vec<RawHeadline> {
     let mut seen_urls = HashSet::new();
     let mut seen_titles = HashSet::new();
@@ -150,10 +121,9 @@ pub fn dedupe_headlines(headlines: Vec<RawHeadline>) -> Vec<RawHeadline> {
     out
 }
 
-/// Normalize a URL for duplicate detection: lowercased, scheme and a leading
-/// `www.` dropped, trailing slash trimmed. Coarse on purpose — it catches the
-/// http/https and www variants of the same link without trying to canonicalize
-/// query strings.
+/// Lowercased, scheme and a leading `www.` dropped, trailing slash trimmed. Coarse on
+/// purpose: it catches the http/https and www variants of the same link without trying
+/// to canonicalize query strings.
 fn normalize_url(url: &str) -> String {
     let mut u = url.trim().to_ascii_lowercase();
     for scheme in ["https://", "http://"] {
@@ -168,9 +138,8 @@ fn normalize_url(url: &str) -> String {
     u.trim_end_matches('/').to_string()
 }
 
-/// Normalize a title for duplicate detection: lowercased with inner whitespace
-/// collapsed to single spaces. Catches the same headline reprinted with trivial
-/// spacing differences.
+/// Lowercased with inner whitespace collapsed, so a headline reprinted with trivial
+/// spacing differences collapses.
 fn normalize_title(title: &str) -> String {
     title
         .split_whitespace()
@@ -179,12 +148,10 @@ fn normalize_title(title: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// Normalize a publisher host for the `source` field: lowercase, scheme and a
-/// leading `www.` dropped, path discarded. Accepts either a full URL
-/// (`https://www.reuters.com/markets/x`) or a bare domain (GDELT's `WWW.Reuters.com`),
-/// both yielding `reuters.com`. Lowercasing happens before the `www.` strip so an
-/// uppercase host normalizes the same way a lowercase one does. A value with no
-/// parseable host yields an empty string, which the caller may leave as-is.
+/// The publisher host for `source`: lowercased, scheme and a leading `www.` dropped,
+/// path discarded. Accepts a full URL or a bare domain (GDELT's `WWW.Reuters.com`);
+/// lowercasing happens before the `www.` strip so an uppercase host normalizes the
+/// same. No parseable host yields an empty string.
 pub(crate) fn host_of(url: &str) -> String {
     let lowered = url.trim().to_ascii_lowercase();
     let after_scheme = lowered.split("://").nth(1).unwrap_or(lowered.as_str());
@@ -206,7 +173,6 @@ mod tests {
         }
     }
 
-    /// A stub that always fails its gather, to check composite error propagation.
     struct FailingNewsSource;
     impl NewsSource for FailingNewsSource {
         fn gather(&self, _cadence: ReportCadence) -> anyhow::Result<Vec<RawHeadline>> {
@@ -214,7 +180,6 @@ mod tests {
         }
     }
 
-    /// The first-report cadence (no prior interval) — the default the gather tests use.
     fn no_cadence() -> ReportCadence {
         ReportCadence::from_elapsed(None)
     }
@@ -231,16 +196,13 @@ mod tests {
         ];
         let out = dedupe_headlines(raw);
         assert_eq!(out.len(), 2, "two stories survive: {out:?}");
-        // First occurrence is the one kept, and order is preserved.
         assert_eq!(out[0].title, "Fed holds rates");
         assert_eq!(out[1].title, "Oil spikes on supply fears");
     }
 
     #[test]
     fn dedupe_does_not_let_a_title_dropped_headline_reserve_its_url() {
-        // The middle headline is dropped on its title (a dup of the first) — it must
-        // NOT reserve its fresh URL, or the third headline (same URL, unique title)
-        // would be wrongly suppressed.
+        // The middle headline drops on its title; it must not reserve its URL.
         let raw = vec![
             headline("Fed holds rates", "https://a.com/fed"),
             headline("Fed   holds   rates", "https://shared.com/x"),
@@ -258,8 +220,6 @@ mod tests {
 
     #[test]
     fn dedupe_keeps_url_less_headlines_distinct() {
-        // Two headlines with no URL but different titles must both survive — an
-        // empty URL is not a dedup key.
         let raw = vec![headline("Story one", ""), headline("Story two", "")];
         assert_eq!(dedupe_headlines(raw).len(), 2);
     }
@@ -290,7 +250,7 @@ mod tests {
         assert_eq!(host_of("http://bloomberg.com/news"), "bloomberg.com");
         assert_eq!(host_of("reuters.com/x"), "reuters.com");
         assert_eq!(host_of(""), "");
-        // Accepts a bare domain (GDELT's shape) and normalizes an uppercase www.
+        // A bare domain, GDELT's shape.
         assert_eq!(host_of("WWW.Reuters.com"), "reuters.com");
         assert_eq!(host_of("HTTPS://WWW.Bloomberg.com/n"), "bloomberg.com");
     }

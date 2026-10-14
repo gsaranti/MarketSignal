@@ -1,14 +1,11 @@
-//! The sector identity a holding is read against — the profile sector label plus
+//! The sector identity a holding is read against: the profile sector label plus
 //! its resolved SPDR sector-ETF benchmark (`docs/data-sources.md §Financial
-//! Modeling Prep` — the sector-ETF mapping). It feeds the technology-event
-//! pre-flag's benchmark leg and commodity routing, and rides the checkpoint
-//! trail's run-level accumulators.
+//! Modeling Prep` — the sector-ETF mapping).
 
 use serde::{Deserialize, Serialize};
 
-/// The SPDR sector-ETF benchmark for an FMP profile sector label. Accepts both
-/// FMP's label vocabulary and the near-identical GICS names; `None` for anything
-/// else (the typed `sector-unscorable` path, never a guessed benchmark).
+/// Accepts both FMP's label vocabulary and the near-identical GICS names; `None`
+/// for anything else, never a guessed benchmark.
 pub fn spdr_for_sector(label: &str) -> Option<&'static str> {
     let l = label.trim().to_ascii_lowercase();
     Some(match l.as_str() {
@@ -27,9 +24,8 @@ pub fn spdr_for_sector(label: &str) -> Option<&'static str> {
     })
 }
 
-/// A holding's **stamped sector identity** — the sector label in hand plus its
-/// resolved SPDR benchmark symbol. A holding with no valid mapping carries the
-/// typed `sector-unscorable` reason on its sector legs.
+/// A holding's stamped sector identity: the sector label plus its resolved SPDR
+/// benchmark symbol.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SectorIdentity {
     pub sector: Option<String>,
@@ -39,7 +35,6 @@ pub struct SectorIdentity {
 }
 
 impl SectorIdentity {
-    /// Resolve a profile sector label into the stamped identity.
     pub fn resolve(sector_label: Option<&str>) -> Self {
         match sector_label {
             Some(label) => match spdr_for_sector(label) {

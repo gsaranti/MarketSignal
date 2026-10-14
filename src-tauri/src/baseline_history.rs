@@ -1,16 +1,8 @@
-//! Bounded recent history of the baseline's level-bearing series.
-//!
-//! The change view (`baseline_delta`) measures one interval — the move since the
-//! previous report — so the agents could never read a multi-report progression (a yield
-//! curve over the last several reports) beyond prose recollection. The application layer
-//! already retains the most recent baseline snapshots (`storage::baseline_snapshots`);
-//! this module joins their levels by stable series id into one aligned table: one point
-//! per retained report plus this run, oldest first, and one row per series with a value
-//! at each point (`docs/storage.md §Baseline Snapshots`).
-//!
-//! The series set is the change view's own: the level-bearing [`DELTA_GROUPS`], read
-//! through the same `series_levels`. Like the change view it is additive context — the
-//! history is `None` below [`MIN_HISTORY_POINTS`] and never gates a run.
+//! Bounded recent history of the baseline's level-bearing series: the retained snapshots
+//! (`storage::baseline_snapshots`, `docs/storage.md §Baseline Snapshots`) joined by series
+//! id into one aligned table, one point per retained report plus this run, oldest first.
+//! The series set is the change view's own [`DELTA_GROUPS`]. Additive context: the history
+//! is `None` below [`MIN_HISTORY_POINTS`] and never gates a run.
 
 use std::collections::{HashMap, HashSet};
 
@@ -65,8 +57,8 @@ pub struct PriorBaseline {
 }
 
 /// Build the history from this run's scan and the retained snapshots, `priors` newest
-/// first (the storage read's order). Pure and deterministic. `None` when the points fall
-/// below [`MIN_HISTORY_POINTS`] or no point carries a level-bearing series.
+/// first (the storage read's order). `None` when the points fall below
+/// [`MIN_HISTORY_POINTS`] or no point carries a level-bearing series.
 ///
 /// Series are ordered by [`DELTA_GROUPS`]; within a group, this run's series come first in
 /// its order, then any series only a prior report carried, newest prior first. A
@@ -100,7 +92,6 @@ pub fn build_history(
 
     let mut series = Vec::new();
     for group in DELTA_GROUPS {
-        // Per scan (newest first): the group's levels by id, and the ids in scan order.
         let per_scan: Vec<Vec<(String, String, f64)>> = scans
             .iter()
             .map(|scan| series_levels(scan, group))

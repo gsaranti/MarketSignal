@@ -1,21 +1,7 @@
-//! The headline-filter stage: a pure structured-in / structured-out boundary
-//! that reduces gathered headlines to the bounded set of clustered important
-//! stories (`docs/report-workflow.md §Step 7`).
-//!
-//! This is the filtering half of Step 7. The application layer gathers raw
-//! headlines (`news` + the `tavily`/`gdelt`/`fmp_news` adapters) and runs the deterministic
-//! `news::dedupe_headlines` pre-pass; this stage then performs the model work —
-//! semantic deduplication, relevance scoring, and clustering into major topics —
-//! with the fixed low-cost model (GPT-5 mini, `docs/agents.md §Headline
-//! Filtering`). The output is the ~10 clustered stories.
-//!
-//! Mirrors the `agent` / `model_agent` spine: the trait method is synchronous and
-//! pure, a deterministic `StubHeadlineFilter` stands in offline, and the real
-//! `ModelHeadlineFilter` (its blocking GPT-5 mini HTTP call) replaces the stub
-//! behind the same trait. Selecting which of these clusters become the ~5 deeply
-//! analyzed topics is research routing's job (Step 8); `pipeline::
-//! assemble_research_packet` runs this stage between the news gather and that
-//! routing.
+//! Step 7's filtering half (`docs/report-workflow.md §Step 7`, `docs/agents.md
+//! §Headline Filtering`): a pure structured-in / structured-out stage that reduces the
+//! deduped gather to the bounded set of clustered important stories on the fixed
+//! low-cost model; research routing (Step 8) then selects the deeply analyzed topics.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -29,24 +15,18 @@ use crate::model_agent::extract_openai_envelope;
 use crate::news::RawHeadline;
 use crate::progress::RunContext;
 
-/// The bounded ceiling on clustered stories the filter returns — the "~10
-/// important stories" the Step-7 funnel narrows to. Enforced in
-/// `envelope_to_clusters` (the model is asked for at most this many, but the cap
-/// is applied deterministically rather than trusted).
+/// The ceiling on clustered stories — the "~10 important stories" of the Step-7 funnel.
+/// Applied deterministically in `envelope_to_clusters` rather than trusted to the model.
 pub const MAX_CLUSTERS: usize = 10;
 
-/// The funnel also bounds the *number of headlines* retained across all clusters,
-/// not just the cluster count — the "~40 relevant headlines" stage of Step 7's
-/// funnel (`docs/report-workflow.md §Step 7`). A deterministic backstop so
-/// a lax model response can't carry hundreds of headlines into the Step-8 packet;
-/// the prompt asks the model to do the real relevance filtering, so this rarely
-/// binds for a well-behaved response.
+/// The ceiling on headlines retained across all clusters — the "~40 relevant headlines"
+/// stage (`docs/report-workflow.md §Step 7`). A deterministic backstop so a lax model
+/// response can't carry hundreds of headlines into the Step-8 packet; the prompt asks
+/// the model to do the real relevance filtering.
 const MAX_RETAINED_HEADLINES: usize = 40;
 
-/// One clustered important story: a major topic the relevant headlines grouped
-/// into, with its member headlines carried through from the gather. `relevance`
-/// is the model's 0.0–1.0 score for the cluster's market significance, used to
-/// rank and cap the set.
+/// One clustered important story; `relevance` is the model's 0.0–1.0 market-significance
+/// score, used to rank and cap the set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HeadlineCluster {
     pub topic: String,
@@ -55,15 +35,11 @@ pub struct HeadlineCluster {
     pub headlines: Vec<RawHeadline>,
 }
 
-/// The headline-filter stage. One method: reduce gathered headlines to the
-/// bounded set of clustered stories. Sync and pure, like the `MainAgent` trait —
-/// the blocking model HTTP call inside the real adapter is offloaded via
-/// `spawn_blocking` at the Tauri command seam.
+/// Sync and pure, like `MainAgent`: the real adapter's blocking HTTP call is offloaded
+/// via `spawn_blocking` at the Tauri command seam.
 pub trait HeadlineFilter {
-    /// `report_date` is the run's current date (`YYYY-MM-DD`, market/Eastern time) when
-    /// known — the recency anchor so the filter can judge "current / prior day" against a
-    /// real date rather than guessing from the publish dates it sees. `None` on the
-    /// offline/stub path, where the prompt simply omits the date line.
+    /// `report_date` (`YYYY-MM-DD`, Eastern) is the recency anchor; `None` on the
+    /// offline path, where the prompt omits the date line.
     fn filter(
         &self,
         headlines: Vec<RawHeadline>,
@@ -71,10 +47,7 @@ pub trait HeadlineFilter {
     ) -> anyhow::Result<Vec<HeadlineCluster>>;
 }
 
-/// Deterministic offline stand-in for the real model filter. Groups the input
-/// into at most two clusters by simple position so the pipeline and its tests run
-/// without live keys: the first half becomes one topic, the rest another. Empty
-/// input yields no clusters.
+/// Deterministic offline stand-in: the first half becomes one topic, the rest another.
 #[derive(Debug, Default)]
 pub struct StubHeadlineFilter;
 
@@ -87,8 +60,8 @@ impl HeadlineFilter for StubHeadlineFilter {
         if headlines.is_empty() {
             return Ok(Vec::new());
         }
-        // Honor the real stage's retained-headline ceiling so the double can't hand
-        // downstream code an unbounded set the live filter would never produce.
+        // Honor the retained-headline ceiling so the double can't hand downstream an
+        // unbounded set.
         let mut kept = headlines;
         kept.truncate(MAX_RETAINED_HEADLINES);
         let mid = kept.len().div_ceil(2);
@@ -112,26 +85,21 @@ impl HeadlineFilter for StubHeadlineFilter {
     }
 }
 
-/// OpenAI Chat Completions origin + path — the fixed internal stages call OpenAI
-/// directly (the user-selectable agent models live behind `model_agent`). Split into
-/// origin + path (like the gated adapters) so a test can redirect the origin at a
-/// localhost mock via [`ModelHeadlineFilter::with_base_url`] while still exercising the
-/// path the adapter builds.
+/// Split into origin + path so a test can redirect the origin at a localhost mock via
+/// [`ModelHeadlineFilter::with_base_url`]; the fixed internal stages call OpenAI
+/// directly, the user-selectable agent models living behind `model_agent`.
 const OPENAI_BASE: &str = "https://api.openai.com";
 const OPENAI_CHAT_PATH: &str = "/v1/chat/completions";
 
-/// The fixed internal model for headline filtering (`docs/agents.md §Headline
-/// Filtering`) — non-configurable, distinct from the user-selectable agent models.
+/// The fixed internal filtering model (`docs/agents.md §Headline Filtering`),
+/// non-configurable.
 const HEADLINE_FILTER_MODEL: &str = "gpt-5-mini";
 
-/// The cluster output itself is small (≤10 topics, each a label + short summary + a few
-/// indices), but `gpt-5-mini` is a reasoning model that spends reasoning tokens against
-/// this same `max_completion_tokens` budget *before* it emits the structured output. Set
-/// too tight, a heavy reasoning pass can exhaust the budget so the response comes back
-/// `finish_reason: "length"` with empty content and the parse fails — an intermittent,
-/// retry-proof failure distinct from a transient HTTP error. 8192 leaves reasoning
-/// headroom over the small output (mirroring the agent stages' reasoning-headroom sizing)
-/// while staying well inside the HTTP timeout.
+/// The cluster output is small, but `gpt-5-mini` spends reasoning tokens against this
+/// same `max_completion_tokens` budget before it emits the structured output; set too
+/// tight, a heavy reasoning pass returns `finish_reason: "length"` with empty content
+/// and the parse fails — an intermittent, retry-proof failure. 8192 leaves reasoning
+/// headroom while staying inside the HTTP timeout.
 const MAX_TOKENS: u32 = 8192;
 
 const SYSTEM_PROMPT: &str = "You filter a large set of market-news headlines down to the most \
@@ -153,11 +121,10 @@ topics matter. Use only the indices provided; never invent headlines.";
 const USER_INSTRUCTION: &str =
     "Filter and cluster the following headlines into the most important market stories.";
 
-/// The model's structured return: a list of clusters, each referencing its member
-/// headlines by index into the input list rather than echoing their text — so the
-/// model can't fabricate or mutate a headline, and the response stays compact.
-/// `headline_indices` is `i64` (not `usize`) so a stray negative index from the
-/// model is dropped in `envelope_to_clusters` rather than failing the whole parse.
+/// The model's structured return: each cluster references its member headlines by
+/// index into the input list rather than echoing their text, so the model can't
+/// fabricate or mutate a headline. `headline_indices` is `i64` (not `usize`) so a stray
+/// negative index is dropped in `envelope_to_clusters` rather than failing the parse.
 #[derive(Debug, Deserialize)]
 struct ClusterEnvelope {
     #[serde(default)]
@@ -176,10 +143,9 @@ struct ClusterRaw {
     headline_indices: Vec<i64>,
 }
 
-/// JSON Schema for the cluster envelope, used as the OpenAI `json_schema` strict
-/// format. All fields required and `additionalProperties` false for strict mode;
-/// the ≤10 cap is enforced in `envelope_to_clusters`, not the schema, since strict
-/// mode does not honor array-length constraints.
+/// The OpenAI strict `json_schema` format: all fields required and
+/// `additionalProperties` false for strict mode; the caps are enforced in
+/// `envelope_to_clusters`, since strict mode does not honor array-length constraints.
 fn cluster_schema() -> Value {
     json!({
         "type": "object",
@@ -204,9 +170,8 @@ fn cluster_schema() -> Value {
     })
 }
 
-/// Render the headlines as a numbered list the model references by index. Each line
-/// carries the publish date when known, so the filter can weigh freshness (see
-/// [`SYSTEM_PROMPT`]) and not just importance; a dateless headline omits it gracefully.
+/// A numbered list the model references by index, each line carrying the publish date
+/// when known so the filter can weigh freshness.
 fn format_headlines(headlines: &[RawHeadline]) -> String {
     headlines
         .iter()
@@ -219,9 +184,6 @@ fn format_headlines(headlines: &[RawHeadline]) -> String {
         .join("\n")
 }
 
-/// Build the GPT-5 mini request: a strict json_schema call whose user message is
-/// the standing instruction, the run's current date when known (the recency anchor),
-/// plus the numbered headlines.
 fn build_request(headlines: &[RawHeadline], report_date: Option<&str>) -> Value {
     let date_line = match report_date {
         Some(d) => format!("Report date (today, US/Eastern): {d}\n\n"),
@@ -245,20 +207,11 @@ fn build_request(headlines: &[RawHeadline], report_date: Option<&str>) -> Value 
     })
 }
 
-/// Resolve the model's envelope into clusters against the original headlines, and
-/// enforce the funnel invariants deterministically rather than trusting the model:
-///
-/// - **Rank by relevance first**, so the strongest clusters win the caps and win a
-///   headline when several clusters claim it.
-/// - **Map indices back to `RawHeadline`s**, silently dropping out-of-range or
-///   negative indices.
-/// - **Dedupe membership** within and across clusters — each headline is kept by
-///   the first (highest-relevance) cluster that claims it, so the retained set is
-///   distinct stories rather than the same headline repeated.
-/// - **Cap retained headlines** at `MAX_RETAINED_HEADLINES` and **clusters** at
-///   `MAX_CLUSTERS` (the ~40 → ~10 funnel), dropping clusters left empty.
-///
-/// Pure, so these invariants are unit-testable without a live call.
+/// Enforce the funnel invariants deterministically rather than trusting the model: rank
+/// by relevance first so the strongest clusters win the caps and win a headline several
+/// clusters claim; drop out-of-range indices; keep each headline in the first cluster
+/// that claims it; cap retained headlines at `MAX_RETAINED_HEADLINES` and clusters at
+/// `MAX_CLUSTERS`, dropping clusters left empty.
 fn envelope_to_clusters(env: ClusterEnvelope, headlines: &[RawHeadline]) -> Vec<HeadlineCluster> {
     let mut ranked = env.clusters;
     ranked.sort_by(|a, b| {
@@ -275,10 +228,8 @@ fn envelope_to_clusters(env: ClusterEnvelope, headlines: &[RawHeadline]) -> Vec<
         if out.len() >= MAX_CLUSTERS {
             break;
         }
-        // Drop malformed clusters before they claim any headlines — strict schema
-        // guarantees `topic`/`summary` are strings, not non-empty ones, and a
-        // story with no label or summary is useless to Step 8. Checking first
-        // leaves the headlines available for a well-formed lower-relevance cluster.
+        // Checked before the cluster claims any headlines, so they stay available for a
+        // well-formed lower-relevance cluster.
         if c.topic.trim().is_empty() || c.summary.trim().is_empty() {
             continue;
         }
@@ -287,8 +238,6 @@ fn envelope_to_clusters(env: ClusterEnvelope, headlines: &[RawHeadline]) -> Vec<
             if retained >= MAX_RETAINED_HEADLINES {
                 break;
             }
-            // Negative -> drop (i64 so it's a drop, not a parse failure); out of
-            // range -> drop; already claimed by this or a higher cluster -> skip.
             let Ok(idx) = usize::try_from(i) else {
                 continue;
             };
@@ -317,11 +266,10 @@ fn envelope_to_clusters(env: ClusterEnvelope, headlines: &[RawHeadline]) -> Vec<
 pub struct ModelHeadlineFilter {
     api_key: String,
     http: reqwest::blocking::Client,
-    /// OpenAI origin, defaulted to [`OPENAI_BASE`]; only a test redirects it at a
-    /// localhost mock via [`ModelHeadlineFilter::with_base_url`].
+    /// Only a test redirects it at a localhost mock via
+    /// [`ModelHeadlineFilter::with_base_url`].
     base_url: String,
-    /// Run context for the single tracker row the filter call emits. Defaults to a
-    /// no-op (tests / offline smokes); the live command attaches the real one via
+    /// Defaults to a no-op; the live command attaches the real one via
     /// [`ModelHeadlineFilter::with_context`].
     progress: Arc<RunContext>,
 }
@@ -340,36 +288,28 @@ impl ModelHeadlineFilter {
         })
     }
 
-    /// Attach a live run context so the filter call streams a request row to the tracker.
-    /// Without it the adapter keeps its no-op context.
     pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
         self.progress = ctx;
         self
     }
 
-    /// Redirect the adapter at an alternate API origin (a localhost mock) so the wire
-    /// path — including the shared retry/backoff — runs offline. Test-only; a trailing
-    /// slash is trimmed so the joined path's leading slash doesn't double up.
+    /// Test seam: an alternate origin (a localhost mock). A trailing slash is trimmed so
+    /// the joined path's leading slash doesn't double up.
     #[cfg(test)]
     fn with_base_url(mut self, base_url: &str) -> Self {
         self.base_url = base_url.trim_end_matches('/').to_string();
         self
     }
 
-    /// Resolve the adapter from the environment, for the live smoke and any caller
-    /// that bypasses the gate. Uses the OpenAI key — the fixed internal stages are
-    /// always OpenAI (`config::openai_key`).
+    /// For the live smoke and any caller that bypasses the gate.
     pub fn from_env() -> Result<Self> {
         Self::new(crate::config::AppConfig::from_env().openai_key()?)
     }
 
-    /// POST the request through the shared bounded retry/backoff, matching every other
-    /// gated call in the report pipeline (FMP / FRED / BLS / CFTC / Tavily). The clustering
-    /// call has no server-side side effect — like Tavily's search POST — so retrying a
-    /// transient 429 / 5xx / dropped-connection is safe, and it rides out the intermittent
-    /// OpenAI failures that would otherwise wipe this run's news clustering (the pipeline
-    /// degrades a failed filter to empty clusters). A non-2xx that survives the retries
-    /// stays fatal here.
+    /// POST through the shared bounded retry/backoff, like every other gated call in the
+    /// pipeline. The clustering call has no server-side side effect, so retrying a
+    /// transient 429 / 5xx / dropped connection is safe; a non-2xx that survives the
+    /// retries stays fatal here.
     fn call(&self, body: &Value) -> Result<Value> {
         let url = format!("{}{OPENAI_CHAT_PATH}", self.base_url);
         let (status, text) = crate::http_retry::send_with_retry("headline-filter", || {
@@ -388,11 +328,10 @@ impl HeadlineFilter for ModelHeadlineFilter {
         headlines: Vec<RawHeadline>,
         report_date: Option<&str>,
     ) -> Result<Vec<HeadlineCluster>> {
-        // No headlines, no call — an empty gather has nothing to cluster, and no row.
+        // No headlines, no call and no row.
         if headlines.is_empty() {
             return Ok(Vec::new());
         }
-        // One tracker row for the GPT-5-mini clustering call.
         self.progress
             .request_started("OpenAI", "filter", "headline-filter", "Headline filtering");
         let result = (|| -> Result<Vec<HeadlineCluster>> {
@@ -449,7 +388,6 @@ mod tests {
         let clusters = StubHeadlineFilter.filter(raw, None).unwrap();
         assert_eq!(clusters.len(), 2);
         assert!(clusters.len() <= MAX_CLUSTERS);
-        // Every input headline lands in exactly one cluster.
         let total: usize = clusters.iter().map(|c| c.headlines.len()).sum();
         assert_eq!(total, 4);
         assert!(clusters.iter().all(|c| !c.headlines.is_empty()));
@@ -462,8 +400,6 @@ mod tests {
 
     #[test]
     fn format_headlines_carries_publish_date_when_known() {
-        // The filter needs the date to balance freshness against importance; a dated
-        // headline renders it inline, an undated one degrades to source-only.
         let dated = RawHeadline {
             published: Some("2026-06-23".into()),
             ..headline("Same-day selloff")
@@ -482,9 +418,6 @@ mod tests {
 
     #[test]
     fn build_request_carries_report_date_anchor_and_omits_it_when_absent() {
-        // With a report date, the user message states "today" so the model can judge
-        // "current / prior day" against a real anchor (the P1 fix), not guess from the
-        // spread of publish dates; without one, the line is omitted, never rendered blank.
         let raw = vec![headline("Same-day selloff")];
         let with = build_request(&raw, Some("2026-06-23"));
         let user_with = with["messages"][1]["content"].as_str().unwrap();
@@ -503,8 +436,6 @@ mod tests {
 
     #[test]
     fn stub_respects_the_retained_headline_ceiling() {
-        // The double must not hand downstream code more headlines than the live
-        // stage's bounded output would.
         let raw: Vec<RawHeadline> = (0..100).map(|i| headline(&format!("h{i}"))).collect();
         let clusters = StubHeadlineFilter.filter(raw, None).unwrap();
         let total: usize = clusters.iter().map(|c| c.headlines.len()).sum();
@@ -535,7 +466,6 @@ mod tests {
             "headline_clusters"
         );
         assert_eq!(body["response_format"]["json_schema"]["strict"], true);
-        // The user message carries the numbered headline the model references by index.
         let user = body["messages"][1]["content"].as_str().unwrap();
         assert!(user.contains("[0] (example.com) Fed holds rates"), "{user}");
     }
@@ -566,7 +496,6 @@ mod tests {
             ],
         };
         let out = envelope_to_clusters(env, &headlines);
-        // The out-of-range and negative-only clusters resolve to no members -> dropped.
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].topic, "valid");
         assert_eq!(out[0].headlines.len(), 2);
@@ -578,7 +507,6 @@ mod tests {
 
     #[test]
     fn envelope_to_clusters_caps_at_max_clusters_by_relevance() {
-        // 12 clusters, each with its own distinct headline, ascending relevance.
         let headlines: Vec<RawHeadline> = (0..12).map(|i| headline(&format!("h{i}"))).collect();
         let clusters: Vec<ClusterRaw> = (0..12)
             .map(|i| ClusterRaw {
@@ -590,7 +518,6 @@ mod tests {
             .collect();
         let out = envelope_to_clusters(ClusterEnvelope { clusters }, &headlines);
         assert_eq!(out.len(), MAX_CLUSTERS, "capped at the cluster ceiling");
-        // Sorted by relevance desc, so the highest survives and the lowest is cut.
         assert!(out[0].relevance > out[MAX_CLUSTERS - 1].relevance);
     }
 
@@ -599,14 +526,12 @@ mod tests {
         let headlines: Vec<RawHeadline> = (0..3).map(|i| headline(&format!("h{i}"))).collect();
         let env = ClusterEnvelope {
             clusters: vec![
-                // Higher relevance: a within-cluster duplicate of 0, plus 1.
                 ClusterRaw {
                     topic: "a".into(),
                     summary: "s".into(),
                     relevance: 0.9,
                     headline_indices: vec![0, 0, 1],
                 },
-                // Lower relevance: re-claims 0 and 1 (already taken) plus a fresh 2.
                 ClusterRaw {
                     topic: "b".into(),
                     summary: "s".into(),
@@ -623,7 +548,6 @@ mod tests {
             "a keeps 0 and 1; the duplicate 0 collapses"
         );
         assert_eq!(out[1].headlines.len(), 1, "b keeps only the fresh 2");
-        // No headline appears in more than one cluster.
         let mut urls: Vec<String> = out
             .iter()
             .flat_map(|c| c.headlines.iter().map(|h| h.url.clone()))
@@ -643,22 +567,19 @@ mod tests {
         let headlines: Vec<RawHeadline> = (0..3).map(|i| headline(&format!("h{i}"))).collect();
         let env = ClusterEnvelope {
             clusters: vec![
-                // Highest relevance but a blank topic -> dropped; its headline 0
-                // must stay available rather than being consumed.
+                // Its headline 0 must stay available for the well-formed cluster below.
                 ClusterRaw {
                     topic: "   ".into(),
                     summary: "s".into(),
                     relevance: 0.95,
                     headline_indices: vec![0],
                 },
-                // Blank summary -> dropped too.
                 ClusterRaw {
                     topic: "t".into(),
                     summary: String::new(),
                     relevance: 0.9,
                     headline_indices: vec![1],
                 },
-                // Well-formed: claims 0 (freed by the dropped cluster) and 2.
                 ClusterRaw {
                     topic: "good".into(),
                     summary: "a real summary".into(),
@@ -679,8 +600,7 @@ mod tests {
 
     #[test]
     fn envelope_to_clusters_caps_total_retained_headlines() {
-        // 60 distinct headlines across 5 equal-relevance clusters of 12 -> retained
-        // is capped at the funnel's ~40 ceiling, not all 60.
+        // 60 headlines across 5 clusters of 12, more than the ceiling.
         let headlines: Vec<RawHeadline> = (0..60).map(|i| headline(&format!("h{i}"))).collect();
         let clusters: Vec<ClusterRaw> = (0..5)
             .map(|c| ClusterRaw {
@@ -705,18 +625,14 @@ mod tests {
         assert!(filter.filter(Vec::new(), None).unwrap().is_empty());
     }
 
-    /// A well-formed OpenAI Chat Completions reply whose `content` is the strict-schema
-    /// cluster envelope (itself a JSON string), one cluster claiming headline `[0]`.
+    /// A Chat Completions reply whose `content` is the cluster envelope as a JSON string,
+    /// one cluster claiming headline `[0]`.
     #[cfg(test)]
     const OK_RESPONSE_BODY: &str = r#"{"choices":[{"finish_reason":"stop","message":{"content":"{\"clusters\":[{\"topic\":\"Macro\",\"summary\":\"s\",\"relevance\":0.9,\"headline_indices\":[0]}]}"}}]}"#;
 
     #[test]
     fn call_retries_a_transient_429_then_parses_the_envelope() {
         use crate::test_http::{Canned, MockHttp};
-        // The intermittent failure the user reported: a transient OpenAI 429 on the first
-        // attempt, then a clean 200. The shared retry must ride it out and reach the parse
-        // rather than failing the call (which the pipeline would degrade to empty clusters,
-        // silently dropping this run's news). It must also build the right path.
         let server = MockHttp::serve(vec![
             Canned::Reply {
                 status: 429,
@@ -749,9 +665,6 @@ mod tests {
     #[test]
     fn call_surfaces_a_non_2xx_that_survives_the_retries() {
         use crate::test_http::{Canned, MockHttp};
-        // A persistent 500 (every attempt fails retryably): the call exhausts its retries
-        // and surfaces the status, so the pipeline degrades this run to empty clusters with
-        // a legible cause rather than hanging.
         let server = MockHttp::serve(vec![
             Canned::Reply { status: 500, headers: vec![], body: "boom 1" },
             Canned::Reply { status: 500, headers: vec![], body: "boom 2" },
@@ -800,8 +713,6 @@ mod tests {
             );
             assert!(!c.topic.trim().is_empty(), "every cluster has a topic");
         }
-        // The funnel narrows the headline count (not just the cluster count) and
-        // keeps the retained set distinct across clusters.
         let mut urls: Vec<String> = clusters
             .iter()
             .flat_map(|c| c.headlines.iter().map(|h| h.url.clone()))

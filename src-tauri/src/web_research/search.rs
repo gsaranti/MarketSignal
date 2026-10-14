@@ -1,21 +1,9 @@
-//! The web tool's search backend: self-hosted SearXNG, SearXNG-only — Tavily is
-//! reserved for the report job, so there is no fallback here
-//! (`docs/web-research.md §Search backend: SearXNG`, §Tavily fallback).
-//!
-//! SearXNG is queried over its JSON API on the configured (loopback)
-//! endpoint — the one deliberate loopback target in the web tool, an
-//! app-configured service address rather than a model-chosen fetch, so it is
-//! exempt from the fetch guard's loopback block. It sits **off the execution
-//! gate**: unreachable means a degraded run behind a pre-run notice, never a
-//! block. When SearXNG can't serve (unreachable, misconfigured — an HTTP 403
-//! is the JSON-output-disabled signature — or empty), the search fails; there
-//! is no Tavily fallback (SearXNG-only), so the run researches without that
-//! evidence.
-//!
-//! Rank-time policy lives here too: denied hosts are dropped at the search
-//! filter, and near-duplicate / same-origin hits collapse so syndication
-//! can't inflate apparent corroboration (five outlets reprinting one wire
-//! story are one source, not five).
+//! The web tool's search backend: self-hosted SearXNG over its JSON API, with
+//! no fallback (`docs/web-research.md §Search backend: SearXNG`, §Tavily
+//! fallback). The configured loopback endpoint is an app-configured service
+//! address, not a model-chosen fetch, so it is exempt from the fetch guard's
+//! loopback block. Off the execution gate: unreachable means a degraded run
+//! behind a pre-run notice, never a block. Rank-time filtering lives here too.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -25,34 +13,28 @@ use serde::Deserialize;
 
 use super::registry::{self, SourcePolicy};
 
-/// Per-query timeout — SearXNG fans out to public engines, so it is slower
-/// than a single API; 20s covers the observed fan-out without parking the
-/// research loop.
+/// SearXNG fans out to public engines, so it is slower than a single API.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Hits kept per query after filtering — the loop fetches a subset, so a
+/// Hits kept per query after filtering; the loop fetches a subset, so a
 /// deeper tail only burns context.
 const MAX_HITS: usize = 12;
 
 /// Minimum spacing between consecutive SearXNG queries. The upstream public
-/// engines rate-limit / CAPTCHA on burst rate from a single egress IP, and the
-/// blocks are upstream, not the local limiter — so client-side pacing is the
-/// keyless lever (`docs/web-research.md §Search backend: SearXNG`). Calibratable
-/// and generous against the thinking-dominated ~25 min/holding cost: only
-/// back-to-back queries within a model turn actually wait, since a full 122B
-/// turn already spaces queries far past this between turns.
+/// engines rate-limit / CAPTCHA on burst rate from a single egress IP, so
+/// client-side pacing is the keyless lever (`docs/web-research.md §Search
+/// backend: SearXNG`). Calibratable; only back-to-back queries within a model
+/// turn actually wait.
 const MIN_SEARCH_INTERVAL: Duration = Duration::from_secs(4);
 
-/// Jitter ceiling added on top of the interval so a run's bursts don't
+/// Jitter ceiling on top of the interval so a run's bursts don't
 /// re-synchronize into a fresh burst; applied only after the first query.
 const SEARCH_JITTER: Duration = Duration::from_millis(1_500);
 
-/// Cap on the run-scoped query cache — distinct queries in a run are naturally
-/// bounded (order-of dozens per holding), so this only guards a pathological
-/// run from unbounded growth; past it, results still compute, just uncached.
+/// Guards a pathological run from unbounded growth; past it, results still
+/// compute, just uncached.
 const MAX_QUERY_CACHE: usize = 4_096;
 
-/// One search hit, provider-agnostic.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchHit {
     pub title: String,
@@ -60,8 +42,8 @@ pub struct SearchHit {
     pub host: String,
     pub snippet: Option<String>,
     pub published: Option<String>,
-    /// The origin's evidence tier (registry / default heuristic) — carried so
-    /// rank-time collapse can keep the highest-tier origin of a syndicated set.
+    /// The origin's evidence tier, carried so rank-time collapse can keep the
+    /// highest-tier origin of a syndicated set.
     pub tier: u8,
 }
 
@@ -70,8 +52,6 @@ pub struct SearchHit {
 // SearXNG
 // ---------------------------------------------------------------------------
 
-/// One SearXNG JSON result, trimmed to what a hit needs. Field names follow
-/// the JSON API (`publishedDate` rides camelCase on the wire).
 #[derive(Debug, Deserialize)]
 struct SearxngResultRaw {
     #[serde(default)]
@@ -90,10 +70,8 @@ struct SearxngResponse {
     results: Vec<SearxngResultRaw>,
 }
 
-/// Interpret a SearXNG HTTP response by status. The 403 arm names the
-/// JSON-output-disabled misconfiguration explicitly — it is the shipped
-/// `settings.yml`'s whole reason to exist — so the Settings connection row
-/// and the pre-run notice can say what is actually wrong.
+/// A 403 is the JSON-output-disabled signature, named explicitly so the
+/// Settings connection row and the pre-run notice can say what is wrong.
 fn interpret_searxng(status: u16, body: &str) -> Result<SearxngResponse> {
     match status {
         200..=299 => {
@@ -108,18 +86,14 @@ fn interpret_searxng(status: u16, body: &str) -> Result<SearxngResponse> {
     }
 }
 
-/// Run-scoped pacer that spaces outbound SearXNG queries. One instance
-/// throttles every holding's searches, because the burst that trips the
-/// upstream engines originates from the one shared egress IP across the whole
-/// run — so pacing is a property of the client, not of any single holding.
+/// One instance paces every holding's searches, because the burst that trips
+/// the upstream engines originates from the one shared egress IP.
 struct SearchPacer {
-    /// Minimum spacing between consecutive queries.
     min_interval: Duration,
-    /// Jitter ceiling added on top (0 disables).
+    /// 0 disables.
     jitter: Duration,
-    /// The instant the last query was released (its scheduled release, so a
-    /// reservation paces from when the prior query actually went out, not from
-    /// now). `None` before the first query.
+    /// The last query's *scheduled* release, so a reservation paces from when
+    /// the prior query actually went out, not from now.
     last: Mutex<Option<Instant>>,
 }
 
@@ -133,18 +107,14 @@ impl SearchPacer {
     }
 
     /// Reserve the next release slot and return how long to wait before it.
-    /// The caller sleeps for the returned duration — kept sleep-free so the
-    /// pacing math is deterministically testable. Only a query still inside the
-    /// interval since the last one waits: the first query, and any query already
-    /// spaced past the interval (a full model turn elapsed), waits nothing.
-    /// Jitter rides only on a query that is actually being paced.
+    /// Sleep-free so the pacing math is deterministically testable.
     fn reserve(&self, now: Instant) -> Duration {
         let mut last = self.last.lock().unwrap();
         let wait = match *last {
             Some(prev) => {
                 let base = self.min_interval.saturating_sub(now.saturating_duration_since(prev));
-                // A query already spaced past the interval needs no jitter —
-                // jitter desynchronizes bursts, and this one isn't one.
+                // Jitter desynchronizes bursts, and a query already spaced past
+                // the interval isn't one.
                 if base.is_zero() {
                     Duration::ZERO
                 } else {
@@ -157,9 +127,8 @@ impl SearchPacer {
         wait
     }
 
-    /// A cheap, dependency-free jitter in `[0, self.jitter)`. Not cryptographic
-    /// — desynchronization, not unpredictability, is the goal — so the subsec
-    /// nanos of the wall clock are a fine entropy source.
+    /// `[0, self.jitter)`. Desynchronization, not unpredictability, is the
+    /// goal, so the wall clock's subsecond nanos are entropy enough.
     fn next_jitter(&self) -> Duration {
         if self.jitter.is_zero() {
             return Duration::ZERO;
@@ -173,7 +142,6 @@ impl SearchPacer {
     }
 }
 
-/// The local SearXNG instance over its JSON API.
 pub struct SearxngClient {
     base_url: String,
     http: reqwest::blocking::Client,
@@ -193,14 +161,9 @@ impl SearxngClient {
         })
     }
 
-    /// One JSON search. Errors carry the misconfiguration diagnosis where the
-    /// status makes one legible.
+    /// One unfiltered JSON search.
     pub fn search_raw(&self, query: &str) -> Result<Vec<SearchHit>> {
         let url = format!("{}/search", self.base_url);
-        // Pace the outbound query: the upstream engines block on burst rate
-        // from one egress IP, so hold a minimum spacing between consecutive
-        // SearXNG queries. Polled here at the request boundary; the first query
-        // of a run never waits.
         let wait = self.pacer.reserve(Instant::now());
         if !wait.is_zero() {
             std::thread::sleep(wait);
@@ -237,18 +200,11 @@ impl SearxngClient {
             .collect())
     }
 
-    /// The connection probe the Settings row and the pre-run notice read: a
-    /// real JSON query, so the JSON-disabled 403 misconfiguration is caught,
-    /// not just TCP reachability. Same mechanism class as the model daemon's
-    /// health check — a bounded HTTP call, never on the execution gate.
-    ///
-    /// Serving means **returning usable results**, matching the search path's
-    /// own definition — the same rank-time filter runs before the judgment, so
-    /// a probe answered only by denied hosts or malformed entries reads
-    /// degraded exactly as the run would treat it: an instance that responds
-    /// but serves nothing usable leaves every actual search empty, and the
-    /// local suite is SearXNG-only (no Tavily fallback), so the probe must
-    /// surface that rather than silently consenting to a blind run.
+    /// The connection probe behind the Settings row and the pre-run notice: a
+    /// real JSON query, so the JSON-disabled 403 is caught, not just TCP
+    /// reachability. Serving means returning usable results through the same
+    /// rank-time filter the run uses, so an instance that responds but serves
+    /// nothing usable reads degraded rather than consenting to a blind run.
     pub fn health_check(&self) -> Result<()> {
         let hits = filter_and_collapse(self.search_raw("financial market news")?);
         if hits.is_empty() {
@@ -262,7 +218,7 @@ impl SearxngClient {
     }
 }
 
-/// The host of a URL (normalized), or an empty string when unparseable.
+/// Normalized; empty when unparseable.
 fn host_of(url: &str) -> String {
     reqwest::Url::parse(url)
         .ok()
@@ -270,7 +226,7 @@ fn host_of(url: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The evidence tier of a host (deny handled separately at the filter).
+/// Deny is handled at the filter, not here.
 fn tier_of(host: &str) -> u8 {
     match registry::assess(host) {
         SourcePolicy::Graded(e) => e.tier,
@@ -282,8 +238,8 @@ fn tier_of(host: &str) -> u8 {
 // Rank-time filtering
 // ---------------------------------------------------------------------------
 
-/// Normalize a title for the syndication collapse: lowercased, alphanumeric
-/// runs only — five outlets reprinting one wire story share this key.
+/// The syndication-collapse key: lowercased alphanumeric runs, so five
+/// outlets reprinting one wire story share it.
 fn title_key(title: &str) -> String {
     let mut key = String::with_capacity(title.len());
     let mut last_was_gap = true;
@@ -299,9 +255,9 @@ fn title_key(title: &str) -> String {
     key.trim().to_string()
 }
 
-/// Apply the search-filter policy: drop denied hosts, dedup exact URLs,
-/// collapse syndicated near-duplicates by title (keeping the highest-tier —
-/// lowest-numbered — origin), and cap the tail.
+/// Drop denied hosts, dedup exact URLs, collapse syndicated near-duplicates by
+/// title so syndication can't inflate apparent corroboration, and cap the
+/// tail.
 pub fn filter_and_collapse(hits: Vec<SearchHit>) -> Vec<SearchHit> {
     use std::collections::HashMap;
     let mut kept: Vec<SearchHit> = Vec::new();
@@ -325,8 +281,7 @@ pub fn filter_and_collapse(hits: Vec<SearchHit>) -> Vec<SearchHit> {
         }
         match by_title.get(&key) {
             Some(&i) => {
-                // Same story from another outlet: one origin, not two — keep
-                // the higher-tier copy.
+                // Lower number is the higher tier.
                 if hit.tier < kept[i].tier {
                     kept[i] = hit;
                 }
@@ -345,27 +300,20 @@ pub fn filter_and_collapse(hits: Vec<SearchHit>) -> Vec<SearchHit> {
 // The search tool
 // ---------------------------------------------------------------------------
 
-/// The local suite's web search: self-hosted SearXNG with a run-scoped dedup
-/// cache. **SearXNG-only** — there is no fallback, because Tavily is reserved
-/// for the report job (`docs/web-research.md §Tavily fallback`). A SearXNG that
-/// can't serve — unreachable, misconfigured, or returning nothing usable —
-/// fails the search, and the research loop fail-softs to a thinner packet.
+/// The local suite's web search (`docs/web-research.md §Tavily fallback`): a
+/// SearXNG that can't serve fails the search, and the research loop
+/// fail-softs to a thinner packet.
 pub struct SearchTool {
     searxng: Option<SearxngClient>,
-    /// Run-scoped cache of results by normalized query, so a repeated query
-    /// across a topic's passes returns without re-hitting SearXNG (and its
-    /// pacing).
+    /// Run-scoped, by normalized query, so a repeated query returns without
+    /// re-hitting SearXNG and its pacing.
     cache: Mutex<std::collections::HashMap<String, Vec<SearchHit>>>,
 }
 
-/// Normalize a query for the dedup cache: lowercased with whitespace runs
-/// collapsed — nothing more. Punctuation is deliberately preserved, because
-/// SearXNG treats some of it as operators (`!engine` / `!category`,
-/// `:language`), so folding it away would let a distinct query collect an
-/// earlier query's cached results. The cache is conservative on purpose: a
-/// false hit would feed the model the wrong results, while a false miss costs
-/// only one (paced) SearXNG query — so it dedups only queries that are textually
-/// identical bar case and spacing.
+/// Lowercased with whitespace runs collapsed, nothing more. Punctuation is
+/// preserved because SearXNG treats some of it as operators (`!engine`,
+/// `:language`); a false cache hit would feed the model the wrong results,
+/// while a false miss costs one paced query.
 fn normalize_query(query: &str) -> String {
     query.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
@@ -378,15 +326,9 @@ impl SearchTool {
         }
     }
 
-    /// One search, dedup-cached. The run-scoped cache short-circuits a repeated
-    /// query before any network call; only answered searches are cached (a
-    /// failure stays retryable), an empty answer included. "Returning nothing"
-    /// is judged **after** the rank-time filter: a result set surviving only
-    /// as denied or malformed entries is no more servable than a raw empty one,
-    /// so both are the same empty answer — `Ok` and empty, which the loop
-    /// renders as "No results." and counts as an empty search, never a failed
-    /// one (`portfolio-v58`, ruled 2026-09-29; before it the empty set was an
-    /// error whose text named SearXNG to the model).
+    /// Only answered searches are cached (a failure stays retryable), an empty
+    /// answer included. A result set the rank-time filter empties is the same
+    /// empty answer as a raw empty one: `Ok` and empty, never an error.
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
         let key = normalize_query(query);
         if let Some(cached) = self.cache.lock().unwrap().get(&key).cloned() {
@@ -414,25 +356,19 @@ impl SearchTool {
 // Pre-run preflight
 // ---------------------------------------------------------------------------
 
-/// The pre-run web-research read (`docs/web-research.md §Tavily fallback` —
-/// the pre-run notice; `docs/interface.md §Pre-run web-research notice`).
-/// Never a gate: the frontend shows a confirm-and-proceed notice on a
-/// degraded state, always flagged *not recommended* — the local suite is
-/// SearXNG-only, so a degraded run researches blind — and the engine-only
-/// paths never ask. There is no Tavily-fallback field because there is no
-/// local-suite fallback: Tavily is reserved for the report job.
+/// The pre-run web-research read (`docs/web-research.md §Tavily fallback`;
+/// `docs/interface.md §Pre-run web-research notice`). Never a gate.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WebResearchPreflight {
     /// `ok` | `unreachable` | `not_configured`.
     pub status: String,
-    /// The failure diagnosis when unreachable (e.g. the JSON-disabled 403).
+    /// The failure diagnosis when unreachable.
     pub detail: Option<String>,
-    /// True whenever SearXNG cannot serve — the notice trigger.
+    /// The notice trigger.
     pub degraded: bool,
 }
 
-/// Probe the configured SearXNG endpoint for the pre-run notice and the
-/// Settings connection row. One bounded JSON query; no state change.
+/// One bounded JSON query; no state change.
 pub fn preflight(endpoint: Option<&str>) -> WebResearchPreflight {
     let (status, detail) = match endpoint.map(str::trim).filter(|s| !s.is_empty()) {
         None => ("not_configured", None),
@@ -492,8 +428,7 @@ mod tests {
         assert_eq!(hits[0].host, "reuters.com");
         assert_eq!(hits[0].tier, 2);
         assert_eq!(hits[0].published.as_deref(), Some("2026-08-20"));
-        // The mock records the path sans query string; the JSON-format query
-        // itself is pinned by the 403 arm above (a non-JSON instance 403s).
+        // The mock records the path sans query string.
         assert_eq!(server.request_paths(), ["/search"]);
     }
 
@@ -501,13 +436,12 @@ mod tests {
     fn filter_drops_denied_hosts_and_collapses_syndication() {
         let hits = vec![
             hit("Widget Co beats on revenue", "https://reuters.com/a", 2),
-            // Same story syndicated by a lower-tier outlet: collapses into the wire copy.
+            // The same story, syndicated.
             hit("Widget Co Beats on Revenue!", "https://randomblog.example/b", 4),
-            // A denied host is dropped outright.
+            // A denied host.
             hit("Widget Co forecast 2030", "https://stockinvest.us/widget", 9),
-            // A distinct story survives.
             hit("Widget Co CFO resigns", "https://apnews.com/c", 2),
-            // An exact duplicate URL is dropped.
+            // An exact duplicate URL.
             hit("Widget Co beats on revenue", "https://reuters.com/a", 2),
         ];
         let kept = filter_and_collapse(hits);
@@ -532,9 +466,7 @@ mod tests {
 
     #[test]
     fn searxng_filtered_to_empty_is_an_empty_answer() {
-        // SearXNG responds, but every hit dies at the rank-time filter (a denied
-        // host) — as unservable as a raw empty set, and the same empty answer:
-        // `Ok` and empty, never an error (`portfolio-v58`).
+        // The one hit is a denied host.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![("Content-Type", "application/json")],
@@ -547,7 +479,6 @@ mod tests {
 
     #[test]
     fn preflight_reads_ok_unreachable_and_not_configured() {
-        // Not configured: no probe at all.
         let p = preflight(None);
         assert_eq!(p.status, "not_configured");
         assert!(p.degraded);
@@ -555,7 +486,6 @@ mod tests {
         assert_eq!(p.status, "not_configured");
         assert!(p.degraded);
 
-        // A serving instance — one that returns results — reads ok.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![("Content-Type", "application/json")],
@@ -565,9 +495,7 @@ mod tests {
         assert_eq!(p.status, "ok");
         assert!(!p.degraded);
 
-        // An instance that responds but returns NOTHING reads degraded — the
-        // search path treats zero usable results the same as an empty one, so a
-        // probe that called this healthy would silently consent to a blind run.
+        // An instance that responds but returns nothing reads degraded.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![("Content-Type", "application/json")],
@@ -578,9 +506,7 @@ mod tests {
         assert!(p.degraded);
         assert!(p.detail.unwrap().contains("no usable results"));
 
-        // Same for a result set the rank-time filter empties (denied hosts
-        // only) — the probe judges through the SAME filter the run uses, so
-        // preflight and the search path can never disagree on this result class.
+        // Same for a result set the rank-time filter empties (a denied host).
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![("Content-Type", "application/json")],
@@ -590,7 +516,7 @@ mod tests {
         assert_eq!(p.status, "unreachable");
         assert!(p.degraded);
 
-        // A JSON-disabled instance reads unreachable with the diagnosis.
+        // The JSON-disabled 403.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 403,
             headers: vec![],
@@ -613,11 +539,8 @@ mod tests {
     fn pacer_spaces_consecutive_queries() {
         let pacer = SearchPacer::new(Duration::from_secs(4), Duration::ZERO);
         let base = Instant::now();
-        // The first query of a run releases immediately.
         assert_eq!(pacer.reserve(base), Duration::ZERO);
-        // A second query issued back-to-back waits the full interval.
         assert_eq!(pacer.reserve(base), Duration::from_secs(4));
-        // Well past the interval since the reserved release: no wait.
         assert_eq!(pacer.reserve(base + Duration::from_secs(20)), Duration::ZERO);
     }
 
@@ -625,9 +548,7 @@ mod tests {
     fn pacer_jitter_rides_on_top_of_the_interval_after_the_first_query() {
         let pacer = SearchPacer::new(Duration::from_secs(4), Duration::from_millis(1_500));
         let base = Instant::now();
-        // First query: immediate and jitter-free.
         assert_eq!(pacer.reserve(base), Duration::ZERO);
-        // Second: the interval plus a jitter strictly under the ceiling.
         let wait = pacer.reserve(base);
         assert!(
             wait >= Duration::from_secs(4) && wait < Duration::from_millis(5_500),
@@ -645,8 +566,6 @@ mod tests {
         let search = SearchTool::new(Some(SearxngClient::new(&server.base_url).unwrap()));
         let first = search.search("Widget Co earnings").unwrap();
         assert_eq!(first.len(), 1);
-        // A repeat — and a case/whitespace-varied repeat — both serve from the
-        // run-scoped cache, so SearXNG is hit exactly once.
         let again = search.search("Widget Co earnings").unwrap();
         let varied = search.search("  widget   co   EARNINGS ").unwrap();
         assert_eq!(again, first);
@@ -658,8 +577,6 @@ mod tests {
     fn normalize_query_folds_case_and_whitespace_but_keeps_punctuation() {
         assert_eq!(normalize_query("  Widget   Co  Earnings "), "widget co earnings");
         assert_eq!(normalize_query("widget co earnings"), "widget co earnings");
-        // Punctuation is preserved: SearXNG operators must stay distinct, so a
-        // `!engine` / `:lang` query never collides with the plain one.
         assert_eq!(normalize_query("!images   AAPL"), "!images aapl");
         assert_ne!(normalize_query("!images AAPL"), normalize_query("images AAPL"));
     }

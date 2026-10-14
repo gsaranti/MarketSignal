@@ -1,33 +1,11 @@
-//! The analyst skills library — a shared catalog of reusable analytical lenses
-//! supplied to the main agent and the three Bull/Bear/Balanced analysts (`docs/analyst-skills.md`).
-//!
-//! Each skill carries a method [`Skill::body`] (the analytical lens — which baseline series
-//! to read and how to judge them) and an explicit [`Skill::output`] verdict shape (the
-//! structured conclusion the lens should yield). Each consumer supplies the **whole
-//! library** ([`CATALOG`]) into its prompt in one pass via [`render_library`]; the model
-//! applies the lenses the packet warrants and folds each verdict into its own output
-//! (the main agent's unified thesis, an analyst's structured review). The bodies are
-//! **consumer-neutral** — where each verdict lands is set by the per-consumer intro passed to
-//! [`render_library`], not by the body — so the same lens serves both stages without pulling
-//! an analyst toward final-synthesis behavior.
-//!
-//! Three design calls, all recorded against the doc:
-//! - **Delivery:** the library is small (~150 tokens/skill), so all 16 skills ship in full
-//!   every report. The doc's *progressive disclosure* (a phase-1 selection round-trip) was
-//!   removed as net-negative at this size — it re-sent the whole packet to the model just to
-//!   save the frontmatter catalog, paying a round-trip and a fail-soft code path to trim
-//!   ~1.5k tokens. The model now self-selects which lenses apply, inline.
-//! - **Output:** the per-skill [`Skill::output`] is a **forcing function** — it disciplines
-//!   the model's per-lens verdict, which is then folded into the consumer's own output. It is
-//!   *not* a machine-readable channel: nothing is parsed back from the report or persisted
-//!   (the doc's per-skill output *schema* stays prose-level by design).
-//! - **Consumers:** the main agent (during synthesis) and the three Bull/Bear/Balanced
-//!   analysts (when forming their independent reviews) — the full original consumer set.
+//! The analyst skills library (`docs/analyst-skills.md`): the whole catalog
+//! ships in every prompt to the main agent and the three analysts, and the
+//! model self-selects which lenses apply. Bodies are consumer-neutral; the
+//! per-consumer intro passed to [`render_library`] sets where each verdict
+//! lands. Each `output` is a forcing function, never parsed back or persisted.
 
-/// One analytical skill. `name` + `description` identify it — the `description` is taken
-/// verbatim from `docs/analyst-skills.md`. `body` is the analytical method (the lens the
-/// agent applies); `output` is the structured verdict the lens should yield — a forcing
-/// function folded into the consumer's own output, never parsed back or persisted.
+/// `description` is verbatim from `docs/analyst-skills.md`; `output` is a
+/// forcing function on the model's per-lens verdict, never parsed back.
 #[derive(Debug)]
 pub struct Skill {
     pub name: &'static str,
@@ -36,11 +14,8 @@ pub struct Skill {
     pub output: &'static str,
 }
 
-/// The authored skills library. Each `body` grounds its lens in baseline data the Step-3
-/// scan already gathers and closes with the consumer-neutral role its verdict plays; each
-/// `output` names the structured verdict the lens must produce. Extending the library is
-/// purely additive — a follow-on appends entries here and they reach every consumer's prompt
-/// automatically.
+/// Extending the library is purely additive: an appended entry reaches every
+/// consumer's prompt automatically.
 pub const CATALOG: &[Skill] = &[
     Skill {
         name: "Market Regime Analysis",
@@ -270,15 +245,10 @@ with the largest asymmetry; and where positioning is most vulnerable.",
     },
 ];
 
-/// Render the whole [`CATALOG`] as a prompt block: the supplied `intro` followed by one
-/// labeled sub-block per skill carrying its method `body` and the structured `output`
-/// verdict it should yield (the `Verdict to produce —` forcing function). Returns an empty
-/// string when the catalog is empty so a caller appends nothing.
-///
-/// The per-skill format and the verdict marker live here, in one place — both consumers
-/// (the main agent's synthesis prompt and the three analysts' review prompts) supply their
-/// own `intro` and share this body, so the marker convention can't drift between them. The
-/// `intro` carries its own leading whitespace.
+/// The per-skill format and the `Verdict to produce —` marker live here so the
+/// convention can't drift between consumers. `intro` carries its own leading
+/// whitespace; an empty catalog renders an empty string so a caller appends
+/// nothing.
 pub fn render_library(intro: &str) -> String {
     if CATALOG.is_empty() {
         return String::new();
@@ -335,7 +305,6 @@ mod tests {
             assert!(block.contains(s.body), "missing body for {}", s.name);
             assert!(block.contains(s.output), "missing output for {}", s.name);
         }
-        // The verdict marker is the forcing function — one source of truth for both consumers.
         assert!(block.contains("Verdict to produce —"), "{block}");
     }
 

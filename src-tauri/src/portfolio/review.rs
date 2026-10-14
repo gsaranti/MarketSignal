@@ -1,12 +1,9 @@
-//! The self-review (`docs/portfolio-workflow.md` §Step 6e;
-//! `docs/portfolio-analysis.md` §The per-holding pipeline, §Outcome learning):
-//! on a continuity run the reasoner reviews the prior position against what has
-//! happened since, before this run's thesis document is written. This module
-//! holds what the review reads — PRIOR POSITION and the REALIZED block, both
-//! computed deterministically off the dossier, the engine's output and the
-//! holding's accuracy record — and the message itself. The review is prose,
-//! read as text and validated by nothing; this run's thesis-document message is
-//! its only reader.
+//! The self-review (`docs/portfolio-workflow.md` §Step 6e): on a continuity run
+//! the reasoner reviews the prior position against what has happened since,
+//! before this run's thesis document is written. This module renders what the
+//! review reads — PRIOR POSITION and REALIZED, computed deterministically — and
+//! the message itself. The review is prose, validated by nothing; this run's
+//! thesis-document message is its only reader.
 
 use chrono::NaiveDate;
 
@@ -30,11 +27,7 @@ pub enum ReviewSubject<'a> {
     RoleRisk,
 }
 
-/// What the self-review reads (`docs/portfolio-workflow.md` §Step 6e): the
-/// dossier (the prior position, the prior thesis document and the accuracy
-/// record ride it), the run's Treasury prints FETCHED VALUES states, this
-/// run's analysis, the prior document's split-context line, the split bridge
-/// since the prior pass and this run's engine subject.
+/// What the self-review reads (`docs/portfolio-workflow.md` §Step 6e).
 pub struct ReviewInput<'a> {
     pub dossier: &'a HoldingDossier,
     pub rates: &'a RateAnchors,
@@ -62,12 +55,8 @@ pub type ReviewPrompt = DistillPrompt;
 const PART_1: &str = "======== PART 1: INPUTS ========\n";
 const PART_2: &str = "\n======== PART 2: TASK ========\n\n";
 
-/// The review message (`docs/portfolio-workflow.md` §Step 6e): one message in
-/// two parts. Part 1, in page order: the holding header with the analysis
-/// date, FETCHED VALUES, PRIOR POSITION, PRIOR THESIS verbatim with any
-/// split-context line, ANALYSIS (this run's — the prior analysis stays out,
-/// already folded into it) and REALIZED. Part 2 asks for the review, within
-/// its length band.
+/// The review message (`docs/portfolio-workflow.md` §Step 6e). The prior
+/// analysis stays out of Part 1: this run's analysis already folds it in.
 pub fn review_prompt(input: &ReviewInput) -> ReviewPrompt {
     let system = "You are an investment analyst reviewing the prior position on one holding for \
 a portfolio review. Part 1 of the message gives the inputs. Part 2 says what the review covers \
@@ -160,9 +149,8 @@ fn per_share(v: Option<(f64, bool)>) -> String {
     }
 }
 
-/// The one-sentence gloss for the bridge's marks, where they apply: a value
-/// withheld where the bridge was unresolvable, a value marked bridged where a
-/// split re-based the series; none where the series was not re-based.
+/// The one-sentence gloss for the bridge's marks; empty where the series was
+/// not re-based.
 fn basis_gloss(bridge: Option<f64>) -> &'static str {
     match bridge {
         None => {
@@ -178,9 +166,8 @@ fn basis_gloss(bridge: Option<f64>) -> &'static str {
     }
 }
 
-/// The action line PRIOR POSITION carries — chosen in the prior analysis with
-/// its rationale less the app's caveat, or set by rule after it with none
-/// (`docs/portfolio-analysis.md` §Portfolio action, mirrored).
+/// The action line PRIOR POSITION carries, its rationale less the app's caveat
+/// (`docs/portfolio-analysis.md` §Portfolio action).
 fn action_lines(prior: &crate::portfolio::HoldingVerdict) -> String {
     let Some(action) = crate::portfolio::carried_action(prior) else {
         return String::new();
@@ -204,12 +191,8 @@ fn action_lines(prior: &crate::portfolio::HoldingVerdict) -> String {
     }
 }
 
-/// PRIOR POSITION (`docs/portfolio-workflow.md` §Step 6e): on a priced prior,
-/// the prior run's date and the price then, its action and rationale, its
-/// conviction and its three expected prices each with its horizon date, every
-/// price on today's basis; on a role read, the action and rationale alone;
-/// after an abstention, the retained document's date and price then, and that
-/// a later analysis made no call, so nothing else is on record.
+/// PRIOR POSITION (`docs/portfolio-workflow.md` §Step 6e), every price on
+/// today's basis.
 fn prior_position_section(input: &ReviewInput) -> PriorPosition {
     let d = input.dossier;
     let Some(prior) = d.prior_verdict.as_ref() else {
@@ -289,7 +272,7 @@ fn prior_position_section(input: &ReviewInput) -> PriorPosition {
                 None => p.push_str("Price then: (gap).\n"),
             }
             // The abstention's own reason is the app's card text, never the
-            // model's: the line states the fact alone (ruled 2026-10-09).
+            // model's, so the line states the fact alone.
             p.push_str(
                 "A later analysis made no call, so no action, conviction or expected price is on \
                  record; the document under PRIOR THESIS states its own.\n",
@@ -429,11 +412,9 @@ fn price_block(d: &HoldingDossier) -> String {
     p
 }
 
-/// EXPECTED PRICES: each prior expected price at its horizon date — once the
-/// date has passed (strictly before this run's session, the due rule), the
-/// close read and the per-check score, the accuracy pass's own check over a
-/// record of the prior position; before it, not reached, the path so far
-/// standing under PRICE. Omitted where the prior stated no price.
+/// EXPECTED PRICES: each prior expected price at its horizon date, scored by
+/// the accuracy pass's own check once the date has passed (strictly before
+/// this run's session, the due rule); omitted where the prior stated no price.
 fn expected_prices_block(input: &ReviewInput, g: &GradedVerdict) -> String {
     let d = input.dossier;
     if prior_prices(g).iter().all(|(_, v)| v.is_none()) {
@@ -442,9 +423,8 @@ fn expected_prices_block(input: &ReviewInput, g: &GradedVerdict) -> String {
     let (Some(created), Some(session)) = (prior_session(d), run_session(d)) else {
         return String::new();
     };
-    // The prior position as a price record — the run's spot and its anchor
-    // bar, its model prices — so the check reads the close and the bridge
-    // exactly as the accuracy pass would.
+    // The prior position as a price record, so the check reads the close and
+    // the bridge exactly as the accuracy pass would.
     let record = PriceRecord {
         symbol: d.position.symbol.clone(),
         created_on: iso(created),
@@ -504,11 +484,7 @@ fn expected_prices_block(input: &ReviewInput, g: &GradedVerdict) -> String {
 }
 
 /// ACCURACY SCORES and the checks since the prior analysis
-/// (`docs/portfolio-analysis.md` §Outcome learning): the six scores, each with
-/// the date of the check that last moved it and whether the prior analysis
-/// read it; then every check written after the prior pass's mark, newest by
-/// horizon date up to the drafted count, with the total where the cap trimmed
-/// some — or, when none landed, the one fixed sentence.
+/// (`docs/portfolio-analysis.md` §Outcome learning).
 fn accuracy_block(d: &HoldingDossier) -> String {
     let Some(acc) = &d.accuracy else {
         return "\nACCURACY SCORES\nThe accuracy record could not be read this run.\n".to_string();
@@ -549,14 +525,13 @@ fn accuracy_block(d: &HoldingDossier) -> String {
                  written: the scores above are the ones it read, its thesis document under PRIOR \
                  THESIS.\n"
             }
-            // No mark and no line: no check exists on the holding's forecasts.
             None => "\nCHECKS SINCE THE PRIOR ANALYSIS\nNo check has been written on this holding's \
                      forecasts.\n",
         });
         return p;
     }
     // With no mark the prior read no accuracy record: every check is unread,
-    // but not every one landed after it (ruled 2026-10-09).
+    // but not every one landed after it.
     p.push_str(match mark {
         Some(_) => {
             "\nCHECKS SINCE THE PRIOR ANALYSIS\nEvery line landed after the prior analysis was \
@@ -712,11 +687,9 @@ fn metric_unit(name: &str) -> (Unit, usize) {
     }
 }
 
-/// COMPUTED READS: the engine's own grade, scores, risk tier, capital-efficiency
-/// read, price bands and metrics at the prior analysis beside this run's — the
-/// prior bands on today's basis through the bridge, withheld where it was
-/// unresolvable — and any method change named for what it changed on the
-/// prior's own branch, absent where it changed nothing.
+/// COMPUTED READS: the engine's reads at the prior analysis beside this run's,
+/// the prior bands on today's basis through the bridge, and any method change
+/// named for what it changed on the prior's own branch.
 fn computed_then_now_block(input: &ReviewInput, g: &GradedVerdict, now: &EngineOutput) -> String {
     let d = input.dossier;
     let branch = if g.fund_class_label.is_some() {
@@ -822,10 +795,7 @@ fn prior_band<'a>(g: &'a GradedVerdict, name: &str) -> Option<&'a crate::portfol
 }
 
 /// The grade-parameter boundary named for what it changed
-/// (`docs/portfolio-analysis.md` §Starting parameters): a band
-/// recalibration, the fund momentum re-homing, the fund sector-P/E
-/// exchange-basis correction, the stock scores' factor rebuild, or the letter
-/// cutoffs alone.
+/// (`docs/portfolio-analysis.md` §Starting parameters).
 fn grade_boundary_line(change: engine::GradeParameterChange) -> &'static str {
     match change {
         engine::GradeParameterChange::Letters => {
@@ -854,8 +824,7 @@ fn grade_boundary_line(change: engine::GradeParameterChange) -> &'static str {
 }
 
 /// The `role_risk_only` REALIZED block (`docs/portfolio-workflow.md` §Step
-/// 6e): the price and the NAV then and now, and the exposure and expense reads
-/// then and now — no accuracy scores, since the branch states no price.
+/// 6e) — no accuracy scores, since the branch states no price.
 fn role_risk_realized(input: &ReviewInput) -> String {
     let d = input.dossier;
     let then = d.prior_fund_exposure.as_ref();
@@ -934,10 +903,7 @@ fn role_risk_realized(input: &ReviewInput) -> String {
 // ---- PART 2 ------------------------------------------------------------------
 
 /// Part 2: the review's items in output order, each naming the Part 1 section
-/// it draws on — each expected price against what happened, each falsifier
-/// and trigger tripped or fired or not, whether the thesis survives, where the
-/// prior read was right or wrong and why, what to revise, and what should
-/// change in how the holding is analyzed — within the review's length band.
+/// it draws on, within the review's length band.
 fn task_section(input: &ReviewInput, position: &PriorPosition) -> String {
     let role = position.role_read || matches!(input.subject, ReviewSubject::RoleRisk);
     let mut p = String::from(PART_2);
@@ -1005,8 +971,7 @@ mod tests {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
-        // The review's own reads off this run's series: the price now, the
-        // close the move is measured from, the path since and the horizon
+        // This run's series: the base close, the path since and the horizon
         // closes.
         d.financials.daily_closes = vec![
             bar("2026-06-30", 100.0),
@@ -1114,7 +1079,6 @@ mod tests {
             assert!(part2.contains(named), "Part 2 never names {named}:\n{part2}");
         }
         assert!(part2.contains("The review runs 400 to 900 words."));
-        // No app concept reaches the model.
         for banned in ["engine", "episode", "self-review", "arm", "pipeline", "run id"] {
             assert!(!user.to_lowercase().contains(&format!(" {banned} ")), "{banned}:\n{user}");
         }
@@ -1160,9 +1124,7 @@ mod tests {
         // close on it scores the prior price (100 vs 110: 90.9).
         assert!(user.contains("- three months (2026-10-01): close $110.00 on 2026-10-01; score 90.9.\n"), "{user}");
         assert!(user.contains("- twelve months (2027-07-01): not reached.\n"), "{user}");
-        // The path so far: the highest and lowest closes since the prior session.
         assert!(user.contains("high $120.00 on 2026-07-15, low $90.00 on 2026-08-14."), "{user}");
-        // The move since: spot over the newest close before the prior session.
         assert!(user.contains("Now: $115.00 per share, +15.0% since the prior analysis (from the close of $100.00 on 2026-06-30)."), "{user}");
         // A passed horizon whose close is out of reach is written unscorable.
         let mut gap = d.clone();
@@ -1206,7 +1168,6 @@ mod tests {
         d.prior_accuracy_read_through = None;
         let user = render(&d, &now, Some(1.0));
         assert!(user.contains("The 12 lines with the newest horizon dates of 14.\n"), "{user}");
-        // An unreadable store says so.
         d.accuracy = None;
         let user = render(&d, &now, Some(1.0));
         assert!(user.contains("ACCURACY SCORES\nThe accuracy record could not be read this run.\n"), "{user}");
@@ -1256,13 +1217,10 @@ mod tests {
             ),
             "{user}"
         );
-        // An unresolvable bridge withholds the prior bands.
         let user = render(&d, &now, None);
         assert!(user.contains("three-month withheld → "), "{user}");
     }
 
-    /// Each grade boundary names what it changed: a stock's factor rebuild
-    /// moves its scores and letter, the redrawn cutoffs a fund's letter alone.
     #[test]
     fn the_grade_boundary_lines_name_what_moved() {
         use engine::GradeParameterChange::*;
@@ -1368,7 +1326,7 @@ mod tests {
             let (then, now) = s.split_once(" → ").unwrap();
             (then.to_string(), now.to_string())
         };
-        // Codex's pair: a move far past the old twelve-decimal cap.
+        // A move far past any fixed-decimal cap.
         let (then, now) = sides(then_now(Some(50.0), Some(50.00000000000001), Unit::Plain, 0));
         assert_ne!(then, now);
         // A percentage one ulp apart: scaling by 100 could round the two to

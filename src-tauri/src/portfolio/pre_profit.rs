@@ -1,27 +1,14 @@
-//! The **pre-profit execution / financing overlay** (`docs/portfolio-analysis.md`
-//! §Starting parameters; `docs/portfolio-workflow.md` §Step 6b). A priced stock
-//! that is not yet operating-profitable — or has no positive forward-EPS consensus
-//! while burning cash — carries a deterministic financing read from its
-//! statements: runway, margin progression, capital intensity, and dilution.
-//!
-//! The overlay is **conviction / risk / action context only** — never another grade
-//! component, and never a license for the model to calculate a number: the engine
-//! computes the statement legs, their states, and the rule consequences; the rule
-//! consequences bind the engine arm (its own rung and feasible set observe them),
-//! the model interpreting the evidence unrestricted, departures annotated.
-//!
-//! The **execution read** — the issuer's guidance against its delivered results —
-//! has **no deterministic producer**: the research reports the issuer's operating
-//! observations as dated, sourced prose, the engine computes no attainment from
-//! them, and the execution leg types `unscorable` and enters no conjunction.
-//! Severe deterioration reads from the statement legs alone.
+//! The pre-profit execution / financing overlay (`docs/portfolio-analysis.md`
+//! §Starting parameters; `docs/portfolio-workflow.md` §Step 6b): a deterministic
+//! financing read — runway, margin progression, capital intensity, dilution —
+//! for a priced stock not yet operating-profitable. Context only, never a grade
+//! component; its rule consequences bind the engine arm, not the model's.
 
 use serde::{Deserialize, Serialize};
 
 use crate::portfolio::engine::CompanyFinancials;
 
-// ---- Calibration surface (NOT pinned — shadow-tune against live runs;
-//      `docs/portfolio-analysis.md` §Starting parameters, all drafted) ----------
+// ---- Calibration surface (`docs/portfolio-analysis.md` §Starting parameters) ----
 
 /// Financing-state runway bands, in months: `adequate` at or above 24, `watch` at
 /// 12–<24, `constrained` below 12 (`not_burning` when TTM burn is zero,
@@ -36,39 +23,15 @@ const MATERIAL_DILUTION_YOY: f64 = 0.15;
 /// AND at least 5 percentage points below the preceding two-quarter average.
 const ECONOMICS_MARGIN_DROP_PP: f64 = 0.05;
 
-/// The overlay's parameter version, stamped on every persisted overlay record so a
-/// retune — or a rule correction that changes what a record means — stays
-/// attributable (the suite's shared versioning discipline), and the checkpoint
-/// resume gate refuses a trail stamped under another. `pre-profit-v2`: the
-/// backfill obligation counts comparable (bound + actual) periods, so a v1
-/// overlay's absent backfill attempt is not read as a v2 waiver.
-/// `pre-profit-v3`: the guidance vintage policy (the 2026-08-24 review's
-/// Codex I4) — the execution read pairs an actual only against ex-ante
-/// guidance (dated on or before the period end and strictly before the
-/// period's earliest actual), the latest such revision binding, and a
-/// same-vintage conflict on either side drops the period; a v2 read could
-/// pair a results release's restated guidance against its own actual and
-/// selected among revisions by persistence order, so a v2 record's
-/// execution read does not mean what a v3 read means. `pre-profit-v4`: the
-/// reporting span is part of the comparison identity, so a full-year or
-/// half-year bound can never attain against a quarter ending on the same day,
-/// nor can unlike spans discharge one another's backfill depth.
-/// `pre-profit-v5`: the conviction ceilings are gone — the engine authors no
-/// conviction, so a repeated execution miss alone matches no rule and severe
-/// deterioration binds the add-family bar and the exit-family-only rule
-/// alone; a v4 record's `conviction_ceiling` field does not exist on this
-/// shape. `pre-profit-v6`: the execution leg types `unscorable` — no producer
-/// derives an attainment read from the observation history — and severe
-/// deterioration reads from the statement legs alone (economics deterioration
-/// plus constrained runway or material dilution), so a v5 record's execution
-/// read and its severe state do not mean what a v6 record's mean.
+/// The overlay's parameter version, stamped on every persisted overlay record so
+/// a retune or a rule correction that changes what a record means stays
+/// attributable; the checkpoint resume gate refuses a trail stamped under
+/// another. Move it with any such change.
 pub const PRE_PROFIT_PARAMETER_VERSION: &str = "pre-profit-v6";
 
-/// Boundary slack on the computed-ratio threshold tests: a value exactly on a
-/// documented boundary (a 15% YoY share rise, a 20% miss) can evaluate a few ULPs
-/// below its constant (`115.0 / 100.0 − 1.0 < 0.15` in f64), and the documented
-/// rules say "at least" — so each ratio test allows this tolerance rather than
-/// letting rounding decide a calibration boundary.
+/// Slack on the ratio threshold tests: a value exactly on a documented boundary
+/// can evaluate a few ULPs below its constant (`115.0 / 100.0 − 1.0 < 0.15` in
+/// f64), and the rules say "at least".
 const BOUNDARY_EPS: f64 = 1e-9;
 
 /// `value ≥ threshold`, tolerant of float rounding at the documented boundary.
@@ -79,11 +42,8 @@ fn at_least(value: f64, threshold: f64) -> bool {
 // ---- Eligibility ---------------------------------------------------------------
 
 /// Whether the stock enters the overlay (`docs/portfolio-analysis.md` §Starting
-/// parameters): **TTM operating income ≤ 0**, or **no positive forward-EPS
-/// consensus AND TTM free cash flow < 0**. Funds and `role_risk_only` holdings
-/// never enter. When the eligibility inputs themselves are missing the holding is
-/// **not entered** and the gap is recorded (`unscorable`), so no consequence
-/// machinery fires off absent data.
+/// parameters). Missing eligibility inputs leave the holding not entered with
+/// the gap recorded, so no consequence fires off absent data.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum PreProfitEligibility {
@@ -94,9 +54,9 @@ pub enum PreProfitEligibility {
 
 // ---- Statement-derived inputs ---------------------------------------------------
 
-/// The structured (statement) leg the engine computes at Step 6b — every field
-/// `None` when its inputs were missing, recorded in the overlay's unscorable gaps
-/// rather than fabricated (`docs/portfolio-workflow.md` §Step 6b).
+/// The statement leg (`docs/portfolio-workflow.md` §Step 6b); every field is
+/// `None` when its inputs were missing, recorded in the unscorable gaps rather
+/// than fabricated.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct StatementInputs {
     /// TTM operating income (four newest quarterly prints summed) — eligibility arm 1.
@@ -117,8 +77,7 @@ pub struct StatementInputs {
     /// TTM |capex| ÷ TTM revenue — context only; no rule consumes it.
     pub ttm_capex_intensity: Option<f64>,
     /// Split-adjusted year-over-year diluted-share change (the statement feed's
-    /// share counts are retroactively split-adjusted — verified against NVDA's
-    /// 2024 10:1 split, 2026-08-03: all 16 quarters read on the post-split basis).
+    /// share counts are retroactively split-adjusted).
     pub diluted_share_change_yoy: Option<f64>,
     /// The latest two-quarter average gross margin…
     pub gross_margin_recent_2q: Option<f64>,
@@ -143,11 +102,9 @@ pub enum FinancingState {
     Unscorable,
 }
 
-/// The overlay's execution leg — the issuer's guidance against its delivered
-/// results. It has **no deterministic producer** (`docs/portfolio-analysis.md`
-/// §Starting parameters): the research reports the issuer's operating
-/// observations as prose, the engine computes no attainment, so the leg carries
-/// its one state and enters no conjunction.
+/// The execution leg — the issuer's guidance against its delivered results. It
+/// has no deterministic producer (`docs/portfolio-analysis.md` §Starting
+/// parameters), so it carries its one state and enters no conjunction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum ExecutionLeg {
@@ -155,29 +112,23 @@ pub enum ExecutionLeg {
     Unscorable,
 }
 
-/// The overlay's deterministic rule consequences — separately attributed from the
-/// forensic rules (`docs/portfolio-analysis.md` §Starting parameters): constrained
-/// runway → the add-family bar; severe deterioration → the add-family bar and the
-/// exit-family-only action rule. Each binds the **engine arm** (its own action
-/// rung and feasible set observe them); the model's conviction and rung are
-/// unrestricted, with departures recorded as annotations. The engine caps no
-/// conviction: it authors none.
+/// The overlay's rule consequences (`docs/portfolio-analysis.md` §Starting
+/// parameters). Each binds the engine arm's own rung and feasible set; the
+/// model's rung is unrestricted, departures annotated.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OverlayConsequences {
     pub bar_add_family: bool,
-    /// Severe deterioration's exit-family-only rule ({trim, sell all}) — it
-    /// binds the engine arm's own rung and feasible set and renders as an engine
-    /// rule; the model's rung is unrestricted, departures annotated.
+    /// Severe deterioration's exit-family-only rule ({trim, sell all}).
     pub exit_family_only: bool,
     /// The engine-matched rules, recorded so a clamped value is reconstructable
     /// (the audit's matched-cap-rule leg).
     pub matched_rules: Vec<String>,
 }
 
-/// The complete persisted overlay record — computed for **every priced stock** (the
-/// eligibility result persists even when the stock does not enter), carried on the
-/// holding's audit row (`docs/storage.md §Local Analysis Suite Storage`). States and
-/// consequences are meaningful only under `eligibility == Eligible`.
+/// The persisted overlay record, computed for every priced stock (the eligibility
+/// result persists even when the stock does not enter) and carried on the
+/// holding's audit row (`docs/storage.md §Local Analysis Suite Storage`). States
+/// and consequences are meaningful only under `Eligible`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PreProfitOverlay {
     pub eligibility: PreProfitEligibility,
@@ -190,9 +141,7 @@ pub struct PreProfitOverlay {
     /// `None` = the dilution leg was unscorable.
     pub material_dilution: Option<bool>,
     /// Economics deterioration plus at least one of constrained runway and
-    /// material dilution — statement legs alone; financing plus dilution without
-    /// the economics leg cannot manufacture it, and the execution leg enters no
-    /// conjunction.
+    /// material dilution; the execution leg enters no conjunction.
     pub severe_deterioration: bool,
     pub consequences: OverlayConsequences,
     pub unscorable_gaps: Vec<String>,
@@ -207,8 +156,6 @@ impl PreProfitOverlay {
 
 // ---- Computation -----------------------------------------------------------------
 
-/// Compute the overlay for a priced stock: the statement leg, eligibility, and —
-/// when eligible — the derived statement states and rule consequences.
 pub fn compute_overlay(fin: &CompanyFinancials) -> PreProfitOverlay {
     let mut gaps: Vec<String> = Vec::new();
     let inputs = statement_inputs(fin, &mut gaps);
@@ -247,19 +194,16 @@ pub fn compute_overlay(fin: &CompanyFinancials) -> PreProfitOverlay {
     }
 }
 
-/// The statement leg (`docs/portfolio-workflow.md` §Step 6b): every value from
-/// comparable quarterly statements, every missing input a recorded gap. The rows
-/// are canonicalized first — sorted newest-first and deduplicated by period end,
-/// the shared statement policy (`engine::canonicalize_statements`) held here
-/// locally so the overlay stays order-independent standalone — so an
-/// out-of-order or duplicated feed response cannot shift the TTM / YoY / 2q
-/// windows.
+/// The statement leg (`docs/portfolio-workflow.md` §Step 6b): every missing
+/// input a recorded gap. The rows are canonicalized here first (newest-first,
+/// deduplicated by period end — `engine::canonicalize_statements`'s policy,
+/// held locally so the overlay stays order-independent standalone) so a
+/// shuffled or duplicated feed response cannot shift the TTM / YoY / 2q windows.
 fn statement_inputs(fin: &CompanyFinancials, gaps: &mut Vec<String>) -> StatementInputs {
-    // Sort newest-first with the latest filing winning a duplicated period (a
-    // restatement served twice must resolve to the restated print, never to wire
-    // order); `dedup_by` keeps the first of equal periods. The residual — equal
-    // period AND equal/absent filing dates with different values — falls back to
-    // first-served, the TTM basis's existing behavior.
+    // Newest-first, the latest filing winning a duplicated period so a
+    // restatement served twice resolves to the restated print, never to wire
+    // order; `dedup_by` keeps the first of equal periods, so equal or absent
+    // filing dates fall back to first-served.
     let mut income: Vec<&crate::portfolio::engine::QuarterlyIncomeRow> =
         fin.quarterly_income.iter().collect();
     income.sort_by(|a, b| {
@@ -279,10 +223,8 @@ fn statement_inputs(fin: &CompanyFinancials, gaps: &mut Vec<String>) -> Statemen
     cash_flow.dedup_by(|a, b| a.period_end == b.period_end);
     let cash_flow = &cash_flow;
 
-    // Fixed-width windows are honest only over consecutive quarters — a feed
-    // gap would silently stretch a "TTM" (or misdate the YoY pair) rather than
-    // fail it, so each window is gated on contiguity and degrades to the same
-    // unscorable-gap path a missing print takes.
+    // A feed gap would silently stretch a "TTM" or misdate the YoY pair, so each
+    // window is gated on contiguity and degrades to the unscorable-gap path.
     let income4_ok = income.len() >= 4
         && crate::portfolio::engine::quarters_contiguous(
             income[..4].iter().map(|r| r.period_end.as_str()),
@@ -296,8 +238,8 @@ fn statement_inputs(fin: &CompanyFinancials, gaps: &mut Vec<String>) -> Statemen
             cash_flow[..4].iter().map(|r| r.period_end.as_str()),
         );
 
-    // TTM sums over the four newest quarters — `None` unless all four carry the line
-    // (a partial sum would misstate the trailing year).
+    // `None` unless all four quarters carry the line: a partial sum would
+    // misstate the trailing year.
     let ttm_operating_income: Option<f64> = income4_ok
         .then(|| income[..4].iter().map(|r| r.operating_income).sum())
         .flatten();
@@ -330,9 +272,8 @@ fn statement_inputs(fin: &CompanyFinancials, gaps: &mut Vec<String>) -> Statemen
         .filter(|m| m.is_finite() && *m > 0.0)
         .is_some();
 
-    // Liquid resources: cash required; an absent short-term-investments line reads
-    // as zero (a genuinely-zero and an unreported STI line are indistinguishable at
-    // the adapter — the convention is recorded here, not silently).
+    // An absent short-term-investments line reads as zero: a genuine zero and an
+    // unreported line are indistinguishable at the adapter.
     let liquid_resources = fin
         .cash_and_equivalents
         .map(|c| c + fin.short_term_investments.unwrap_or(0.0));
@@ -357,11 +298,9 @@ fn statement_inputs(fin: &CompanyFinancials, gaps: &mut Vec<String>) -> Statemen
     let ttm_revenue: Option<f64> = income4_ok
         .then(|| income[..4].iter().map(|r| r.revenue).sum())
         .flatten();
-    // The one CROSS-statement ratio: numerator (cash-flow window) and
-    // denominator (income window) must cover the SAME trailing year — each
-    // window is internally contiguous, but a feed serving cash flow one
-    // quarter behind income would divide mismatched periods. Matching newest
-    // period-ends on two 4-contiguous windows aligns them whole.
+    // The one cross-statement ratio: a feed serving cash flow one quarter behind
+    // income would divide mismatched trailing years, so the two contiguous
+    // windows must share their newest period end.
     let windows_aligned = income4_ok
         && cash4_ok
         && income[0].period_end == cash_flow[0].period_end;
@@ -370,10 +309,8 @@ fn statement_inputs(fin: &CompanyFinancials, gaps: &mut Vec<String>) -> Statemen
         _ => None,
     };
 
-    // Split-adjusted YoY diluted-share change: newest quarter vs the same fiscal
-    // quarter one year back (index 4, newest-first — index arithmetic that is
-    // only a year apart when rows 0..=4 are contiguous). The feed's share counts
-    // are retroactively split-adjusted (NVDA 10:1 verified 2026-08-03).
+    // Newest quarter vs the same quarter a year back (index 4, newest-first) —
+    // only a year apart when rows 0..=4 are contiguous.
     let diluted_share_change_yoy = match (
         income5_ok.then(|| income[0].diluted_shares).flatten(),
         income5_ok.then(|| income[4].diluted_shares).flatten(),
@@ -385,8 +322,6 @@ fn statement_inputs(fin: &CompanyFinancials, gaps: &mut Vec<String>) -> Statemen
         gaps.push("pre-profit: YoY diluted-share change unscorable".into());
     }
 
-    // Two-quarter average gross margins: quarters 0–1 vs 2–3, each quarter's margin
-    // from gross profit (or revenue − cost of revenue) over positive revenue.
     let quarter_margin = |r: &crate::portfolio::engine::QuarterlyIncomeRow| -> Option<f64> {
         let rev = r.revenue.filter(|v| *v > 0.0)?;
         let gp = r.gross_profit.or(match (r.revenue, r.cost_of_revenue) {
@@ -404,8 +339,8 @@ fn statement_inputs(fin: &CompanyFinancials, gaps: &mut Vec<String>) -> Statemen
             _ => None,
         }
     };
-    // The 2q-vs-2q progression compares quarters 0–1 against 2–3, so it needs
-    // the same contiguous four-row run the TTM sums verified.
+    // Quarters 0–1 against 2–3 need the same contiguous four-row run the TTM
+    // sums verified.
     let gross_margin_recent_2q = income4_ok.then(|| two_q_avg(0, 1)).flatten();
     let gross_margin_preceding_2q = income4_ok.then(|| two_q_avg(2, 3)).flatten();
     let gross_margin_change_2q = match (gross_margin_recent_2q, gross_margin_preceding_2q) {
@@ -466,7 +401,6 @@ fn eligibility(inputs: &StatementInputs) -> PreProfitEligibility {
     }
 }
 
-/// The financing state over the runway bands.
 fn financing_state(inputs: &StatementInputs) -> FinancingState {
     let Some(burn) = inputs.ttm_cash_burn else {
         return FinancingState::Unscorable;
@@ -482,8 +416,6 @@ fn financing_state(inputs: &StatementInputs) -> FinancingState {
     }
 }
 
-/// Economics deterioration: recent two-quarter average gross margin non-positive
-/// AND ≥ 5pp below the preceding two-quarter average; `None` when unscorable.
 fn economics_deterioration(inputs: &StatementInputs) -> Option<bool> {
     match (inputs.gross_margin_recent_2q, inputs.gross_margin_change_2q) {
         (Some(recent), Some(change)) => {
@@ -493,17 +425,14 @@ fn economics_deterioration(inputs: &StatementInputs) -> Option<bool> {
     }
 }
 
-/// Material dilution: split-adjusted diluted shares up ≥ 15% YoY; `None` unscorable.
 fn material_dilution(inputs: &StatementInputs) -> Option<bool> {
     inputs
         .diluted_share_change_yoy
         .map(|change| at_least(change, MATERIAL_DILUTION_YOY))
 }
 
-/// Severe deterioration, statement legs alone: economics deterioration plus at
-/// least one of constrained runway and material dilution. Financing plus dilution
-/// without the economics leg cannot manufacture it, and the execution leg —
-/// unscorable, having no producer — enters no conjunction.
+/// Economics deterioration plus constrained runway or material dilution; the
+/// execution leg, having no producer, enters no conjunction.
 fn severe_deterioration(
     financing: FinancingState,
     economics: Option<bool>,
@@ -512,9 +441,8 @@ fn severe_deterioration(
     economics == Some(true) && (financing == FinancingState::Constrained || dilution == Some(true))
 }
 
-/// The deterministic rule consequences (`docs/portfolio-analysis.md` §Starting
-/// parameters) — the constrained-runway add-family bar and the
-/// severe-deterioration exit restriction, each binding the engine's own rung.
+/// The rule consequences (`docs/portfolio-analysis.md` §Starting parameters),
+/// each binding the engine's own rung.
 fn derive_consequences(financing: FinancingState, severe: bool) -> OverlayConsequences {
     let mut c = OverlayConsequences::default();
     if financing == FinancingState::Constrained {
@@ -541,7 +469,6 @@ mod tests {
         CompanyFinancials, ConsensusEstimate, QuarterlyCashFlowRow, QuarterlyIncomeRow,
     };
 
-    /// A quarterly income row with the overlay-relevant lines set.
     fn income_row(
         period: &str,
         operating_income: Option<f64>,
@@ -644,7 +571,7 @@ mod tests {
 
     #[test]
     fn missing_inputs_are_unscorable_not_entered() {
-        // No statements at all: both arms unresolvable → not entered, gap named.
+        // No statements at all: both arms unresolvable.
         let fin = CompanyFinancials {
             symbol: "GAPPY".into(),
             ..Default::default()
@@ -665,7 +592,7 @@ mod tests {
     #[test]
     fn profitable_arm_false_with_unscorable_burn_arm_is_unscorable() {
         // Arm 1 decisively false, arm 2 open (no consensus, no cash-flow prints):
-        // OR over {false, unknown} = unknown → not entered with the gap recorded.
+        // OR over {false, unknown} = unknown.
         let mut fin = burning_stock();
         for row in &mut fin.quarterly_income {
             row.operating_income = Some(10.0e6);
@@ -752,7 +679,6 @@ mod tests {
         let overlay = compute_overlay(&fin);
         assert_eq!(overlay.material_dilution, Some(true));
         assert_eq!(overlay.economics_deterioration, Some(true));
-        // Economics + dilution → severe, statement legs alone.
         assert!(overlay.severe_deterioration);
         assert!(overlay.consequences.bar_add_family);
         assert!(overlay.consequences.exit_family_only);
@@ -810,8 +736,7 @@ mod tests {
 
     #[test]
     fn the_execution_leg_is_unscorable_and_enters_no_conjunction() {
-        // Constrained runway alone: the leg has no producer, enters no
-        // conjunction, and the record says so.
+        // Constrained runway alone.
         let mut fin = burning_stock();
         fin.cash_and_equivalents = Some(50.0e6);
         fin.short_term_investments = None;
@@ -821,16 +746,12 @@ mod tests {
         assert!(!overlay.severe_deterioration);
         assert!(overlay.consequences.bar_add_family, "the runway bar stands alone");
         assert!(!overlay.consequences.exit_family_only);
-        // The leg's one state is what persists.
         let json = serde_json::to_value(&overlay).unwrap();
         assert_eq!(json["execution"], serde_json::json!({ "state": "unscorable" }));
     }
 
     #[test]
     fn the_overlay_stamp_is_pre_profit_v6() {
-        // The statement-only severe rule and the unscorable execution leg change
-        // what a persisted record's severe state means, so the stamp moves and
-        // the resume gate refuses a v5 trail.
         assert_eq!(PRE_PROFIT_PARAMETER_VERSION, "pre-profit-v6");
         let overlay = compute_overlay(&burning_stock());
         assert_eq!(overlay.parameter_version, "pre-profit-v6");
@@ -849,10 +770,8 @@ mod tests {
 
     #[test]
     fn capex_intensity_requires_period_aligned_windows() {
-        // Each statement window is internally contiguous, but cash flow trails
-        // income by one quarter — the cross-statement ratio would divide
-        // mismatched trailing years, so it gaps instead. The single-source
-        // reads keep their own windows.
+        // Cash flow trails income by one quarter: each window is contiguous, but
+        // the cross-statement ratio would divide mismatched trailing years.
         let mut fin = burning_stock();
         for row in &mut fin.quarterly_cash_flow {
             row.capex = Some(-10.0e6);
@@ -867,15 +786,12 @@ mod tests {
         assert!(overlay.statement_inputs.ttm_free_cash_flow.is_some());
     }
 
-    // ---- Clamp + schema labels ----
-
     // ---- Canonicalization + boundaries ----
 
     #[test]
     fn statement_windows_survive_shuffled_and_duplicated_rows() {
-        // A history whose halves genuinely differ — recently loss-making after a
-        // profitable past — so window composition is order-sensitive: raw wire
-        // order reversed would read the OLD profitable quarters as the TTM.
+        // A history whose halves differ (loss-making after a profitable past),
+        // so wire order reversed would read the old profitable quarters as the TTM.
         let mut fin = burning_stock();
         for (i, row) in fin.quarterly_income.iter_mut().enumerate() {
             row.operating_income = Some(if i < 4 { -50.0e6 } else { 100.0e6 });
@@ -887,8 +803,6 @@ mod tests {
         let canonical = compute_overlay(&fin);
         assert!(canonical.is_eligible());
 
-        // The same prints served out of order with two periods duplicated must
-        // produce the identical overlay read.
         let mut shuffled_fin = fin.clone();
         shuffled_fin.quarterly_income.reverse();
         shuffled_fin.quarterly_cash_flow.reverse();
@@ -904,8 +818,7 @@ mod tests {
 
     #[test]
     fn conflicting_duplicate_periods_resolve_to_the_latest_filing_not_wire_order() {
-        // The same quarter served twice with different prints (a restatement): the
-        // later-filed print must win in either arrival order.
+        // The same quarter served twice with different prints (a restatement).
         let mut fin = burning_stock();
         fin.quarterly_income[0].filing_date = Some("2026-07-01".into());
         let mut restated_income = fin.quarterly_income[0].clone();
@@ -936,8 +849,7 @@ mod tests {
 
     #[test]
     fn documented_boundaries_match_exactly_despite_float_rounding() {
-        // Dilution exactly at the 15% boundary: 115/100 − 1 rounds a few ULPs
-        // below 0.15 in f64 — the documented "at least 15%" must still match.
+        // 115/100 − 1 rounds a few ULPs below 0.15 in f64.
         let mut fin = burning_stock();
         fin.quarterly_income[0].diluted_shares = Some(115.0e6);
         for row in fin.quarterly_income[1..].iter_mut() {

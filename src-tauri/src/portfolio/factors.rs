@@ -1,24 +1,9 @@
-//! The **multi-factor quant composite** — the shared engine's quant lens
-//! (`docs/trade-opportunities.md` §The lenses, §Starting parameters;
-//! `docs/trade-opportunities-workflow.md` §Step 5c). Each factor is scored against
-//! a **sector-adjusted absolute band** — the value winsorized at the band's edges,
-//! 50 at the sector's anchor — and against **the company's own history** (where it
-//! sits within its own trailing distribution), the two blended; a factor that
-//! failed to resolve is **imputed to its band's neutral midpoint**, so a missing
-//! call can't silently sink a name. The factors roll up to axes, and the axes to
-//! **one composite** weighted by the archetype — never chained cutoffs, since
-//! value and momentum are negatively correlated. It is deliberately not a
-//! within-cohort rank: no honest within-app cross-section exists to rank within.
-//! The factors a name reads follow its **metric class** — a bank, another
-//! financial, an equity REIT or a general business — since margin, EBIT and
-//! debt / equity reads misgrade the businesses whose debt is their raw material or
-//! whose depreciation buries their cash earnings.
-//!
-//! Pure over [`CompanyFinancials`], the profile sector and industry, the
-//! value-creation read and a caller-supplied revision pace, so every rule is unit-testable offline. The
-//! output exposes the methodology — the band each factor read, its own-history
-//! depth, whether it was winsorized or imputed — so the model can dispute a
-//! derivation and not merely a number.
+//! The multi-factor quant composite (`docs/trade-opportunities.md` §The lenses,
+//! §Starting parameters; `docs/trade-opportunities-workflow.md` §Step 5c): each
+//! factor scored on a sector-adjusted band blended with the company's own
+//! history, rolled up through axes to one archetype-weighted composite, with
+//! the methodology exposed. Pure over [`CompanyFinancials`], so every rule is
+//! unit-testable offline.
 
 use serde::{Deserialize, Serialize};
 
@@ -26,9 +11,7 @@ use super::engine::{CompanyFinancials, DatedValue};
 use super::value_creation::{ttm_windows, TtmWindow, ValueCreationRead};
 
 // ---------------------------------------------------------------------------
-// Calibration surface — drafted or sourced as labelled below, calibratable
-// (`docs/trade-opportunities.md` §Starting parameters: the factor normalization
-// basis and archetype composite weights rows).
+// Calibration surface (`docs/trade-opportunities.md` §Starting parameters).
 // ---------------------------------------------------------------------------
 
 /// The fewest prior own-history points a factor's own-history leg stands on;
@@ -48,12 +31,10 @@ pub const NEUTRAL_SCORE: f64 = 50.0;
 pub const ARCHETYPE_TILT: f64 = 2.0;
 
 /// A valuation factor's own history stops at a quarter-over-quarter move in the
-/// diluted share count beyond this fraction. The dated closes are split-adjusted
-/// while a statement's share count is as filed, so a past market capitalization
-/// across a split — or a transformative issuance — would stand on a different
-/// basis. A split since the newest quarter needs no stop: every past market
-/// capitalization is rescaled onto the quote's share basis
-/// ([`window_market_cap`]).
+/// diluted share count beyond this fraction: the dated closes are split-adjusted
+/// while a filed share count is not, so a past market capitalization across a
+/// split would stand on a different basis. A split since the newest quarter
+/// needs no stop ([`window_market_cap`] rescales onto the quote's basis).
 pub const OWN_HISTORY_SHARE_JUMP: f64 = 0.10;
 
 /// The trading sessions per year the volatility read annualizes over, and the
@@ -74,33 +55,11 @@ pub(crate) const PRICE_PROXIMITY_DAYS: i64 = 10;
 
 /// One sector's anchors — the 50-point centre of each sector-banded factor, plus
 /// the gross-margin anchor the value-creation read's moat proxy compares against.
-///
-/// **Sourced** (Aswath Damodaran's January 2026 US industry tables, NYU Stern):
-/// each sector's value is the plain mean over its representative industries
-/// ([`SECTOR_ANCHORS`]) — of the yields for the multiples, of the levels for the
-/// margins. EBIT/EV is the reciprocal of EV/EBIT over positive-EBITDA firms
-/// (`vebitda.html`); earnings yield the reciprocal of aggregate market cap over
-/// trailing net income of money-making firms (`pedata.html`); book-to-price the
-/// reciprocal of P/BV (`pbvdata.html`); gross margin and the pre-tax unadjusted
-/// operating margin from `margin.html`. Damodaran's figures are aggregates
-/// (summed numerators over summed denominators, mega-cap weighted), not medians.
-///
-/// **Drafted** (no matching published definition): gross profitability (GP /
-/// assets — no source publishes it by sector); debt / equity (Damodaran's ratio
-/// is market-value debt over market equity, the band reads book debt over book
-/// equity); and volatility (Damodaran's standard deviation is a multi-year
-/// average of firm-level figures, the band reads one year of realized daily
-/// returns). The FCF-yield anchor is no column at all: it is the earnings-yield
-/// anchor × the FCF-conversion band's anchor ([`fcf_yield_anchor`]).
-///
-/// **Financial Services** serves the sector's non-bank names alone — its banks
-/// read [`BANK_ANCHORS`] — and those names read only its earnings yield,
-/// book-to-price, debt / equity and volatility ([`MetricClass::OtherFinancial`]).
-/// Its earnings yield and book-to-price are sourced over the non-bank industries
-/// named below. Its EBIT/EV (the mean over property / casualty insurers and
-/// investments & asset management alone), gross profitability and operating
-/// margin are unread by the composite. Its gross margin is a placeholder the
-/// value-creation read's moat proxy alone compares against.
+/// Which columns are sourced (Damodaran's January 2026 US industry tables, the
+/// plain mean over the representative industries listed on [`SECTOR_ANCHORS`])
+/// and which are drafted: `docs/trade-opportunities.md` §Starting parameters,
+/// the factor normalization basis row. The FCF-yield anchor is derived, not a
+/// column ([`fcf_yield_anchor`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SectorAnchors {
     /// The FMP sector label this row serves, or `"market-wide"`.
@@ -116,8 +75,8 @@ pub struct SectorAnchors {
     pub volatility: f64,
 }
 
-/// The market-wide row — Damodaran's total market excluding financials for the
-/// sourced columns — and the fallback for an unmapped or absent sector.
+/// The market-wide row (Damodaran's total market excluding financials for the
+/// sourced columns), read for an unmapped or absent sector.
 pub const MARKET_ANCHORS: SectorAnchors = SectorAnchors {
     label: "market-wide",
     earnings_yield: 0.0347,
@@ -275,15 +234,10 @@ pub fn fcf_yield_anchor(anchors: &SectorAnchors) -> f64 {
     anchors.earnings_yield * FCF_CONVERSION_BAND.0
 }
 
-/// The bank row — banks and mortgage REITs ([`MetricClass::Bank`]).
-///
-/// **Sourced**: earnings yield and book-to-price are the plain mean over
-/// Damodaran's January 2026 money-center and regional bank industries, read by
-/// the same rule as [`SECTOR_ANCHORS`]. Return on assets is the FDIC's full-year
-/// 2025 figure for all insured institutions (Quarterly Banking Profile, Q4 2025),
-/// an industry level rather than a listed-bank aggregate.
-///
-/// **Drafted**: volatility, as on every sector row.
+/// The bank row — banks and mortgage REITs ([`MetricClass::Bank`]). Earnings
+/// yield and book-to-price are the mean over Damodaran's money-center and
+/// regional bank industries, return on assets the FDIC's full-year 2025 figure;
+/// volatility is drafted (`docs/trade-opportunities.md` §Starting parameters).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BankAnchors {
     pub label: &'static str,
@@ -302,14 +256,9 @@ pub const BANK_ANCHORS: BankAnchors = BankAnchors {
     volatility: 0.28,
 };
 
-/// The equity-REIT row ([`MetricClass::EquityReit`]).
-///
-/// **Sourced**: the FFO yield is Nareit's 2025 FFO for all listed US equity REITs
-/// over the FTSE Nareit All Equity REITs index's market capitalization at
-/// 2025-12-31 (a P/FFO near 17.6×); debt over total assets is Nareit's book-basis
-/// leverage for the same universe, read approximately off its chart.
-///
-/// **Drafted**: FFO over total assets and volatility.
+/// The equity-REIT row ([`MetricClass::EquityReit`]). The FFO yield and debt
+/// over total assets are Nareit's 2025 figures; FFO over total assets and
+/// volatility are drafted (`docs/trade-opportunities.md` §Starting parameters).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReitAnchors {
     pub label: &'static str,
@@ -372,24 +321,19 @@ pub enum Archetype {
 pub enum MetricClass {
     /// Every name outside the three classes below — the full factor set.
     General,
-    /// A bank or a mortgage REIT: its debt is its raw material, so it reads
-    /// earnings yield and book-to-price, the ROE spread and return on assets, and
-    /// no debt / equity.
+    /// A bank or a mortgage REIT: its debt is its raw material, so it reads no
+    /// debt / equity.
     Bank,
     /// Any other Financial Services name — insurers, asset managers, brokers,
-    /// lenders: earnings yield and book-to-price, the ROE spread, and its debt /
-    /// equity.
+    /// lenders.
     OtherFinancial,
-    /// An equity REIT: the FFO yield, FFO over total assets, and debt over total
-    /// assets, since depreciation buries both its earnings and its book equity.
+    /// An equity REIT: FFO-based reads, since depreciation buries both its
+    /// earnings and its book equity.
     EquityReit,
 }
 
 /// The metric class from the profile's industry and sector, matched
-/// case-insensitively: an industry starting "Banks" or "REIT - Mortgage" is a
-/// bank, any other starting "REIT" an equity REIT; any other name in the
-/// Financial Services sector is another financial; everything else — an
-/// unrecognized industry, or no label at all — is general.
+/// case-insensitively; an unrecognized or absent label is general.
 pub fn metric_class(sector: Option<&str>, industry: Option<&str>) -> MetricClass {
     let industry = industry.map(|i| i.trim().to_ascii_lowercase()).unwrap_or_default();
     if industry.starts_with("banks") || industry.starts_with("reit - mortgage") {
@@ -666,11 +610,9 @@ pub fn dominant_axes(archetype: Option<Archetype>) -> &'static [Axis] {
 }
 
 /// The factors the composite reads under an archetype and a metric class. The
-/// class picks the value, quality and low-risk factors; the momentum, growth,
-/// investment and revision axes read the same factors in every class. The
-/// commodity cyclical's value axis reads book-to-price alone, a general name's
-/// override only — a bank or a REIT keeps its class's value factors whatever its
-/// archetype.
+/// commodity cyclical's book-to-price-only value axis is a general name's
+/// override alone — a bank or a REIT keeps its class's value factors whatever
+/// its archetype.
 pub fn factor_set(archetype: Option<Archetype>, class: MetricClass) -> Vec<Factor> {
     use Factor::*;
     let (value, quality, low_risk): (&[Factor], &[Factor], &[Factor]) = match class {
@@ -976,8 +918,6 @@ fn observe(
     let fin = inputs.fin;
     let none = Observation { current: None, prior: vec![] };
     let Some(w0) = windows.first() else {
-        // No statement window: only the price, beta, spread and revision reads
-        // can stand.
         return match factor {
             Factor::Momentum | Factor::Trend | Factor::Volatility => {
                 price_observation(factor, closes, &[])
@@ -992,9 +932,8 @@ fn observe(
         };
     };
     let market_cap = fin.market_cap.filter(|m| m.is_finite() && *m > 0.0);
-    // Valuation: today's quote against today's window; the past against each
-    // window's own anchor close on the quote's share basis, inside the
-    // share-continuous run.
+    // A valuation factor's past reads each window's anchor close on the quote's
+    // share basis, inside the share-continuous run.
     let basis = quote_share_basis(fin, windows);
     let valuation = |value: &dyn Fn(f64, &TtmWindow) -> Option<f64>| {
         let current = market_cap.and_then(|m| value(m, w0));
@@ -1007,7 +946,6 @@ fn observe(
         };
         Observation { current, prior }
     };
-    // Fundamentals: each window read the same way.
     let fundamental = |value: &dyn Fn(usize) -> Option<f64>| Observation {
         current: value(0),
         prior: (1..windows.len()).filter_map(value).collect(),
@@ -1153,12 +1091,11 @@ fn score_factor(factor: Factor, band: Band, obs: &Observation) -> FactorScore {
     }
 }
 
-/// Re-score a persisted factor under another band and own-history weight — the
-/// shadow-tune sweep's replay over a run's record (`engine`'s ignored harness).
-/// An imputed factor stays at the neutral midpoint and a floored one keeps the
-/// edge score it was persisted with; the own-history leg replays as persisted,
-/// since its prior points are not on the record. Under the factor's own band
-/// and [`OWN_HISTORY_WEIGHT`] it reproduces the persisted score.
+/// Re-score a persisted factor under another band and own-history weight (the
+/// shadow-tune replay). An imputed factor stays at the neutral midpoint and a
+/// floored one keeps its persisted edge score; the own-history leg replays as
+/// persisted, since its prior points are not on the record. Under the factor's
+/// own band and [`OWN_HISTORY_WEIGHT`] it reproduces the persisted score.
 pub fn rescore(score: &FactorScore, band: Band, own_history_weight: f64) -> f64 {
     if score.imputed {
         return NEUTRAL_SCORE;
@@ -1407,7 +1344,6 @@ mod tests {
             assert_eq!(weight(&c, axis), ARCHETYPE_TILT, "{archetype:?}");
             assert_eq!(c.axes.iter().filter(|a| a.weight == ARCHETYPE_TILT).count(), 1);
         }
-        // The commodity cyclical's value axis reads book-to-price alone.
         let cyc = composite_of(&fin, Some("Energy"), Some(Archetype::CommodityCyclical));
         let value: Vec<Factor> =
             cyc.factors.iter().filter(|f| f.factor.axis() == Axis::Value).map(|f| f.factor).collect();
@@ -1747,7 +1683,6 @@ mod tests {
         assert!(approx(bp.raw.unwrap(), 500.0 / 4000.0));
         assert_eq!(bp.band.anchor, BANK_ANCHORS.book_to_price);
         assert_eq!(factor(&c, Factor::EarningsYield).band.anchor, BANK_ANCHORS.earnings_yield);
-        // A mortgage REIT reads the bank row too.
         let mreit = classed(&fin, Some("Real Estate"), Some("REIT - Mortgage"), None);
         assert_eq!((mreit.class, mreit.sector_anchor.as_str()), (MetricClass::Bank, "Banks"));
     }

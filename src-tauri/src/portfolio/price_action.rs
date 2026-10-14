@@ -1,15 +1,10 @@
-//! The **price-action confirmation read** — the shared engine's cross-archetype
-//! confirmer (`docs/trade-opportunities.md` §Signal inputs, §Starting parameters,
-//! the price-action confirmation row; `docs/trade-opportunities-workflow.md`
-//! §Step 5c): **relative strength** against the market and against the sector,
-//! and **proximity to a multi-year base breakout**, from the dated deep closes. A
-//! confirmer, never a trigger — it adjusts conviction and never substitutes for
-//! the leading-metric anchor, so nothing here gates a name.
-//!
-//! Relative strength reuses the momentum factor's 12−1 windows and its proximity
-//! rule (`portfolio::factors`); every series is price-only (split-adjusted,
-//! dividend-unadjusted), the stock's and the benchmarks' alike. Pure over the
-//! closes and the as-of session, so every rule is unit-testable offline.
+//! The price-action confirmation read (`docs/trade-opportunities.md` §Signal
+//! inputs, §Starting parameters, the price-action confirmation row;
+//! `docs/trade-opportunities-workflow.md` §Step 5c): relative strength against
+//! the market and the sector, and proximity to a multi-year base breakout. A
+//! confirmer, never a trigger. Relative strength reuses the momentum factor's
+//! 12−1 windows (`portfolio::factors`); every series is price-only
+//! (split-adjusted, dividend-unadjusted), the stock's and the benchmarks' alike.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,13 +12,13 @@ use super::engine::DatedValue;
 use super::factors::{close_near, closes_through, dedupe_closes, momentum_as_of, shift};
 
 // ---------------------------------------------------------------------------
-// Calibration surface — drafted, calibratable (`docs/trade-opportunities.md`
-// §Starting parameters, the price-action confirmation row).
+// Calibration surface (`docs/trade-opportunities.md` §Starting parameters, the
+// price-action confirmation row)
 // ---------------------------------------------------------------------------
 
-/// How far back the breakout pivot reaches, in calendar days — three years, a
-/// multi-year base the deep history covers (the volume spike at a range edge
-/// grows with the time since that edge was last hit — Huddart, Lang and Yetman).
+/// How far back the breakout pivot reaches, in calendar days: three years, since
+/// the volume spike at a range edge grows with the time since that edge was
+/// last hit (Huddart, Lang and Yetman).
 pub const PIVOT_LOOKBACK_DAYS: i64 = 1_095;
 
 /// The base: the sessions before the latest close, O'Neil's five-week minimum
@@ -68,7 +63,6 @@ impl BreakoutBand {
     }
 }
 
-/// The multi-year base-breakout read.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BreakoutRead {
     /// The highest close over the three years before the base, and its date.
@@ -84,7 +78,6 @@ pub struct BreakoutRead {
     pub base_valid: bool,
 }
 
-/// The price-action confirmation read.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PriceActionRead {
     /// The stock's 12−1 return relative to the market's: `(1 + stock) /
@@ -100,10 +93,8 @@ pub struct PriceActionRead {
     pub gaps: Vec<String>,
 }
 
-/// The price-action read as of `as_of` (an ISO session date) over the stock's
-/// dated closes, the market benchmark's and the sector benchmark's, where one
-/// is mapped. Closes may arrive in any order and with a session served twice
-/// (the last row wins).
+/// The read as of `as_of` (an ISO session date). Closes may arrive in any order
+/// and with a session served twice (the last row wins).
 pub fn price_action(
     closes: &[DatedValue],
     market: &[DatedValue],
@@ -162,8 +153,7 @@ pub fn price_action(
     }
 }
 
-/// The breakout read over deduplicated, date-ordered closes; `Err` is the typed
-/// gap.
+/// Over deduplicated, date-ordered closes; `Err` is the typed gap.
 fn breakout_read(closes: &[DatedValue], as_of: &str) -> Result<BreakoutRead, String> {
     let latest = close_near(closes, as_of)
         .ok_or_else(|| format!("breakout unread: no close near {as_of}"))?

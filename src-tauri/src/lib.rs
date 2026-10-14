@@ -50,15 +50,14 @@ mod test_http;
 pub mod thought_log;
 pub mod vector_memory;
 
-// Dev-only demo mode. Compiled out entirely unless the `demo-run` feature is on
-// (it is not in `default`, so `tauri build` never includes it). See `demo.rs`.
+// Dev-only demo mode; the `demo-run` feature is not in `default`, so `tauri build`
+// never includes it.
 #[cfg(feature = "demo-run")]
 mod demo;
 
-/// Whether the demo run path is active: the `demo-run` feature is compiled in AND
-/// `MARKET_SIGNAL_DEMO` is set to a truthy value (`1` / `true`, case-insensitive). A
-/// bare, empty, or `0` value reads as off, so the var can be exported `=0` without
-/// silently enabling stub reports.
+/// `MARKET_SIGNAL_DEMO` is truthy (`1` / `true`, case-insensitive); a bare, empty
+/// or `0` value reads as off, so the var can be exported `=0` without silently
+/// enabling stub reports.
 #[cfg(feature = "demo-run")]
 fn demo_run_enabled() -> bool {
     std::env::var("MARKET_SIGNAL_DEMO")
@@ -90,21 +89,18 @@ use pipeline::{AnalystStages, GeneratedReport, ReportPaths, ResearchStages};
 use progress::{ProgressMessage, ProgressReporter, RunContext};
 use schwab_secrets::TokenStore;
 
-/// Tauri event name carrying every [`ProgressMessage`] for the live job tracker.
-/// The frontend listens on this and accumulates the run's trace by `run_id`.
+/// Tauri event carrying every [`ProgressMessage`] to the job tracker, which
+/// accumulates the run's trace by `run_id`.
 const JOB_PROGRESS_EVENT: &str = "job-progress";
 
-/// Shared cancel flag for the in-flight run. Managed once by the app; the
-/// `cancel_run` command flips it, and each run's `RunContext` reads the same bool —
-/// the run resets it to `false` as it begins (`live_run_context`), so a stale cancel
-/// from a dismissed prior run never carries over. A single flag suffices because the
-/// `RunGuard` allows only one run at a time.
+/// Shared cancel flag for the in-flight run: `cancel_run` flips it and each run's
+/// `RunContext` reads it. A single flag suffices because the `RunGuard` allows one
+/// run at a time, and the job resets it as it claims the slot.
 #[derive(Clone, Default)]
 struct CancelFlag(Arc<AtomicBool>);
 
-/// A [`ProgressReporter`] that forwards each message to the webview as a
-/// `job-progress` Tauri event. Defined here, not in `progress`, so that module keeps
-/// no `tauri` dependency and stays unit-testable.
+/// Forwards each message to the webview as a `job-progress` event. Lives here
+/// rather than in `progress` so that module keeps no `tauri` dependency.
 struct TauriReporter {
     app: tauri::AppHandle,
 }
@@ -116,17 +112,11 @@ impl ProgressReporter for TauriReporter {
     }
 }
 
-/// Build the run context for one live run: a fresh run id, a Tauri-event reporter,
-/// and the shared cancel flag. The flag is *not* reset here — `run_job` clears it
-/// once it owns the concurrency slot (`RunContext::reset_cancel`), so a competing
-/// attempt that is then skipped can't wipe an active run's cancellation.
-///
-/// When the thought-log gate is on, the reporter is decorated with the
-/// diagnostic capture sink (`docs/run-tracking.md §Thought-log capture`) —
-/// permanent code, build-gated behavior: debug builds capture by default
-/// (opt-out), release builds stay off unless [`THOUGHT_LOG_ENV`] opts in.
-/// Base-dir resolution is best-effort — a failed app-data lookup skips
-/// capture, never the run.
+/// The cancel flag is *not* reset here — the job clears it once it owns the run
+/// slot (`RunContext::reset_cancel`), so a competing attempt that is then skipped
+/// can't wipe an active run's cancellation. When the thought-log gate is on the
+/// reporter is decorated with the capture sink (`docs/run-tracking.md §Thought-log
+/// capture`); a failed app-data lookup skips capture, never the run.
 fn live_run_context(app: &tauri::AppHandle, cancel: Arc<AtomicBool>) -> Arc<RunContext> {
     let run_id = uuid::Uuid::new_v4().to_string();
     let mut reporter: Arc<dyn ProgressReporter> = Arc::new(TauriReporter { app: app.clone() });
@@ -156,10 +146,9 @@ fn live_run_context(app: &tauri::AppHandle, cancel: Arc<AtomicBool>) -> Arc<RunC
 /// regardless of build profile; unset falls to the build default.
 const THOUGHT_LOG_ENV: &str = "MARKET_SIGNAL_THOUGHT_LOG";
 
-/// The thought-log gate, pure for tests (the env read happens at the call
-/// site): an explicit override wins, otherwise debug builds capture and
-/// release builds do not. An unrecognized value falls to the build default
-/// rather than guessing a direction.
+/// An explicit override wins, otherwise debug builds capture and release builds
+/// do not; an unrecognized value falls to the build default rather than guessing
+/// a direction.
 fn thought_log_enabled(env_val: Option<&str>, debug: bool) -> bool {
     match env_val.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
         Some("0") | Some("false") => false,
@@ -168,27 +157,20 @@ fn thought_log_enabled(env_val: Option<&str>, debug: bool) -> bool {
     }
 }
 
-/// Request cancellation of the in-flight run (the tracker's Cancel button). Sets the
-/// shared cancel flag the run polls at its step / request boundaries; an HTTP call
-/// already in flight is not interrupted, so the run stops at the next checkpoint. A
-/// no-op when no run is active — the next run resets the flag as it begins.
+/// The run polls the flag at its step / request boundaries, so an HTTP call
+/// already in flight is not interrupted. A no-op when no run is active.
 #[tauri::command]
 fn cancel_run(cancel: tauri::State<'_, CancelFlag>) {
     cancel.0.store(true, Ordering::Relaxed);
 }
 
-/// Report the current warning state for the Persistent Warning Area. Read-only:
-/// it validates the config substrate (`docs/report-workflow.md §Step 1`)
-/// and merges in the non-blocking `FailedJob` warning from job history
-/// (`docs/scheduling.md §Error Handling`), but runs no job. The frontend calls
-/// this on load and after a generate attempt to repopulate the warning area, so
-/// a run that just failed surfaces here. The job-history merge is best-effort:
-/// if the database can't be read, the authoritative config warnings still show.
+/// The Persistent Warning Area's state: the config validation
+/// (`docs/report-workflow.md §Step 1`) plus the non-blocking failed-job warning
+/// (`docs/scheduling.md §Error Handling`). Read-only. The job-history merge is
+/// best-effort: an unreadable database still shows the config warnings.
 #[tauri::command]
 fn check_configuration(app: tauri::AppHandle) -> ValidationReport {
-    // Demo mode: report a clean, unblocked gate so the live "Generate now" button is
-    // enabled with no keys configured (the demo run path bypasses the gate anyway).
-    // Compiled out of any normal/release build with the rest of demo mode.
+    // Demo mode reports a clean gate so "Generate now" is enabled with no keys.
     #[cfg(feature = "demo-run")]
     if demo_run_enabled() {
         return ValidationReport {
@@ -197,11 +179,6 @@ fn check_configuration(app: tauri::AppHandle) -> ValidationReport {
         };
     }
 
-    // Open the app DB (best-effort) so config reads from the saved Settings store
-    // with an env fallback per field. `open_app_db` creates the data dir and runs
-    // the idempotent `init_schema`, tolerating a pre-existing slice-1 DB. If the
-    // DB can't be opened, validate against env alone — the authoritative config
-    // warnings still show; only the job-history warnings are skipped.
     let conn = open_app_db(&app).ok();
     let cfg = match &conn {
         Some(conn) => AppConfig::load(conn),
@@ -216,16 +193,11 @@ fn check_configuration(app: tauri::AppHandle) -> ValidationReport {
     report
 }
 
-/// Dismiss one Persistent Warning Area warning (`docs/interface.md §Persistent
-/// Warning Area` — a dismissed warning stays gone until a fresh event in its
-/// category). `id` is the `WarningCategory.dismiss_id` the frontend rendered and
-/// echoes back, so the dismissal targets the *shown* warning rather than whatever
-/// the backend would re-derive as current at click time — a stale click can then
-/// only ever dismiss the row it was on, and a newer failure still surfaces fresh.
-/// Only the non-blocking failed-job category is dismissible; a blocking
-/// configuration gap is gate state, so a dismiss of one is a no-op (handled in
-/// `jobs::dismiss_warning_category`). The frontend re-runs `check_configuration`
-/// afterward to repopulate the band.
+/// Dismisses one Persistent Warning Area warning (`docs/interface.md §Persistent
+/// Warning Area`). `id` is the `dismiss_id` the frontend rendered, so a stale
+/// click dismisses only the row it was on and a newer failure still surfaces.
+/// Only the failed-job category is dismissible; a blocking configuration gap is
+/// gate state, so dismissing one is a no-op.
 #[tauri::command]
 fn dismiss_warning(
     app: tauri::AppHandle,
@@ -236,22 +208,14 @@ fn dismiss_warning(
     jobs::dismiss_warning_category(&conn, kind, &id).map_err(|e| e.to_string())
 }
 
-/// Environment override for the on-disk data directory. A non-empty value wins
-/// over the OS app-data location *and* the debug-build split below — the explicit
-/// isolation hook for tests, automation, and the live-run harness (otherwise the
-/// store is keyed only by the bundle identifier, so every build of the same id
-/// shares one directory and isolating it means physically moving the real one).
+/// Data-directory override: a non-empty value wins over the OS app-data location
+/// and the debug-build split — the isolation hook for tests, automation and the
+/// live-run harness, since every build of one bundle id otherwise shares a store.
 const DATA_DIR_ENV: &str = "MARKET_SIGNAL_DATA_DIR";
 
-/// Resolve the base data directory from three layered sources, so a `tauri dev`
-/// session never shares the production store:
-/// 1. an explicit [`DATA_DIR_ENV`] override (non-empty, trimmed) wins outright;
-/// 2. otherwise the OS app-data dir, nested under a `dev/` subdirectory for
-///    **debug** builds (`tauri dev`) so development data is sandboxed;
-/// 3. **release** builds (`tauri build`) use the OS app-data dir as-is — the real
-///    production store, untouched.
-///
-/// Pure (no Tauri `AppHandle`) so the layering is unit-tested directly.
+/// An explicit [`DATA_DIR_ENV`] override wins; otherwise debug builds nest under
+/// `dev/` so a `tauri dev` session never shares the production store. Pure so
+/// the layering is unit-tested directly.
 fn resolve_data_dir(app_data_dir: PathBuf, env_override: Option<String>, debug: bool) -> PathBuf {
     if let Some(p) = env_override {
         let trimmed = p.trim();
@@ -266,13 +230,9 @@ fn resolve_data_dir(app_data_dir: PathBuf, env_override: Option<String>, debug: 
     }
 }
 
-/// The on-disk layout for a run — the SQLite database, the reports directory,
-/// and the research inbox/archive, all under the app data directory
-/// (`ReportPaths::under` owns the names). One source for the path layout, shared
-/// by the manual command and the research-folder helpers so they can never drift
-/// apart. The base dir comes from [`resolve_data_dir`], so a `tauri dev` (debug)
-/// session is sandboxed under a `dev/` subdir away from the production store, and
-/// `MARKET_SIGNAL_DATA_DIR` can override either.
+/// The on-disk layout under the data directory from [`resolve_data_dir`]; the one
+/// source for every path, so the commands and the research-folder helpers never
+/// drift apart.
 fn report_paths(app: &tauri::AppHandle) -> Result<ReportPaths, String> {
     let app_data_dir = app
         .path()
@@ -286,58 +246,42 @@ fn report_paths(app: &tauri::AppHandle) -> Result<ReportPaths, String> {
     Ok(ReportPaths::under(&data_dir))
 }
 
-/// The research-inbox folder (`docs/research-documents.md`) — the same layout
-/// the pipeline's Step-6 stage reads via `ReportPaths`.
+/// The research-inbox folder (`docs/research-documents.md`).
 fn research_inbox_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(report_paths(app)?.inbox_dir)
 }
 
-/// The research-archive folder (`docs/research-documents.md`). Successfully
-/// processed inbox documents are moved here by the pipeline's persist step; the
-/// user may delete from it but cannot manually archive into it.
+/// The research-archive folder (`docs/research-documents.md`).
 fn research_archive_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(report_paths(app)?.archive_dir)
 }
 
-/// Manually generate a Market Signal Report end to end. The execution gate runs
-/// first: the configuration is validated and a blocked run is refused before any
-/// work begins. Once the gate passes, this resolves the app data directory, runs
-/// the agent through the pipeline, and returns the generated report for the
-/// frontend to render. The structured block detail lives in the
-/// `check_configuration` report the warning area already shows; the error here
-/// is the concise fallback summary.
+/// Generates a Market Signal Report end to end and returns it. The execution gate
+/// runs first: a blocked configuration is refused before any work begins, with
+/// `check_configuration` carrying the structured detail.
 ///
-/// The agent build and pipeline run go through `spawn_blocking`: the agent uses
-/// `reqwest::blocking`, which starts its own runtime and would panic if it ran
-/// on the async runtime thread this command is dispatched on. The `MainAgent`
-/// trait and pipeline stay synchronous; only this seam is async.
-///
-/// The run is wrapped by `jobs::run_job`, which records the lifecycle outcome and
-/// enforces the single-workflow-at-a-time guard (`docs/scheduling.md §Concurrent
-/// Job Protection`). The shared `RunGuard` is cloned out of managed state before
-/// the await so it is never held across it: a clone shares the same in-flight
-/// flag. A Skipped or Failed outcome maps to `Err` here while still being
-/// recorded in job history (and a failure surfaces in the warning area on the
-/// next `check_configuration`).
+/// The agent uses `reqwest::blocking`, which would panic on the async runtime
+/// thread, so the build and run go through `spawn_blocking`. `jobs::run_job`
+/// records the outcome and enforces the one-workflow-at-a-time guard
+/// (`docs/scheduling.md §Concurrent Job Protection`); the `RunGuard` is cloned
+/// out of managed state before the await so it is never held across it. A
+/// Skipped or Failed outcome maps to `Err` while still being recorded in job
+/// history.
 #[tauri::command]
 async fn generate_report_manual(
     app: tauri::AppHandle,
     guard: tauri::State<'_, RunGuard>,
     cancel: tauri::State<'_, CancelFlag>,
 ) -> Result<GeneratedReport, String> {
-    // Dev-only demo path (feature `demo-run` + MARKET_SIGNAL_DEMO): run the real
-    // pipeline against paced, streaming stubs — no keys, no network, no gate. The
-    // entire branch is compiled out of a normal/release build, leaving the live
-    // body below byte-for-byte unchanged.
+    // Dev-only demo path: the real pipeline against paced stubs — no keys, no
+    // network, no gate.
     #[cfg(feature = "demo-run")]
     if demo_run_enabled() {
         return generate_report_demo(app, guard, cancel).await;
     }
 
-    // Execution gate: refuse a blocked run before doing any work. The config is
-    // read from the saved Settings store (env fallback) on a connection opened and
-    // dropped here, before the await below — a `rusqlite::Connection` is not `Send`
-    // and must never cross an await point.
+    // A `rusqlite::Connection` is not `Send`, so the config read drops it before
+    // the await.
     let cfg = {
         let conn = open_app_db(&app)?;
         AppConfig::load(&conn)
@@ -347,8 +291,6 @@ async fn generate_report_manual(
         return Err(config::blocked_summary(&report));
     }
     let main_config = cfg.main_agent_config().map_err(|e| e.to_string())?;
-    // The three analyst adapter configs (Steps 12–15): each posture's user-selected
-    // model + provider key. The gate above already requires all three.
     let bull_config = cfg
         .analyst_config(agent::Posture::Bull)
         .map_err(|e| e.to_string())?;
@@ -360,10 +302,6 @@ async fn generate_report_manual(
         .map_err(|e| e.to_string())?;
     let fmp_key = cfg.fmp_key().map_err(|e| e.to_string())?;
     let fred_key = cfg.fred_key().map_err(|e| e.to_string())?;
-    // Research-half credentials (Steps 7–11): Tavily (news ingestion + the Step-9 search
-    // backend), OpenAI (the GPT-5-mini headline filter), Anthropic (the Sonnet research
-    // router). The gate above already requires all three; the FMP key above is reused
-    // for the supplementary FMP Articles news feed.
     let tavily_key = cfg.tavily_key().map_err(|e| e.to_string())?;
     let openai_key = cfg.openai_key().map_err(|e| e.to_string())?;
     let anthropic_key = cfg.anthropic_key().map_err(|e| e.to_string())?;
@@ -371,26 +309,20 @@ async fn generate_report_manual(
     let paths = report_paths(&app)?;
 
     let guard = guard.inner().clone();
-    // One run context for the whole run: a fresh id, the Tauri-event reporter, and the
-    // shared cancel flag (reset here for this run). Cloned into each adapter and the
-    // agent so the baseline scan streams per-series rows and the agent streams its
-    // report text; borrowed by `run_job` for the step events + cancel checkpoints.
     let ctx = live_run_context(&app, cancel.inner().0.clone());
 
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let agent = ModelMainAgent::new(main_config)
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
-        // The baseline scan is FMP (indices / VIX / gold / sectors) + FRED (yields,
-        // dollar index, oil, gas, macro levels) + BLS (labor levels) + CFTC (COT
-        // positioning) merged behind one trait (`docs/report-workflow.md §Step 3`). BLS
-        // and CFTC are keyless (not in the execution gate); they nest as outer secondaries
-        // so their labor_levels / cot_positioning groups fold into the FMP+FRED baseline.
+        // BLS and CFTC are keyless and off the execution gate; they nest as outer
+        // secondaries so their groups fold into the FMP+FRED baseline
+        // (`docs/report-workflow.md §Step 3`).
         let fmp = FmpDataSource::new(fmp_key.clone())
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
-        // FRED's release calendar joins FMP's paid economic calendar for each release's
-        // consensus and surprise and the Fed / FOMC dates; a free key leaves names + dates.
+        // FMP's paid economic calendar supplies each release's consensus and
+        // surprise; a free key leaves names and dates.
         let consensus = FmpDataSource::new(fmp_key.clone())
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
@@ -411,12 +343,8 @@ async fn generate_report_manual(
         let research =
             ResearchStages::live(tavily_key, fmp_key, openai_key.clone(), anthropic_key, &ctx)
                 .map_err(|e| e.to_string())?;
-        // Steps 12–15: the three analyst adapters, one per posture, sharing the run's
-        // context like the other live stages so each review streams a request row.
         let analysts = AnalystStages::live(bull_config, bear_config, balanced_config, &ctx)
             .map_err(|e| e.to_string())?;
-        // The Step-17 memory write's embedder: the fixed internal OpenAI embedding
-        // stage (`text-embedding-3-large`), reusing the same key as the filter.
         let embedder = OpenAiEmbedder::new(openai_key)
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
@@ -432,21 +360,14 @@ async fn generate_report_manual(
         JobOutcome::Successful(report) => Ok(*report),
         JobOutcome::Failed(msg) => Err(msg),
         JobOutcome::Skipped(reason) => Err(reason),
-        // The tracker shows the cancelled terminal state from the `run-finished` event;
-        // the command still resolves to `Err` so the frontend's generate() settles
-        // (its catch suppresses the failure banner when the user asked to cancel).
+        // Cancelled still resolves to `Err` so the frontend's generate() settles;
+        // its catch suppresses the failure banner when the user asked to cancel.
         JobOutcome::Cancelled(reason) => Err(reason),
     }
 }
 
-/// Dev-only demo run (feature `demo-run`). Reuses the real run plumbing — the same
-/// `report_paths`, `live_run_context` (Tauri-event reporter), `RunGuard`, and
-/// `jobs::run_job` — but injects the paced, streaming demo stages from `demo.rs`
-/// instead of the live adapters, and skips the key/credential gate. Everything
-/// downstream (step events, persistence to the dev data dir, the terminal
-/// `run-finished`) is identical to a real run, so the tracker and report rendering
-/// are exercised faithfully with no I/O. Mirrors `generate_report_manual`'s
-/// spawn-blocking + outcome handling.
+/// Dev-only demo run: the real run plumbing with the paced demo stages from
+/// `demo.rs` in place of the live adapters, and no credential gate.
 #[cfg(feature = "demo-run")]
 async fn generate_report_demo(
     app: tauri::AppHandle,
@@ -488,21 +409,18 @@ async fn generate_report_demo(
 /// Which holdings source a local job should use this run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HoldingsChoice {
-    /// The offline fixture (the `MARKET_SIGNAL_SCHWAB_FIXTURE` escape hatch), so the
-    /// pipeline still runs with no Schwab connection for local validation.
+    /// The offline fixture behind `MARKET_SIGNAL_SCHWAB_FIXTURE`, so the pipeline
+    /// runs with no Schwab connection.
     Fixture,
-    /// The live Schwab Trader API source — a connected account with an open refresh
-    /// window.
+    /// A connected account with an open refresh window.
     Live,
-    /// No usable connection — not connected, lapsed, or unreadable: the job is blocked
-    /// with the gate's prompt rather than run in a degraded mode.
+    /// Not connected, lapsed, or unreadable: the job blocks with the gate's prompt
+    /// rather than run degraded.
     NotConnected,
 }
 
-/// Decide the holdings source from the fixture escape hatch and the live connection
-/// state. Pure so the gate's decision table is unit-testable without a Keychain or a
-/// network. The escape hatch wins first (offline validation), then a live connection,
-/// else the job blocks.
+/// Pure so the gate's decision table is unit-testable without a Keychain or a
+/// network.
 fn choose_holdings_source(fixture_escape: bool, connected: bool) -> HoldingsChoice {
     if fixture_escape {
         HoldingsChoice::Fixture
@@ -513,9 +431,8 @@ fn choose_holdings_source(fixture_escape: bool, connected: bool) -> HoldingsChoi
     }
 }
 
-/// Whether the offline Schwab fixture escape hatch is set (`MARKET_SIGNAL_SCHWAB_FIXTURE`
-/// truthy). Lets the local jobs run against the fixture with no Schwab connection for
-/// pipeline validation, exactly as this slice did before the live source landed.
+/// Whether `MARKET_SIGNAL_SCHWAB_FIXTURE` is truthy, so the local jobs run against
+/// the offline fixture with no Schwab connection.
 fn schwab_fixture_escape() -> bool {
     std::env::var("MARKET_SIGNAL_SCHWAB_FIXTURE")
         .map(|v| {
@@ -525,12 +442,9 @@ fn schwab_fixture_escape() -> bool {
         .unwrap_or(false)
 }
 
-/// Build the holdings source — the single source-selection seam every holdings
-/// fetch goes through (`generate_portfolio_manual` and `pull_holdings`): the
-/// offline fixture behind the escape hatch, else the live Schwab source once
-/// connected, else the [`schwab_oauth::schwab_gate`] block flattened to its
-/// re-auth prompt. Only the non-fixture path touches the Keychain rail / OAuth.
-/// Blocking (Keychain reads); call inside `spawn_blocking`.
+/// The single source-selection seam every holdings fetch goes through. Only the
+/// non-fixture path touches the Keychain rail / OAuth. Blocking (Keychain reads);
+/// call inside `spawn_blocking`.
 fn build_holdings_source(cfg: &AppConfig) -> Result<Box<dyn schwab::HoldingsSource>, String> {
     let store: Arc<dyn schwab_secrets::TokenStore> =
         Arc::new(schwab_secrets::KeyringTokenStore::new());
@@ -554,11 +468,8 @@ fn build_holdings_source(cfg: &AppConfig) -> Result<Box<dyn schwab::HoldingsSour
     match choose_holdings_source(fixture_escape, connected) {
         HoldingsChoice::Fixture => Ok(Box::new(schwab::FixtureHoldingsSource::new())),
         HoldingsChoice::NotConnected => {
-            // Produce + consume the WarningKind::Schwab category via the shared
-            // gate, mirroring how `local_gate` blocks a run for LocalModels; the
-            // same producer feeds the warning band via `check_local_configuration`.
-            // Surface its item — the reconnect prompt, or the unreadable-Keychain
-            // prompt — as the gate error.
+            // The shared gate's item (the reconnect or unreadable-Keychain prompt)
+            // is the error, so the block reads the same as the warning band's.
             let report = schwab_oauth::schwab_gate(presence);
             let message = report
                 .categories
@@ -579,13 +490,10 @@ fn build_holdings_source(cfg: &AppConfig) -> Result<Box<dyn schwab::HoldingsSour
     }
 }
 
-/// Begin the interactive Schwab OAuth connection (`docs/schwab-integration.md
-/// §Authorization`): stand up the self-signed HTTPS loopback server, open the system
-/// browser for the brokerage login, capture the redirect's authorization code, and
-/// exchange it for the token set stored on the Keychain rail. Runs the blocking capture
-/// (a socket bind + browser round-trip) through `spawn_blocking`. The client *secret*
-/// must already be on the Keychain rail (written by the Settings connection surface —
-/// deferred); this reads it there and never logs a token.
+/// Begins the interactive Schwab OAuth connection (`docs/schwab-integration.md
+/// §Authorization`). The loopback capture is a socket bind plus a browser
+/// round-trip, so it runs through `spawn_blocking`. The client secret must
+/// already be on the Keychain rail; nothing here logs a token.
 #[tauri::command]
 async fn schwab_connect(
     app: tauri::AppHandle,
@@ -602,10 +510,9 @@ async fn schwab_connect(
     let guard = guard.inner().clone();
 
     tauri::async_runtime::spawn_blocking(move || {
-        // Hold the single global run slot for the whole connection: the interactive
-        // login can take minutes, and letting a report/portfolio job start meanwhile
-        // (both touch the Keychain / shared state) would violate the one-workflow-at-a-
-        // time contract. The token releases on drop — success, failure, or panic.
+        // Hold the run slot for the whole connection: the login can take minutes,
+        // and a job starting meanwhile would touch the Keychain under it. The
+        // token releases on drop.
         let _token = guard.try_begin(RunKind::SchwabConnect).ok_or_else(|| {
             "Another job is running — connect Schwab once it finishes.".to_string()
         })?;
@@ -624,13 +531,11 @@ async fn schwab_connect(
     .map_err(|e| format!("schwab connect task failed: {e}"))?
 }
 
-/// Persist the Schwab developer-app credentials the OAuth connection needs, split across
-/// the two stores by sensitivity (`docs/schwab-integration.md §Token lifecycle`): the
-/// non-secret `client_id` into `app_settings` (its read side is `AppConfig::load`) and the
-/// bearer `client_secret` onto the Keychain rail. The secret is written only when a fresh,
-/// non-blank value is supplied, so re-saving to update the id — or to reconnect — never
-/// wipes a stored secret the form doesn't re-display, exactly as `settings::save` treats
-/// the API keys. Pure over the two stores so the split is unit-testable off the command.
+/// Splits the credentials by sensitivity (`docs/schwab-integration.md §Token
+/// lifecycle`): `client_id` into `app_settings`, `client_secret` onto the Keychain
+/// rail. The secret is written only when a non-blank value is supplied, so
+/// re-saving the id never wipes a secret the form doesn't re-display. Pure over
+/// the two stores so the split is unit-testable off the command.
 fn persist_schwab_credentials(
     conn: &rusqlite::Connection,
     store: &dyn schwab_secrets::TokenStore,
@@ -638,24 +543,20 @@ fn persist_schwab_credentials(
     client_secret: Option<&str>,
 ) -> anyhow::Result<()> {
     let client_id = client_id.trim();
-    // A changed client id makes any stored OAuth token set stale — those tokens were
-    // issued under the old developer app and can't be refreshed with the new one — so
-    // clear the session and force a reconnect, rather than let `schwab_status` report a
-    // falsely-connected account (or a later job fail confusingly on a mismatched
-    // refresh). A secret *rotation* is deliberately NOT cleared: a refresh token survives
-    // a secret change, so correcting or rotating only the secret keeps the connection.
+    // A changed client id makes the stored token set stale (issued under the old
+    // developer app), so the session is cleared to force a reconnect. A secret
+    // rotation deliberately is not: a refresh token survives it.
     let previous_client_id = storage::get_setting(conn, config::KEY_SCHWAB_CLIENT_ID)?
         .unwrap_or_default();
-    // The id is not a secret, so (like a model slug) it is written in full — a blank value
-    // clears it — rather than left-in-place-when-empty the way the secret below is.
+    // The id is not a secret, so a blank value clears it rather than being left
+    // in place the way the secret below is.
     storage::set_setting(conn, config::KEY_SCHWAB_CLIENT_ID, client_id)?;
     if previous_client_id.trim() != client_id {
         store.delete(schwab_secrets::SECRET_TOKENS)?;
     }
     if let Some(secret) = client_secret {
-        // Trim both to decide "supplied" and to store: a value pasted with a stray
-        // trailing newline/space would otherwise be an unusable secret. This is
-        // deliberate paste hygiene, matching how `settings::save` stores the API keys.
+        // Trimmed before both the supplied check and the store: a pasted trailing
+        // newline would otherwise be an unusable secret.
         let secret = secret.trim();
         if !secret.is_empty() {
             store.set(schwab_secrets::SECRET_CLIENT_SECRET, secret)?;
@@ -664,11 +565,9 @@ fn persist_schwab_credentials(
     Ok(())
 }
 
-/// Save the Schwab developer-app credentials from the Settings "Charles Schwab connection"
-/// surface (`docs/interface.md §Settings`) — the write path that lets the loopback connect
-/// find its `client_id` (`app_settings`) and `client_secret` (Keychain). Sync: local
-/// SQLite + Keychain writes, no network. The secret never round-trips back; the frontend
-/// re-reads `schwab_status` afterward for the connection view.
+/// Saves the Schwab developer-app credentials from Settings (`docs/interface.md
+/// §Settings`). The secret never round-trips back; the frontend re-reads
+/// `schwab_status` afterward.
 #[tauri::command]
 fn save_schwab_credentials(
     app: tauri::AppHandle,
@@ -681,13 +580,9 @@ fn save_schwab_credentials(
         .map_err(|e| e.to_string())
 }
 
-/// The current Schwab connection state for the Settings surface (`docs/interface.md
-/// §Connection status`): the configured `client_id`, whether the client secret is present,
-/// and the derived connection state (never-connected / connected / lapsed) with the
-/// refresh-window expiry for the weekly-re-login heads-up. Read from local storage only —
-/// no network probe, mirroring the report's presence-not-connectivity posture — and never
-/// returns the secret or a token; an unreadable token set reads as not connected
-/// ([`schwab_oauth::SchwabStatus::read`]). Sync, like `get_settings`.
+/// The Schwab connection state for Settings (`docs/interface.md §Connection
+/// status`): local storage only, no network probe; never returns the secret or a
+/// token, and an unreadable token set reads as not connected.
 #[tauri::command]
 fn schwab_status(app: tauri::AppHandle) -> Result<schwab_oauth::SchwabStatus, String> {
     let client_id = {
@@ -702,11 +597,9 @@ fn schwab_status(app: tauri::AppHandle) -> Result<schwab_oauth::SchwabStatus, St
     .map_err(|e| e.to_string())
 }
 
-/// Disconnect the Schwab account: clear the stored OAuth token set from the Keychain rail
-/// so the next local run blocks with a re-auth prompt. The developer-app credentials
-/// (`client_id` + `client_secret`) are deliberately kept, so a reconnect — the routine
-/// weekly re-login — needs only the browser round-trip, not re-entering the app secret.
-/// Sync: a single local Keychain delete.
+/// Clears the stored OAuth token set so the next local run blocks with a re-auth
+/// prompt. The developer-app credentials are deliberately kept, so a reconnect
+/// needs only the browser round-trip.
 #[tauri::command]
 fn schwab_disconnect() -> Result<(), String> {
     let store = schwab_secrets::KeyringTokenStore::new();
@@ -715,27 +608,19 @@ fn schwab_disconnect() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Manually run the local Portfolio Analysis job (`docs/portfolio-analysis.md`). Holdings
-/// come from the **live Schwab Trader API** (`schwab_live`) once the account is connected
-/// — an OAuth loopback with a 30-min/7-day token lifecycle — plus live FMP + keyless SEC
-/// EDGAR and the local models. A connected account is a hard precondition: without one the
-/// run is blocked with a re-auth prompt, not degraded. The `MARKET_SIGNAL_SCHWAB_FIXTURE`
-/// escape hatch swaps in the offline fixture so the pipeline still validates with no
-/// Schwab connection.
+/// Runs the local Portfolio Analysis job (`docs/portfolio-analysis.md`) and
+/// returns the run. A connected Schwab account is a hard precondition (the
+/// `MARKET_SIGNAL_SCHWAB_FIXTURE` escape hatch swaps in the offline fixture); the
+/// gate is the local-suite gate — daemon reachable + roster + FMP / FRED key
+/// presence — probed inside `spawn_blocking`. The run shares the single global
+/// `RunGuard`, so the report and both local jobs are mutually exclusive.
 ///
-/// The gate is the **local-suite gate** (daemon reachable + roster present + FMP /
-/// FRED key presence), independent of the cloud-report gate — probed inside
-/// `spawn_blocking` since the probe is a blocking call. Like `generate_report_manual`,
-/// the blocking run (Schwab + local model HTTP + FMP/SEC) goes through
-/// `spawn_blocking` and shares the single global `RunGuard`, so the report and both
-/// local jobs are mutually exclusive.
-///
-/// **Ordering:** the daemon probe is the one check that runs before the global run
-/// slot, and it is local-only (loopback to the daemon). Every external fetch —
-/// FMP, SEC (the ticker → CIK map included, loaded lazily on first use), FRED,
-/// Schwab — happens inside `run_portfolio_job`, after it claims the slot and
-/// clears the cancel flag, so a competing attempt that records `Skipped` has
-/// contacted nothing, and no request row fires before `run_started`.
+/// Ordering: the daemon probe is the one check before the run slot, and it is
+/// local-only. Every external fetch — FMP, SEC (the ticker → CIK map loaded
+/// lazily on first use), FRED, Schwab — happens inside `run_portfolio_job` after
+/// it claims the slot and clears the cancel flag, so a competing attempt that
+/// records `Skipped` has contacted nothing, and no request row fires before
+/// `run_started`.
 #[tauri::command]
 async fn generate_portfolio_manual(
     app: tauri::AppHandle,
@@ -744,17 +629,17 @@ async fn generate_portfolio_manual(
     selected: Option<Vec<String>>,
     resume: Option<bool>,
 ) -> Result<portfolio::PortfolioRun, String> {
-    // A resume reopens the interrupted run's pinned checkpoints instead of
-    // pulling fresh (`docs/portfolio-analysis.md` §Failure posture) — validated
-    // below, inside the blocking task, right before the job.
+    // A resume reopens the interrupted run's own checkpoints
+    // (`docs/portfolio-analysis.md` §Failure posture); it is validated inside the
+    // blocking task, right before the job.
     let resume_requested = resume.unwrap_or(false);
     if resume_requested && selected.as_ref().is_some_and(|s| !s.is_empty()) {
         return Err("a resume reopens the interrupted run's own work-list — \
                     it cannot take a new selection"
             .to_string());
     }
-    // Read config on a short-lived connection dropped before the await (a
-    // `rusqlite::Connection` is not `Send`).
+    // A `rusqlite::Connection` is not `Send`, so the config read drops it before
+    // the await.
     let cfg = {
         let conn = open_app_db(&app)?;
         AppConfig::load(&conn)
@@ -762,9 +647,8 @@ async fn generate_portfolio_manual(
     let endpoint = local_model::endpoint_from_config(&cfg)
         .ok_or_else(|| "Local model daemon endpoint is not configured".to_string())?;
     let roster = local_model::roster_from_config(&cfg);
-    // FMP supplies the per-company price/financials. Key presence is enforced by
-    // `local_gate` below (a missing FMP or FRED key blocks the run before any
-    // work); the `unwrap_or_default` only satisfies the constructor's signature.
+    // Key presence is enforced by `local_gate` below; the `unwrap_or_default`
+    // only satisfies the constructor's signature.
     let fmp_key = cfg.fmp_api_key.clone().unwrap_or_default();
     let profile = portfolio::InvestorProfile::default_fixture();
     let paths = report_paths(&app)?;
@@ -776,9 +660,6 @@ async fn generate_portfolio_manual(
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
 
-        // Local-suite execution gate: probe the daemon, then gate on config + reachability
-        // + roster presence + FMP / FRED key presence. Blocked runs refuse before any
-        // analysis work. This probe is the one pre-slot check, and it is local-only.
         let probe = client.probe_daemon(&roster);
         let report = local_model::local_gate(&cfg, &probe);
         if report.is_blocked {
@@ -793,13 +674,10 @@ async fn generate_portfolio_manual(
             roster.reasoner.clone(),
             roster.fast.clone(),
         );
-        // The live web tool for the 6c research loop (SearXNG-only, document
-        // cache + telemetry). Tavily is reserved for the market-report job, so a
-        // local job never spends that quota — a blocked or empty SearXNG returns
-        // a failed/empty search the loop fail-softs on, never a Tavily call
-        // (`docs/web-research.md §Tavily fallback`). Fail-soft otherwise too: a
-        // stack that can't construct runs research offline (a recorded gap),
-        // never a blocked run — SearXNG sits off the execution gate.
+        // Tavily is reserved for the market-report job, so a local job never
+        // spends that quota (`docs/web-research.md §Tavily fallback`). A stack that
+        // can't construct runs research offline, never a blocked run — SearXNG sits
+        // off the execution gate.
         let analyst = match portfolio::research::LiveResearchWeb::new(
             cfg.searxng_endpoint.as_deref(),
             &paths.db_path,
@@ -819,31 +697,21 @@ async fn generate_portfolio_manual(
         let sec = sec::SecEdgarSource::new()
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
-        // Ticker→CIK resolution over SEC's full company_tickers.json map, cached
-        // beside the database with a staleness window; a failed refresh falls back
-        // fail-soft (stale cache, else empty → typed gaps per holding). Bound here,
-        // **loaded on first use inside the run slot** (`LazyCikResolver`) — never
-        // eagerly at setup, where a prior cancelled run's still-set cancel flag
-        // would make the refresh bail and its request row fire before the tracker
-        // is listening.
+        // The ticker → CIK map loads on first use inside the run slot
+        // (`LazyCikResolver`), never eagerly here: a prior cancelled run's
+        // still-set cancel flag would make an eager refresh bail, and its request
+        // row would fire before the tracker is listening.
         let cik_cache = sec::cik_cache_path_beside(&paths.db_path);
         let cik = sec::LazyCikResolver::new(&cik_cache);
         let company = portfolio::job::LiveCompanyData { fmp, sec, cik };
-        // The run-level rate anchors (FRED DGS2/DGS10 + the DGS10 anchor-window
-        // history) — hard-fail inside the job, before any per-holding work.
         let fred = crate::fred::FredDataSource::new(cfg.fred_api_key.clone().unwrap_or_default())
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
-        // A second FMP handle for the market context's gold quote — the
-        // commodity leg is wholly fail-soft, so a construction failure would
-        // still not warrant blocking the run; the shared key and context match
-        // the per-company handle above.
         let market_fmp = FmpDataSource::new(fmp_key.clone())
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
-        // The keyless CFTC COT pull for the fund positioning read — like the
-        // commodity leg, wholly fail-soft (a failed construction records the
-        // leg's gap rather than blocking the run).
+        // The positioning legs are wholly fail-soft: a failed construction records
+        // the leg's gap rather than blocking the run.
         let market_cot = crate::cot::CotDataSource::new()
             .ok()
             .map(|c| c.with_context(ctx.clone()));
@@ -861,16 +729,12 @@ async fn generate_portfolio_manual(
             finra: market_finra,
         };
 
-        // Source selection: the shared seam (`build_holdings_source`) — fixture escape
-        // hatch, else live Schwab once connected, else a blocked run with a re-auth
-        // prompt.
         let holdings: Box<dyn schwab::HoldingsSource> = build_holdings_source(&cfg)?;
 
-        // A per-card selection makes this a **selective re-analysis**
-        // (`docs/portfolio-analysis.md` §Triggering): the in-run safety sweep over
-        // the unselected tail needs the quick check's engine-only retrieval surface
-        // (FMP + SEC + FRED — no model, no Schwab call), so it is built only when a
-        // selection is active. An empty selection runs the whole book.
+        // A per-card selection makes this a selective re-analysis
+        // (`docs/portfolio-analysis.md` §Triggering): the safety sweep over the
+        // unselected tail needs the quick check's engine-only surface, so it is
+        // built only when a selection is active.
         let selected = selected.unwrap_or_default();
         let quick_data = if selected.is_empty() {
             None
@@ -881,8 +745,6 @@ async fn generate_portfolio_manual(
             let qc_sec = sec::SecEdgarSource::new()
                 .map_err(|e| e.to_string())?
                 .with_context(ctx.clone());
-            // Its own lazy handle over the same cache file: the tail sweep loads
-            // (or reuses the cache the main surface just wrote) on first use.
             let qc_cik = sec::LazyCikResolver::new(&cik_cache);
             let qc_fred =
                 crate::fred::FredDataSource::new(cfg.fred_api_key.clone().unwrap_or_default())
@@ -900,17 +762,16 @@ async fn generate_portfolio_manual(
             quick_data: qd,
         });
 
-        // The accuracy checks' refresh surface — FMP dated EOD, written through
-        // the shared price-bar cache (`docs/portfolio-analysis.md` §Outcome
-        // learning).
+        // The accuracy checks' refresh surface (`docs/portfolio-analysis.md`
+        // §Outcome learning).
         let out_fmp = FmpDataSource::new(fmp_key)
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
         let outcome_prices = portfolio::outcome::LiveOutcomePrices { fmp: out_fmp };
 
-        // A requested resume loads and validates the checkpoint trail here —
-        // fast refusal with the reason, before the slot is claimed. The roster
-        // check uses the ids the analyst will actually run under.
+        // Validated here so a refused resume fails fast with the reason, before
+        // the slot is claimed. The roster check uses the ids the analyst will
+        // actually run under.
         let resume_checkpoint = if resume_requested {
             let conn = storage::open(&paths.db_path).map_err(|e| e.to_string())?;
             let cp = portfolio::store::load_checkpoint(&conn)
@@ -951,33 +812,26 @@ async fn generate_portfolio_manual(
     }
 }
 
-/// What the tracker's terminal state renders about a resumable interrupted run
-/// (`docs/portfolio-analysis.md` §Failure posture: resume is offered from a
-/// failed / cancelled run's tracker state, only while an eligible checkpoint
-/// trail exists and its pinned pull is younger than the resume window). The
-/// trail is not necessarily the shown run's own — a run failing before it opens
-/// its own trail leaves an earlier one standing — which is why `run_id` and
-/// `created_at` identify it to the frontend.
+/// The tracker's resume offer for a failed / cancelled run
+/// (`docs/portfolio-analysis.md` §Failure posture). The trail is not necessarily
+/// the shown run's own — a run failing before it opens its own trail leaves an
+/// earlier one standing — which is why `run_id` and `created_at` identify it.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PortfolioResumeStatus {
-    /// Whether Resume can be offered right now.
     available: bool,
-    /// The interrupted run's id, when a checkpoint trail exists at all.
+    /// `None` when no checkpoint trail exists at all.
     run_id: Option<String>,
-    /// The pinned pull's as-of (the interrupted run's `created_at`).
+    /// The pinned pull's as-of.
     created_at: Option<String>,
-    /// Completed holdings restored on resume.
     completed: usize,
-    /// The holdings the interrupted run set out to analyze (its work-list size,
-    /// or the whole book).
+    /// The interrupted run's work-list size, or the whole book.
     total: usize,
     /// Why resume is unavailable, when a trail exists but cannot resume.
     reason: Option<String>,
 }
 
-/// Read-only resumability probe for the tracker's failed / cancelled state.
-/// Never claims the run slot and fetches nothing.
+/// Read-only: never claims the run slot and fetches nothing.
 #[tauri::command]
 fn portfolio_resume_status(app: tauri::AppHandle) -> Result<PortfolioResumeStatus, String> {
     let conn = open_app_db(&app)?;
@@ -993,8 +847,7 @@ fn portfolio_resume_status(app: tauri::AppHandle) -> Result<PortfolioResumeStatu
     let Some(cp) = portfolio::store::load_checkpoint(&conn).map_err(|e| e.to_string())? else {
         return Ok(none);
     };
-    // The ids a resume's analyst would run under — the roster check's basis
-    // (`resume_eligibility`), through the fallback rule's single home.
+    // The ids a resume's analyst would actually run under.
     let roster = local_model::roster_from_config(&cfg);
     let fast = portfolio::pipeline::effective_fast_model(&roster.reasoner, &roster.fast);
     let ids = vec![roster.reasoner.clone(), fast];
@@ -1016,29 +869,24 @@ fn portfolio_resume_status(app: tauri::AppHandle) -> Result<PortfolioResumeStatu
     })
 }
 
-/// Run the engine-only Portfolio **quick check** (`docs/portfolio-analysis.md §The
-/// quick check`): the between-run engine pass — no model call, no web
-/// research, no Schwab call. The gate is **presence-only**: the local-suite config
-/// presence (which carries the FMP / FRED credential presence) plus the Schwab
-/// connection precondition — the daemon-connectivity probe is deliberately skipped,
-/// so the check runs even configured-but-down (`docs/interface.md §Connection
-/// status`). Holds the single global run slot like any job and streams per-holding
-/// rows to the tracker. No external fetch precedes the slot: the sources are built
-/// here but fetch only inside `run_quick_check_job` (the ticker → CIK map lazily on
-/// first use), after the slot is claimed and the cancel flag cleared.
+/// Runs the engine-only Portfolio quick check (`docs/portfolio-analysis.md §The
+/// quick check`) and returns its state. The gate is presence-only — local-suite
+/// config presence plus the Schwab connection, no daemon probe — so the check
+/// runs even configured-but-down. Holds the global run slot like any job; no
+/// external fetch precedes the slot (the ticker → CIK map loads lazily on first
+/// use).
 #[tauri::command]
 async fn run_portfolio_quick_check(
     app: tauri::AppHandle,
     guard: tauri::State<'_, RunGuard>,
     cancel: tauri::State<'_, CancelFlag>,
 ) -> Result<portfolio::quick_check::QuickCheckState, String> {
-    // Read config on a short-lived connection dropped before the await (a
-    // `rusqlite::Connection` is not `Send`).
+    // A `rusqlite::Connection` is not `Send`, so the config read drops it before
+    // the await.
     let cfg = {
         let conn = open_app_db(&app)?;
         AppConfig::load(&conn)
     };
-    // Presence-only gate — no daemon probe: the quick check makes no model call.
     let report = local_model::local_presence_gate(&cfg);
     if report.is_blocked {
         return Err(config::blocked_summary_named("run the quick check", &report));
@@ -1048,11 +896,8 @@ async fn run_portfolio_quick_check(
     let ctx = live_run_context(&app, cancel.inner().0.clone());
 
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        // The Schwab connection stays a presence precondition, like everywhere in
-        // the suite, though no Schwab call is made — building the source verifies
-        // it. Inside the blocking task because the check reads the Keychain
-        // (`build_holdings_source`'s contract) and must not stall the async
-        // command executor.
+        // Building the source verifies the Schwab precondition though no Schwab
+        // call is made; inside the blocking task because it reads the Keychain.
         build_holdings_source(&cfg)?;
         let fmp = FmpDataSource::new(cfg.fmp_api_key.clone().unwrap_or_default())
             .map_err(|e| e.to_string())?
@@ -1060,10 +905,8 @@ async fn run_portfolio_quick_check(
         let sec = sec::SecEdgarSource::new()
             .map_err(|e| e.to_string())?
             .with_context(ctx.clone());
-        // The ticker→CIK map is loaded lazily on first use inside the run slot
-        // (`LazyCikResolver`), never eagerly here — same ordering invariant as the
-        // full run: no external fetch before the slot is claimed and the cancel
-        // flag cleared.
+        // Loaded on first use inside the run slot, never eagerly here: no external
+        // fetch before the slot is claimed and the cancel flag cleared.
         let cik = sec::LazyCikResolver::new(sec::cik_cache_path_beside(&paths.db_path));
         let fred = crate::fred::FredDataSource::new(cfg.fred_api_key.clone().unwrap_or_default())
             .map_err(|e| e.to_string())?
@@ -1083,9 +926,7 @@ async fn run_portfolio_quick_check(
     }
 }
 
-/// The latest persisted quick-check state for the Portfolio page's card overlay
-/// (attention flags, evidence-event badges, degraded-sweep notes), or `None` when
-/// no quick check has run since the last full pass. Sync: one local SQLite read.
+/// `None` when no quick check has run since the last full pass.
 #[tauri::command]
 fn latest_quick_check(
     app: tauri::AppHandle,
@@ -1094,9 +935,8 @@ fn latest_quick_check(
     portfolio::store::latest_quick_check(&conn).map_err(|e| e.to_string())
 }
 
-/// The most recent persisted Portfolio Analysis run for the Portfolio page
-/// (`docs/portfolio-analysis.md §Storage and display`), or `None` before the first
-/// run — the frontend renders the empty state. Sync: one local SQLite read.
+/// The most recent run (`docs/portfolio-analysis.md §Storage and display`), or
+/// `None` before the first.
 #[tauri::command]
 fn latest_portfolio_run(
     app: tauri::AppHandle,
@@ -1105,10 +945,8 @@ fn latest_portfolio_run(
     portfolio::store::latest_run(&conn).map_err(|e| e.to_string())
 }
 
-/// The sidebar's Portfolio-runs history (`docs/interface.md §Main Layout`):
-/// summaries of the retained runs, newest first, capped at the per-feature
-/// retention window — columns only, never the full run blobs. A fresh install
-/// lists as empty rather than erroring. Sync: one local SQLite read.
+/// The sidebar's run history (`docs/interface.md §Main Layout`): newest first,
+/// capped at the retention window, columns only — never the full run blobs.
 #[tauri::command]
 fn list_portfolio_runs(
     app: tauri::AppHandle,
@@ -1118,10 +956,9 @@ fn list_portfolio_runs(
         .map_err(|e| e.to_string())
 }
 
-/// Load one persisted Portfolio Analysis run by id for the read-only historical
-/// view (`docs/interface.md §Main Layout` — selecting a sidebar run renders it on
-/// the Portfolio page). `None` when the id is unknown — e.g. pruned between
-/// listing and click; the frontend re-lists. Sync: one local SQLite read.
+/// One run for the historical view (`docs/interface.md §Main Layout`). `None`
+/// when the id is unknown — e.g. pruned between listing and click; the frontend
+/// re-lists.
 #[tauri::command]
 fn get_portfolio_run(
     app: tauri::AppHandle,
@@ -1131,9 +968,8 @@ fn get_portfolio_run(
     portfolio::store::run_by_id(&conn, &run_id).map_err(|e| e.to_string())
 }
 
-/// The latest standalone **Pull holdings** snapshot for the Portfolio page
-/// (`docs/portfolio-analysis.md §Triggering` — view-only, never read by the job),
-/// or `None` before any pull. Sync: one local SQLite read.
+/// The latest Pull holdings snapshot (`docs/portfolio-analysis.md §Triggering`):
+/// view-only, never read by the job; `None` before any pull.
 #[tauri::command]
 fn latest_holdings_pull(
     app: tauri::AppHandle,
@@ -1142,22 +978,18 @@ fn latest_holdings_pull(
     portfolio::store::latest_pull(&conn).map_err(|e| e.to_string())
 }
 
-/// Standalone **Pull holdings** (`docs/portfolio-analysis.md §Triggering`): fetch the
-/// current positions from the connected Schwab account (or the fixture behind the
-/// escape hatch), persist them as the latest view-only snapshot, and return them. It
-/// never triggers analysis and never becomes the holdings-diff baseline — the job
-/// always re-pulls and diffs against the prior *run's* snapshot. Gates on the Schwab
-/// connection only (no model call → no local-model gate), so it works before local
-/// models are configured. Holds the single run slot as `RunKind::HoldingsPull` so it
-/// can't race a job's own pull or token refresh; the quick local persist happens
-/// after the slot is released.
+/// Standalone Pull holdings (`docs/portfolio-analysis.md §Triggering`): persists
+/// the view-only snapshot and returns it; never a holdings-diff baseline. Gates on
+/// the Schwab connection only, so it works before local models are configured.
+/// Holds the run slot as `RunKind::HoldingsPull` so it can't race a job's own pull
+/// or token refresh; the persist happens after the slot is released.
 #[tauri::command]
 async fn pull_holdings(
     app: tauri::AppHandle,
     guard: tauri::State<'_, RunGuard>,
 ) -> Result<portfolio::store::HoldingsPull, String> {
-    // Read config on a short-lived connection dropped before the await (a
-    // `rusqlite::Connection` is not `Send`).
+    // A `rusqlite::Connection` is not `Send`, so the config read drops it before
+    // the await.
     let cfg = {
         let conn = open_app_db(&app)?;
         AppConfig::load(&conn)
@@ -1169,7 +1001,7 @@ async fn pull_holdings(
             .try_begin(RunKind::HoldingsPull)
             .ok_or_else(|| "Another job is running — pull holdings once it finishes.".to_string())?;
         let source = build_holdings_source(&cfg)?;
-        // Snapshot assembly runs the same book-level normalization as a run's pull
+        // The same book-level normalization as a run's pull
         // (`docs/schwab-integration.md` §What is pulled), so the view and the job
         // read one position identity per symbol.
         source
@@ -1189,12 +1021,9 @@ async fn pull_holdings(
     Ok(pull)
 }
 
-/// The local-suite **presence** gate for the Persistent Warning Area
-/// (`docs/interface.md §Persistent Warning Area` — both local categories are
-/// presence-based, fired on missing *configuration*, never a connectivity probe).
-/// Deliberately separate from the cloud `check_configuration`: `is_blocked` here
-/// means the **local jobs** are blocked, never the report. Sync — local SQLite +
-/// Keychain reads only.
+/// The local-suite presence gate for the Persistent Warning Area
+/// (`docs/interface.md §Persistent Warning Area`): `is_blocked` means the local
+/// jobs are blocked, never the report. No connectivity probe.
 #[tauri::command]
 fn check_local_configuration(app: tauri::AppHandle) -> Result<config::ValidationReport, String> {
     let cfg = {
@@ -1209,12 +1038,9 @@ fn check_local_configuration(app: tauri::AppHandle) -> Result<config::Validation
     ))
 }
 
-/// The report behind [`check_local_configuration`]: the `local-models` category from
-/// the config fields alone (`local_model::local_presence_gate`) plus the `schwab`
-/// category from the stored token state (`schwab_oauth::schwab_gate` — not connected,
-/// refresh lapsed, or unreadable; no network). A failed Keychain read raises the
-/// Schwab category rather than failing the report, so every other category still
-/// stands (`docs/schwab-integration.md §Failure posture`).
+/// A failed Keychain read raises the Schwab category rather than failing the
+/// report, so every other category still stands (`docs/schwab-integration.md
+/// §Failure posture`).
 fn local_configuration_report(
     cfg: &AppConfig,
     store: &dyn TokenStore,
@@ -1240,44 +1066,33 @@ fn local_configuration_report(
     }
 }
 
-/// List the most recent persisted reports for the Recent Reports sidebar
-/// (`docs/interface.md`, `docs/storage.md` — newest first, capped at the
-/// 30-report retention window). A fresh install with no reports yet lists as
-/// empty rather than erroring; the frontend renders the empty state.
+/// The Recent Reports sidebar's list (`docs/interface.md`, `docs/storage.md`):
+/// newest first, capped at the retention window. A fresh install lists as empty
+/// rather than erroring.
 #[tauri::command]
 fn list_reports(app: tauri::AppHandle) -> Result<Vec<agent::ReportSummary>, String> {
     let paths = report_paths(&app)?;
     pipeline::list_reports(&paths).map_err(|e| e.to_string())
 }
 
-/// Load one persisted report by id for the Latest Report View: its summary plus
-/// its canonical Markdown read back from disk (`docs/report-workflow.md
-/// §Step 18`). An unknown id, or a Markdown file removed out-of-band, surfaces as
-/// an error the view renders.
+/// A report's summary plus its Markdown read back from disk
+/// (`docs/report-workflow.md §Step 18`). An unknown id, or a Markdown file removed
+/// out-of-band, is an error the view renders.
 #[tauri::command]
 fn load_report(app: tauri::AppHandle, report_id: String) -> Result<GeneratedReport, String> {
     let paths = report_paths(&app)?;
     pipeline::load_report(&paths, &report_id).map_err(|e| e.to_string())
 }
 
-/// Export one report's canonical Markdown to a user-chosen location
-/// (`docs/export.md`). The report is resolved first — a bad id or a Markdown file
-/// removed out-of-band fails here, before any dialog pops — which also yields the
-/// `created_at` used to suggest the spec's export filename
-/// (`YYYY-MM-DD-market-signal-report.md`, no internal id suffix). The
-/// native Save dialog runs on a blocking thread: `blocking_save_file` parks the
-/// calling thread until the user responds and must not run on the async runtime
-/// thread, so it goes through `spawn_blocking` (the same seam
-/// `generate_report_manual` uses). A cancelled dialog returns `Ok(false)`; a saved
-/// file returns `Ok(true)` after the stored Markdown is written to the chosen path.
-/// Exporting reads stored artifacts only and never re-runs the workflow
-/// (`docs/export.md §Export Behavior`).
+/// Exports one report's Markdown to a user-chosen location (`docs/export.md`).
+/// The report is resolved before any dialog pops, which also yields the
+/// `created_at` for the suggested filename. `blocking_save_file` parks the calling
+/// thread, so the dialog runs through `spawn_blocking`. Returns `Ok(false)` on a
+/// cancelled dialog, `Ok(true)` once the file is written.
 #[tauri::command]
 async fn export_report_markdown(app: tauri::AppHandle, report_id: String) -> Result<bool, String> {
     let paths = report_paths(&app)?;
 
-    // Resolve the report before showing a dialog: validates the id and that the
-    // Markdown is readable, and supplies created_at for the suggested name.
     let report = pipeline::load_report(&paths, &report_id).map_err(|e| e.to_string())?;
     let suggested = pipeline::export_basename(&report.summary.created_at, "md", &chrono::Local)
         .map_err(|e| e.to_string())?;
@@ -1295,7 +1110,6 @@ async fn export_report_markdown(app: tauri::AppHandle, report_id: String) -> Res
         .map_err(|e| format!("save dialog task failed: {e}"))?
     };
 
-    // User dismissed the dialog without choosing a path.
     let Some(chosen) = chosen else {
         return Ok(false);
     };
@@ -1305,23 +1119,17 @@ async fn export_report_markdown(app: tauri::AppHandle, report_id: String) -> Res
     Ok(true)
 }
 
-/// A supplied passphrase, with the "leave blank for plaintext" convention
-/// applied: a missing or whitespace-only value means no encryption
-/// (`docs/data-portability.md §Optional passphrase encryption`). The original
-/// string is otherwise preserved byte-for-byte — a passphrase is never trimmed.
+/// A missing or whitespace-only passphrase means plaintext
+/// (`docs/data-portability.md §Optional passphrase encryption`); the string is
+/// otherwise never trimmed.
 fn normalized_passphrase(passphrase: Option<String>) -> Option<String> {
     passphrase.filter(|p| !p.trim().is_empty())
 }
 
-/// Export the whole analytical corpus to a single archive
-/// (`docs/data-portability.md §Export flow`): a Save dialog picks the
-/// destination, then `portability::export_archive` serializes the included
-/// tables and files entirely in Rust. Returns `Ok(None)` on a cancelled dialog.
-///
-/// The run slot is claimed as `RunKind::DataPortability` for the whole command
-/// — including the dialog — so a report or local-suite job can never start
-/// against the store mid-archive (and a mid-run export can never capture a
-/// half-written state).
+/// Exports the corpus to one archive (`docs/data-portability.md §Export flow`);
+/// `Ok(None)` on a cancelled dialog. The run slot is held as
+/// `RunKind::DataPortability` for the whole command, dialog included, so no job
+/// can start against the store mid-archive.
 #[tauri::command]
 async fn export_data(
     app: tauri::AppHandle,
@@ -1333,8 +1141,8 @@ async fn export_data(
         return Err("A job is currently running — export can start once it finishes.".into());
     };
 
-    // The archive is a corpus file, not a report file: local date, no `-<id8>`
-    // suffix (`docs/data-portability.md §The archive`).
+    // A corpus file, not a report file: local date, no `-<id8>` suffix
+    // (`docs/data-portability.md §The archive`).
     let suggested = format!(
         "market-signal-export-{}.zip",
         chrono::Local::now().format("%Y-%m-%d")
@@ -1367,10 +1175,9 @@ async fn export_data(
     .map_err(|e| format!("export task failed: {e}"))?
 }
 
-/// What the Import flow needs to know before committing
-/// (`docs/data-portability.md §Import flow`): the picked archive, its manifest
-/// read, and whether the target store is empty (empty → straight load;
-/// non-empty → the frontend's replace-all confirmation).
+/// What the Import flow needs before committing (`docs/data-portability.md
+/// §Import flow`): an empty store loads straight, a non-empty one goes through
+/// the frontend's replace-all confirmation.
 #[derive(serde::Serialize)]
 struct ImportInspection {
     path: String,
@@ -1378,10 +1185,9 @@ struct ImportInspection {
     info: portability::ArchiveInfo,
 }
 
-/// Pick an archive and read its manifest without touching the store. Returns
-/// `Ok(None)` on a cancelled dialog. An encrypted archive without a passphrase
-/// (or with the wrong one) surfaces as an error telling the user to supply it —
-/// read-only, so it deliberately does not claim the run slot.
+/// Picks an archive and reads its manifest without touching the store;
+/// `Ok(None)` on a cancelled dialog. Read-only, so it deliberately does not
+/// claim the run slot.
 #[tauri::command]
 async fn import_data_inspect(
     app: tauri::AppHandle,
@@ -1421,11 +1227,9 @@ async fn import_data_inspect(
     }))
 }
 
-/// Load an inspected archive into the store (`docs/data-portability.md §Import
-/// flow`): fresh-load into an empty store, or replace-all when the frontend's
-/// confirmation set `replace`. `app_settings` is never read or written. Slot-
-/// claimed like `export_data`, so no job can start against the store
-/// mid-replacement.
+/// Loads an inspected archive (`docs/data-portability.md §Import flow`):
+/// fresh-load into an empty store, or replace-all when `replace` is set.
+/// `app_settings` is never touched. Slot-claimed like `export_data`.
 #[tauri::command]
 async fn import_data(
     app: tauri::AppHandle,
@@ -1449,10 +1253,8 @@ async fn import_data(
     .map_err(|e| format!("import task failed: {e}"))?
 }
 
-/// Resolve the SQLite path and ensure the app data directory exists, so a
-/// command that touches the database works even before the first report has been
-/// generated (the pipeline creates the directory as a side effect, but the
-/// status/settings commands can run first).
+/// Ensures the data directory exists, so a command that touches the database
+/// works before the first report has been generated.
 fn open_app_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
     let paths = report_paths(app)?;
     if let Some(parent) = paths.db_path.parent() {
@@ -1463,9 +1265,7 @@ fn open_app_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
     Ok(conn)
 }
 
-/// Current job status for the UI's status panel (`docs/scheduling.md §Job Status
-/// Visibility`): last successful run, last failure, last skipped event, and
-/// whether a run is in flight.
+/// The status panel's job state (`docs/scheduling.md §Job Status Visibility`).
 #[tauri::command]
 fn job_status(
     app: tauri::AppHandle,
@@ -1475,22 +1275,18 @@ fn job_status(
     jobs::job_status(&conn, &guard).map_err(|e| e.to_string())
 }
 
-/// The current Settings state (`docs/configuration.md`, `docs/interface.md
-/// §Settings`): the four agent model selections, a configured flag per credential
-/// (never the secret itself), and the model dropdown's options. Reads from the
-/// saved store with an env fallback per field.
+/// The Settings state (`docs/configuration.md`, `docs/interface.md §Settings`):
+/// a configured flag per credential, never the secret. Reads the saved store with
+/// an env fallback per field.
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> Result<settings::SettingsView, String> {
     let conn = open_app_db(&app)?;
     Ok(settings::load_view(&conn))
 }
 
-/// Persist the **cloud** Settings submission — agent models + the two API tokens
-/// (`docs/configuration.md §API Tokens`; the token gate is scoped here, never to
-/// Settings as a whole). Model slugs are validated; each token is written only
-/// when a new value is supplied, so an untouched field keeps its stored secret.
-/// The frontend re-runs `check_configuration` afterward, so completing the config
-/// clears the Persistent Warning Area's blocking categories.
+/// Persists the cloud Settings submission (`docs/configuration.md §API Tokens`).
+/// Each token is written only when a new value is supplied, so an untouched
+/// field keeps its stored secret.
 #[tauri::command]
 fn save_settings(
     app: tauri::AppHandle,
@@ -1501,12 +1297,9 @@ fn save_settings(
     settings::save(&conn, &models, &credentials).map_err(|e| e.to_string())
 }
 
-/// Persist the external data-provider credentials (FMP / FRED / Tavily) —
-/// **ungated** by the cloud tokens, so a cloud-keyless machine completes
-/// local-suite setup (`docs/configuration.md §External Data Provider
-/// Credentials`). The frontend re-runs both `check_configuration` and
-/// `check_local_configuration` afterward: the shared missing-provider-credentials
-/// category serves both gates.
+/// Persists the FMP / FRED / Tavily credentials, ungated by the cloud tokens so
+/// a cloud-keyless machine completes local-suite setup (`docs/configuration.md
+/// §External Data Provider Credentials`).
 #[tauri::command]
 fn save_provider_credentials(
     app: tauri::AppHandle,
@@ -1516,12 +1309,8 @@ fn save_provider_credentials(
     settings::save_provider_credentials(&conn, &credentials).map_err(|e| e.to_string())
 }
 
-/// Persist the local-analysis-models config — daemon endpoint + roster ids
-/// (`docs/configuration.md §Local Models`) — **ungated**: presence of these
-/// fields is the in-app clear path for the *local models not configured*
-/// warning, so the frontend re-runs `check_local_configuration` afterward.
-/// Sync: local SQLite writes, no network — the
-/// save never probes the daemon (presence, not connectivity).
+/// Persists the local-models config (`docs/configuration.md §Local Models`),
+/// ungated. Presence, not connectivity: the save never probes the daemon.
 #[tauri::command]
 fn save_local_model_settings(
     app: tauri::AppHandle,
@@ -1531,14 +1320,11 @@ fn save_local_model_settings(
     settings::save_local_models(&conn, &values).map_err(|e| e.to_string())
 }
 
-/// Validate one configured provider credential with a single live authenticated
-/// request (Settings "Test connection"). Reads the *saved* credential (env
-/// fallback per field, like the gate); an unset credential returns a
-/// not-configured result without any network call. The blocking HTTP request
-/// goes through `spawn_blocking` — `reqwest::blocking` would panic on the async
-/// runtime thread, the same seam `generate_report_manual` uses. The request
-/// validates the key only: it never spends model tokens, and it does not change
-/// the execution gate, which checks credential *presence*, not validity.
+/// Validates one saved credential with a single live request (Settings "Test
+/// connection"); an unset credential returns not-configured with no network
+/// call. The blocking request goes through `spawn_blocking`. Validates the key
+/// only: it never spends model tokens, and the execution gate checks presence,
+/// not validity.
 #[tauri::command]
 async fn test_connection(
     app: tauri::AppHandle,
@@ -1547,9 +1333,8 @@ async fn test_connection(
     use connection_test::CredentialProvider;
     let target = CredentialProvider::from_label(&provider).map_err(|e| e.to_string())?;
 
-    // Read the saved credential on a short-lived connection dropped before the
-    // await — a `rusqlite::Connection` is not `Send` and must never cross an
-    // await point.
+    // A `rusqlite::Connection` is not `Send`, so the credential read drops it
+    // before the await.
     let key = {
         let conn = open_app_db(&app)?;
         let cfg = AppConfig::load(&conn);
@@ -1576,10 +1361,8 @@ async fn test_connection(
         .map_err(|e| format!("connection test task failed: {e}"))
 }
 
-/// Persist the web-research config — the SearXNG endpoint
-/// (`docs/configuration.md §Web Research`) — **ungated**: SearXNG is off every
-/// gate, so the save never depends on a token or on reachability. Sync: one
-/// SQLite write, no probe.
+/// Persists the SearXNG endpoint (`docs/configuration.md §Web Research`),
+/// ungated: SearXNG is off every gate. No probe.
 #[tauri::command]
 fn save_web_research_settings(
     app: tauri::AppHandle,
@@ -1589,47 +1372,36 @@ fn save_web_research_settings(
     settings::save_web_research(&conn, &values).map_err(|e| e.to_string())
 }
 
-/// Probe the configured SearXNG instance — the Settings connection row's test
-/// and the pre-run web-research notice share this one read
-/// (`docs/web-research.md §Tavily fallback`; `docs/interface.md §Pre-run
-/// web-research notice`). Never a gate: the result carries a degraded flag the
-/// frontend renders as a confirm-and-proceed notice. The local suite is
-/// **SearXNG-only**, so the preflight reports **no fallback** unconditionally,
-/// and a degraded local run is always flagged *not recommended* (it researches
-/// blind). The blocking probe goes
-/// through `spawn_blocking`, the same seam as the other connection tests.
+/// Probes the configured SearXNG instance for the Settings row's test and the
+/// pre-run notice (`docs/web-research.md §Tavily fallback`; `docs/interface.md
+/// §Pre-run web-research notice`). Never a gate. The local suite is SearXNG-only,
+/// so the preflight reports no fallback and a degraded run is always flagged not
+/// recommended. The blocking probe goes through `spawn_blocking`.
 #[tauri::command]
 async fn test_searxng(
     app: tauri::AppHandle,
 ) -> Result<web_research::search::WebResearchPreflight, String> {
-    // Read the saved config on a short-lived connection dropped before the
-    // await — a `rusqlite::Connection` is not `Send`.
+    // A `rusqlite::Connection` is not `Send`, so the config read drops it before
+    // the await.
     let endpoint = {
         let conn = open_app_db(&app)?;
         let cfg = AppConfig::load(&conn);
         cfg.searxng_endpoint.clone()
     };
     tauri::async_runtime::spawn_blocking(move || {
-        // The local suite is SearXNG-only (Tavily is reserved for the report
-        // job), so a degraded local run researches blind — the preflight carries
-        // no fallback flag, and the notice always reads not-recommended.
         web_research::search::preflight(endpoint.as_deref())
     })
     .await
     .map_err(|e| format!("SearXNG probe task failed: {e}"))
 }
 
-/// Probe the local-model daemon for the Settings "Test connection" control (the local
-/// analysis suite's parallel to `test_connection`). Reads the *saved* local config
-/// (endpoint + roster, env fallback per field); an unconfigured endpoint returns a
-/// not-configured result with no network call. The blocking probe (`/api/tags`) goes
-/// through `spawn_blocking` — `reqwest::blocking` would panic on the async runtime
-/// thread, the same seam `generate_report_manual` uses. Read-only: it never starts a
-/// job and does not touch the cloud-report gate.
+/// Probes the local-model daemon for Settings "Test connection"; an unconfigured
+/// endpoint returns not-configured with no network call. The blocking probe goes
+/// through `spawn_blocking`. Read-only.
 #[tauri::command]
 async fn test_local_daemon(app: tauri::AppHandle) -> Result<local_model::LocalDaemonStatus, String> {
-    // Read the saved config on a short-lived connection dropped before the await — a
-    // `rusqlite::Connection` is not `Send` and must never cross an await point.
+    // A `rusqlite::Connection` is not `Send`, so the config read drops it before
+    // the await.
     let (endpoint, roster) = {
         let conn = open_app_db(&app)?;
         let cfg = AppConfig::load(&conn);
@@ -1648,12 +1420,10 @@ async fn test_local_daemon(app: tauri::AppHandle) -> Result<local_model::LocalDa
         .map_err(|e| format!("local daemon test task failed: {e}"))
 }
 
-/// List the user-supplied documents currently in the research inbox
-/// (`docs/research-documents.md`). A fresh install with no inbox folder yet lists
-/// as empty rather than erroring; the frontend renders the empty state. The last
-/// job pass's parse failures are joined on best-effort (`§Parse Failures` — the
-/// file shows in an error state so the user can fix or delete it); an unreadable
-/// DB costs the error states, never the listing.
+/// The research inbox's documents (`docs/research-documents.md`); a fresh
+/// install with no inbox folder lists as empty. The last pass's parse failures
+/// are joined best-effort (`§Parse Failures`): an unreadable DB costs the error
+/// states, never the listing.
 #[tauri::command]
 fn list_research_inbox(app: tauri::AppHandle) -> Result<Vec<research::ResearchDocument>, String> {
     let inbox = research_inbox_dir(&app)?;
@@ -1666,20 +1436,17 @@ fn list_research_inbox(app: tauri::AppHandle) -> Result<Vec<research::ResearchDo
     Ok(docs)
 }
 
-/// Delete one document from the research inbox by file name
-/// (`docs/research-documents.md` §User Permissions — the user may delete from the
-/// inbox). The name is validated as a bare file name in `research::` so it cannot
-/// escape the inbox directory.
+/// (`docs/research-documents.md` §User Permissions.) The name is validated as a
+/// bare file name in `research::` so it cannot escape the inbox directory.
 #[tauri::command]
 fn delete_research_document(app: tauri::AppHandle, name: String) -> Result<(), String> {
     let inbox = research_inbox_dir(&app)?;
     research::delete_folder_document(&inbox, &name).map_err(|e| e.to_string())
 }
 
-/// Open the research-inbox folder in the OS file manager so the user can drop
-/// documents into it (the spec's canonical interaction — the user manually places
-/// files; `docs/research-documents.md` §Research Inbox). The folder is created on
-/// demand so a first-time reveal lands somewhere real.
+/// Opens the inbox folder in the OS file manager (`docs/research-documents.md`
+/// §Research Inbox); created on demand so a first-time reveal lands somewhere
+/// real.
 #[tauri::command]
 fn reveal_research_inbox(app: tauri::AppHandle) -> Result<(), String> {
     let inbox = research_inbox_dir(&app)?;
@@ -1690,31 +1457,25 @@ fn reveal_research_inbox(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| format!("opening research inbox: {e}"))
 }
 
-/// List the documents currently in the research archive
-/// (`docs/research-documents.md`). Successfully-processed inbox documents are
-/// moved here; a fresh install with no archive folder yet lists as empty rather
-/// than erroring, so the frontend renders the empty state.
+/// The research archive's documents (`docs/research-documents.md`); a fresh
+/// install with no archive folder lists as empty.
 #[tauri::command]
 fn list_research_archive(app: tauri::AppHandle) -> Result<Vec<research::ResearchDocument>, String> {
     let archive = research_archive_dir(&app)?;
     research::list_folder(&archive).map_err(|e| e.to_string())
 }
 
-/// Delete one document from the research archive by file name
-/// (`docs/research-documents.md` §User Permissions — the user may delete from
-/// either folder). The name is validated as a bare file name in `research::` so it
-/// cannot escape the archive directory.
+/// (`docs/research-documents.md` §User Permissions.) The name is validated as a
+/// bare file name in `research::` so it cannot escape the archive directory.
 #[tauri::command]
 fn delete_research_archive_document(app: tauri::AppHandle, name: String) -> Result<(), String> {
     let archive = research_archive_dir(&app)?;
     research::delete_folder_document(&archive, &name).map_err(|e| e.to_string())
 }
 
-/// Open the research-archive folder in the OS file manager so the user can inspect
-/// what the pipeline has filed. The archive is read-only by spec — the user may
-/// view or delete here but not add (archiving is automatic;
-/// `docs/research-documents.md` §User Permissions). The folder is created on demand
-/// so a first-time reveal lands somewhere real.
+/// Opens the archive folder in the OS file manager (`docs/research-documents.md`
+/// §User Permissions); created on demand so a first-time reveal lands somewhere
+/// real.
 #[tauri::command]
 fn reveal_research_archive(app: tauri::AppHandle) -> Result<(), String> {
     let archive = research_archive_dir(&app)?;
@@ -1725,13 +1486,10 @@ fn reveal_research_archive(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| format!("opening research archive: {e}"))
 }
 
-/// Aggregate truncation telemetry for the Settings diagnostics section
-/// (`docs/agents.md §Data Extraction`): how often the deterministic Step-6 parser
-/// had to head-truncate an oversized inbox document, accumulated across reports.
-/// Fail-soft like the rest of the diagnostics surface — an unopenable DB degrades
-/// to an empty `TruncationStats` (which reads as "no truncations recorded") rather
-/// than failing the Settings load. The empty aggregate is itself the signal that
-/// overflow is not yet common, so it must never be a hard error here.
+/// The Settings diagnostics' truncation telemetry (`docs/agents.md §Data
+/// Extraction`). Fail-soft: an unopenable DB degrades to an empty
+/// `TruncationStats` rather than failing the Settings load, since the empty
+/// aggregate is itself a signal.
 #[tauri::command]
 fn truncation_stats(app: tauri::AppHandle) -> storage::TruncationStats {
     let Ok(conn) = open_app_db(&app) else {
@@ -1740,12 +1498,10 @@ fn truncation_stats(app: tauri::AppHandle) -> storage::TruncationStats {
     storage::truncation_stats(&conn).unwrap_or_default()
 }
 
-/// The fixed investor-profile preset as ready-to-render read-only Settings rows
-/// (`docs/configuration.md` §Investor Profile; `docs/interface.md` Settings tree).
-/// Pure — no store, no side effects: the preset is not user-configured, so the
-/// display derives from [`portfolio::InvestorProfile::default_fixture`] alone,
-/// through the same label source the per-holding action call's prompt renders
-/// (`portfolio::pipeline::action_user_prompt` — the INVESTOR PROFILE block).
+/// The investor-profile preset as read-only Settings rows (`docs/configuration.md`
+/// §Investor Profile). Pure: the preset is not user-configured, so the display
+/// derives from the fixture alone, through the same label source the action
+/// prompt renders.
 #[tauri::command]
 fn get_investor_profile() -> portfolio::InvestorProfileDisplay {
     portfolio::InvestorProfile::default_fixture().display()
@@ -1759,22 +1515,13 @@ pub fn run() {
         .manage(RunGuard::default())
         .manage(CancelFlag::default())
         .setup(|app| {
-            // One-time legacy-naming migration (docs/storage.md §Legacy Naming
-            // Migration): on first launch after the manual-only pivot, rewrite
-            // pre-pivot `report_type` slugs and `…-weekly-report` filenames in
-            // place. Best-effort — a failure logs and launch proceeds (the app
-            // still works against the old names), matching the codebase's
-            // fail-soft persistence posture. Idempotent, so a later launch with
-            // nothing to migrate is a cheap no-op.
+            // Legacy-naming migrations (docs/storage.md §Legacy Naming Migration):
+            // best-effort and idempotent — a failure logs and launch proceeds.
             match open_app_db(app.handle()) {
                 Ok(conn) => {
                     if let Err(e) = storage::migrate_legacy_naming(&conn) {
                         eprintln!("legacy-naming migration: degraded ({e})");
                     }
-                    // Sibling slug migration: rewrite the pre-pivot
-                    // `job_runs.job_type` value `weekly_market` → `market_signal`.
-                    // Independent of the naming migration above (different column),
-                    // same best-effort posture — a failure logs and launch proceeds.
                     if let Err(e) = storage::migrate_legacy_job_type(&conn) {
                         eprintln!("legacy-job-type migration: degraded ({e})");
                     }
@@ -1842,10 +1589,8 @@ mod tests {
 
     #[test]
     fn thought_log_gate_is_debug_default_with_an_explicit_override() {
-        // Unset: the build profile decides.
         assert!(thought_log_enabled(None, true));
         assert!(!thought_log_enabled(None, false));
-        // Explicit off wins in a debug build; explicit on wins in a release.
         assert!(!thought_log_enabled(Some("0"), true));
         assert!(!thought_log_enabled(Some("false"), true));
         assert!(thought_log_enabled(Some("1"), false));
@@ -1857,20 +1602,17 @@ mod tests {
 
     #[test]
     fn holdings_source_choice_prefers_fixture_then_live_then_blocks() {
-        // The fixture escape hatch wins even when a live connection exists...
         assert_eq!(choose_holdings_source(true, true), HoldingsChoice::Fixture);
         assert_eq!(choose_holdings_source(true, false), HoldingsChoice::Fixture);
-        // ...otherwise a live connection is used...
         assert_eq!(choose_holdings_source(false, true), HoldingsChoice::Live);
-        // ...and with neither, the job blocks for re-auth.
         assert_eq!(
             choose_holdings_source(false, false),
             HoldingsChoice::NotConnected
         );
     }
 
-    /// A fully configured local suite — the roster plus the shared FMP / FRED keys — so
-    /// the only category the local report can raise is Schwab's.
+    /// Fully configured, so the only category the local report can raise is
+    /// Schwab's.
     fn configured_local_suite() -> AppConfig {
         AppConfig {
             local_daemon_endpoint: Some("http://localhost:11434".into()),
@@ -1883,8 +1625,6 @@ mod tests {
 
     #[test]
     fn local_configuration_report_raises_the_schwab_warning_on_a_denied_keychain_read() {
-        // A denied Keychain read raises the Schwab category alone, carrying the
-        // unreadable item, and the local jobs block on it.
         let report = local_configuration_report(
             &configured_local_suite(),
             &schwab_secrets::DeniedTokenStore,
@@ -1903,8 +1643,6 @@ mod tests {
 
     #[test]
     fn local_configuration_report_keeps_the_other_categories_beside_a_denied_read() {
-        // A failed read leaves standing the categories that have nothing to do with
-        // the Keychain.
         let report = local_configuration_report(
             &AppConfig::default(),
             &schwab_secrets::DeniedTokenStore,
@@ -1934,14 +1672,12 @@ mod tests {
     fn local_configuration_report_reads_the_stored_connection() {
         let now = chrono::Utc::now();
         let store = schwab_secrets::InMemoryTokenStore::new();
-        // Never connected → the reconnect prompt.
         let report = local_configuration_report(&configured_local_suite(), &store, false, now);
         assert!(report.is_blocked);
         assert_eq!(
             report.categories[0].items,
             vec![schwab_oauth::SCHWAB_NOT_CONNECTED_MSG.to_string()]
         );
-        // Connected → nothing to warn about.
         store
             .set_tokens(&schwab_secrets::SchwabTokens {
                 access_token: "a".into(),
@@ -1981,12 +1717,10 @@ mod tests {
     #[test]
     fn blank_env_override_falls_through_to_build_split() {
         let base = PathBuf::from("/data/app");
-        // empty string -> debug split applies
         assert_eq!(
             resolve_data_dir(base.clone(), Some(String::new()), true),
             PathBuf::from("/data/app/dev"),
         );
-        // whitespace-only -> release passes through unchanged
         assert_eq!(
             resolve_data_dir(base.clone(), Some("   ".to_string()), false),
             base,
@@ -2008,21 +1742,18 @@ mod tests {
         storage::init_schema(&conn).unwrap();
         let store = schwab_secrets::InMemoryTokenStore::new();
 
-        // First save: id → app_settings, secret → the Keychain rail.
         persist_schwab_credentials(&conn, &store, "  client-abc  ", Some("dev-secret")).unwrap();
         assert_eq!(
             storage::get_setting(&conn, config::KEY_SCHWAB_CLIENT_ID)
                 .unwrap()
                 .as_deref(),
-            Some("client-abc") // trimmed, and it is not a secret
+            Some("client-abc") // trimmed
         );
         assert_eq!(
             store.get(schwab_secrets::SECRET_CLIENT_SECRET).unwrap().as_deref(),
             Some("dev-secret")
         );
 
-        // Re-save to change only the id (secret field left empty): the stored secret
-        // must survive, exactly as `settings::save` leaves an untouched API key in place.
         persist_schwab_credentials(&conn, &store, "client-xyz", None).unwrap();
         assert_eq!(
             storage::get_setting(&conn, config::KEY_SCHWAB_CLIENT_ID)
@@ -2048,7 +1779,6 @@ mod tests {
         storage::init_schema(&conn).unwrap();
         let store = schwab_secrets::InMemoryTokenStore::new();
 
-        // Connect under client-abc: a live token set is stored.
         persist_schwab_credentials(&conn, &store, "client-abc", Some("secret-1")).unwrap();
         let now = chrono::Utc::now();
         store
@@ -2060,16 +1790,12 @@ mod tests {
             })
             .unwrap();
 
-        // Re-saving the SAME id while rotating the secret keeps the session — a refresh
-        // token survives a secret change, so the tokens must NOT be cleared.
         persist_schwab_credentials(&conn, &store, "client-abc", Some("secret-2")).unwrap();
         assert!(
             store.tokens().unwrap().is_some(),
             "a secret rotation must not drop the session"
         );
 
-        // Changing the client id makes the stored tokens stale → cleared, forcing a
-        // reconnect. The secret itself is untouched by the id change.
         persist_schwab_credentials(&conn, &store, "client-xyz", None).unwrap();
         assert!(
             store.tokens().unwrap().is_none(),

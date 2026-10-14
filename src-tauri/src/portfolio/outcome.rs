@@ -1,15 +1,7 @@
-//! Outcome learning — the accuracy record (`docs/portfolio-analysis.md §Outcome
-//! learning`): an append-only store of **price records** (episodes), each scored
-//! once per horizon by an engine-computed **check**, and the per-arm **accuracy
-//! scores** derived from the checks. Everything here is deterministic; no model
-//! stage is involved, and nothing the model writes alters a check or a score.
-//!
-//! The core is pure and job-agnostic: the due rule, the check, the score and the
-//! opening cadence read a plain [`PriceRecord`] and its checks, so Trade
-//! Opportunities' episode store (the same record plus its lifecycle id and
-//! decision class) reuses them over its own table. The impure seams are thin:
-//! the closes source ([`OutcomePriceSource`]) and the store calls the job makes
-//! (`portfolio::store`).
+//! Outcome learning (`docs/portfolio-analysis.md §Outcome learning`): price
+//! records, the per-horizon checks scored against them, and the per-arm
+//! accuracy scores. Deterministic and job-agnostic; the closes source
+//! ([`OutcomePriceSource`]) is the one impure seam.
 
 use std::collections::BTreeMap;
 
@@ -27,8 +19,7 @@ pub const EPISODE_CADENCE_MONTHS: u32 = 1;
 
 /// The horizon proximity: a check reads the close on the horizon date, or the
 /// last session at or before it within this many sessions. Sessions count as
-/// weekdays — `market_clock` carries no holiday table, so a holiday counts as a
-/// session and the window is at most this many weekdays back.
+/// weekdays — there is no holiday table, so a holiday counts as a session.
 pub const HORIZON_PROXIMITY_SESSIONS: i64 = 5;
 
 /// The review check lines: the self-review's realized block shows the checks
@@ -67,15 +58,13 @@ impl Horizon {
         }
     }
 
-    /// The horizon a stored key names; `None` for any other text.
     pub fn from_key(key: &str) -> Option<Self> {
         Horizon::ALL.into_iter().find(|h| h.key() == key)
     }
 }
 
-/// One value per horizon, each null where none was stated — the model's expected
-/// prices (null where the appendix left a horizon unstated) or the engine's base
-/// values (null where the engine authored no band).
+/// One value per horizon; `None` where none was stated (a horizon the model's
+/// appendix left unstated, or one the engine authored no band for).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct HorizonPrices {
     pub three_month: Option<f64>,
@@ -92,32 +81,32 @@ impl HorizonPrices {
         }
     }
 
-    /// Whether any horizon carries a value.
     pub fn any(&self) -> bool {
         Horizon::ALL.iter().any(|h| self.get(*h).is_some())
     }
 }
 
-/// An episode — the **price record**: the symbol, the creation date (the
-/// creation run's ET session), the spot that day, the anchor close that bridges
-/// the record across a later split (the newest settled close strictly before the
-/// creation session, with its bar date), the model's expected share price and
-/// the engine's base value at the three horizons — nothing else. Never updated.
+/// An episode — the price record: the spot at creation, the model's expected
+/// share prices and the engine's base values at the three horizons. Never
+/// updated.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PriceRecord {
     pub symbol: String,
-    /// ISO `YYYY-MM-DD` — data, never identity (identity is insertion order).
+    /// ISO `YYYY-MM-DD`, the creation run's ET session — data, never identity
+    /// (identity is insertion order).
     pub created_on: String,
     pub spot: f64,
-    /// `None` when the creation run had no dated closes — every horizon then
-    /// writes unscorable rather than comparing cross-basis.
+    /// The newest settled close strictly before the creation session, with its
+    /// bar date — the bar a later split is bridged across. `None` when the
+    /// creation run had no dated closes; every horizon then writes unscorable
+    /// rather than comparing cross-basis.
     pub anchor: Option<DatedValue>,
     pub model: HorizonPrices,
     pub engine: HorizonPrices,
 }
 
-/// An episode under its store identity — the autoincrement id, whose order is
-/// insertion order (which episode is a holding's latest).
+/// An episode with its store id; id order is insertion order, which decides a
+/// holding's latest episode.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoredEpisode {
     pub id: i64,
@@ -126,9 +115,8 @@ pub struct StoredEpisode {
 
 // ---- Checks ------------------------------------------------------------------
 
-/// One arm's leg of a scored check: the expected price as compared — the
-/// recorded price converted through the check's bridge factor onto the close's
-/// basis — and the per-check score.
+/// One arm's leg of a scored check. `expected` is the recorded price converted
+/// through the check's bridge factor onto the close's basis.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct LegScore {
     pub expected: f64,
@@ -147,12 +135,11 @@ pub enum UnscorableCause {
     NoAnchor,
     /// The refreshed series no longer carries the episode's anchor bar.
     AnchorBarMissing,
-    /// The refreshed series served no close inside the proximity — a delisting,
-    /// an acquisition, a ticker change, a symbol the source never covered.
+    /// The refreshed series served no close inside the proximity (a delisting,
+    /// an acquisition, a ticker change, a symbol the source never covered).
     NoCloseInProximity,
 }
 
-/// What a check found at its horizon.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub enum CheckOutcome {
@@ -171,19 +158,18 @@ pub enum CheckOutcome {
     Unscorable { cause: UnscorableCause },
 }
 
-/// A check, written onto its episode once: the horizon, the check date (the
-/// writing run's ET session), the run that wrote it, and what it found.
+/// A check, written onto its episode once.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Check {
     pub horizon: Horizon,
+    /// The writing run's ET session.
     pub checked_on: String,
     pub run_id: String,
     pub outcome: CheckOutcome,
 }
 
-/// A check under its store identity: the autoincrement id (insertion order —
-/// run order, which the self-review's read-by-the-prior-analysis word compares)
-/// and the episode it scores.
+/// A check with its store id; id order is run order, which
+/// [`ArmScore::read_by`] compares.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoredCheck {
     pub id: i64,
@@ -191,19 +177,16 @@ pub struct StoredCheck {
     pub check: Check,
 }
 
-/// A horizon's date: the creation date plus the horizon's calendar months (a
-/// month-end creation clamps to the target month's last day —
-/// [`crate::market_clock::add_calendar_months`]).
+/// The creation date plus the horizon's calendar months; a month-end creation
+/// clamps to the target month's last day ([`crate::market_clock::add_calendar_months`]).
 pub fn horizon_date(created_on: NaiveDate, horizon: Horizon) -> Option<NaiveDate> {
     crate::market_clock::add_calendar_months(created_on, horizon.months())
 }
 
-/// Every due horizon — one whose date is **strictly before** the run's session
-/// (so the close it reads has settled) and onto which nothing has been written —
-/// as `(episode id, horizon)`, in insertion order then horizon order. One query
-/// over the store: nothing is ever re-scored, and a horizon is scored by the
-/// first run after its date, however many runs later that is. `written` is
-/// every `(episode, horizon)` the store holds a check row for, read or not.
+/// Every `(episode id, horizon)` whose date is strictly before `session` (so
+/// the close it reads has settled) and onto which nothing has been written, in
+/// insertion then horizon order. `written` is every `(episode, horizon)` the
+/// store holds a check row for.
 pub fn due_horizons(
     episodes: &[StoredEpisode],
     written: &std::collections::HashSet<(i64, Horizon)>,
@@ -226,9 +209,8 @@ pub fn due_horizons(
     due
 }
 
-/// The cause a due horizon is unscorable for **without reading any series** —
-/// no forecast at the horizon, or no anchor to bridge from — so the symbol
-/// spends no pull on it. `None` when the horizon needs the refreshed series.
+/// The cause a due horizon is unscorable for without reading any series, so the
+/// symbol spends no pull on it; `None` when the horizon needs the refreshed series.
 pub fn unscorable_without_series(record: &PriceRecord, horizon: Horizon) -> Option<UnscorableCause> {
     if record.model.get(horizon).is_none() && record.engine.get(horizon).is_none() {
         return Some(UnscorableCause::NoForecast);
@@ -244,11 +226,10 @@ pub fn per_check_score(expected: f64, actual: f64) -> f64 {
     (100.0 * (1.0 - (expected - actual).abs() / actual)).max(0.0)
 }
 
-/// Score one due horizon against the symbol's freshly fetched dated-EOD series.
-/// The anchor bar and the horizon close are both read from `closes`, one fetch,
-/// so they sit on one basis; the recorded prices cross the split-adjustment
-/// bridge (`engine::split_bridge_factor`, its deadband included) before scoring,
-/// so a split can never score as a miss.
+/// Score one due horizon against the symbol's refreshed dated-EOD series. The
+/// anchor bar and the horizon close both come from `closes`, so they sit on one
+/// basis, and the recorded prices cross `engine::split_bridge_factor` before
+/// scoring, so a split never scores as a miss.
 pub fn check_horizon(record: &PriceRecord, horizon: Horizon, closes: &[DatedValue]) -> CheckOutcome {
     let unscorable = |cause| CheckOutcome::Unscorable { cause };
     if let Some(cause) = unscorable_without_series(record, horizon) {
@@ -313,10 +294,9 @@ pub(crate) fn parse_date(s: &str) -> Option<NaiveDate> {
 
 // ---- Opening -----------------------------------------------------------------
 
-/// Whether a priced subject analyzed this run opens an episode: it has none, or
-/// its latest (by insertion order) is [`EPISODE_CADENCE_MONTHS`] or more old at
-/// the run's session. A subject re-priced between those points is not recorded,
-/// so the scored forecast is the monthly snapshot.
+/// Whether a priced subject opens an episode this run: it has none, or its
+/// latest is [`EPISODE_CADENCE_MONTHS`] or more old at the session. Nothing is
+/// recorded between those points, so the scored forecast is the monthly snapshot.
 pub fn cadence_opens(latest_created_on: Option<&str>, session: NaiveDate) -> bool {
     let Some(latest) = latest_created_on else {
         return true;
@@ -331,9 +311,9 @@ pub fn cadence_opens(latest_created_on: Option<&str>, session: NaiveDate) -> boo
 
 // ---- The accuracy scores -----------------------------------------------------
 
-/// One arm's accuracy score at one horizon: the arithmetic mean of its per-check
-/// scores, 0 to 100, over the checks that scored the arm, with the check that
-/// last moved it — its check date and its store id (run order).
+/// One arm's accuracy at one horizon: the mean of its per-check scores (0–100)
+/// over the checks that scored the arm, and the check that last moved it (its
+/// date and its store id).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArmScore {
     pub score: f64,
@@ -349,7 +329,6 @@ pub struct HorizonAccuracy {
     pub engine: Option<ArmScore>,
 }
 
-/// A subject's six accuracy scores — per horizon, per arm.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AccuracyScores {
     pub three_month: HorizonAccuracy,
@@ -375,9 +354,9 @@ impl AccuracyScores {
     }
 }
 
-/// Derive a subject's accuracy scores from its checks (any order): an
-/// unscorable check counts in no score, and a scored check counts for each arm
-/// whose leg it carries — a null model price's check scores the engine alone.
+/// A subject's accuracy scores from its checks, in any order: an unscorable
+/// check counts in no score, and a scored check counts for each arm whose leg
+/// it carries.
 pub fn accuracy_scores<'a>(checks: impl IntoIterator<Item = &'a StoredCheck>) -> AccuracyScores {
     #[derive(Default)]
     struct Acc {
@@ -452,31 +431,27 @@ pub fn scores_by_symbol(
 
 impl ArmScore {
     /// Whether the prior analysis read this score as it stands: the check that
-    /// last moved it was written at or before the mark the prior pass's review
-    /// recorded (`docs/portfolio-analysis.md` §Outcome learning — run order,
-    /// not the calendar). No mark — a prior that read no accuracy record —
-    /// read nothing.
+    /// last moved it is at or before the prior pass's mark — run order, not the
+    /// calendar (`docs/portfolio-analysis.md` §Outcome learning). No mark read
+    /// nothing.
     pub fn read_by(&self, read_through: Option<i64>) -> bool {
         read_through.is_some_and(|mark| self.last_moved_check <= mark)
     }
 }
 
-/// One subject's accuracy record as the pass leaves it for the subject's
-/// self-review: the six scores, the subject's episodes and every check
-/// written onto them (this run's included, since the checks precede the
-/// loop), and the highest check id in the whole store — the mark a review
-/// that reads this record writes. `high_water` is `None` on an empty store.
+/// One subject's accuracy record for its self-review: its scores, its episodes
+/// and every check written onto them (this run's included, since the checks
+/// precede the loop).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SubjectAccuracy {
     pub scores: AccuracyScores,
     pub episodes: Vec<StoredEpisode>,
     pub checks: Vec<StoredCheck>,
+    /// The whole store's highest check id — the mark a review that reads this
+    /// record writes. `None` on an empty store.
     pub high_water: Option<i64>,
 }
 
-/// The subject's slice of the store: its episodes (insertion order), the
-/// checks written onto them, its scores, and the whole store's highest check
-/// id.
 pub fn subject_accuracy(
     episodes: &[StoredEpisode],
     checks: &[StoredCheck],
@@ -502,10 +477,9 @@ pub fn subject_accuracy(
     }
 }
 
-/// The checks the self-review lists: those written after the prior pass's
-/// mark (every check where the prior read none), newest by horizon date —
-/// ties by check id, newest first — each beside its episode, capped at
-/// `cap`, with the total before the cap.
+/// The checks the self-review lists: those after the prior pass's mark (every
+/// check where the prior read none), newest by horizon date then by check id,
+/// capped at `cap` with the total before the cap.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChecksSince<'a> {
     pub lines: Vec<(&'a StoredEpisode, &'a StoredCheck, NaiveDate)>,
@@ -531,12 +505,10 @@ pub fn checks_since(subject: &SubjectAccuracy, read_through: Option<i64>, cap: u
     ChecksSince { lines, total }
 }
 
-/// The run's accuracy record (`docs/storage.md §Local Analysis Suite Storage`
-/// — the run audit's accuracy records): each holding's accuracy scores, keyed by
-/// symbol, for every holding in the run — carried and failed ones included,
-/// since their checks ran this run too; the episodes this run opened; and the
-/// checks and unscorable states this run wrote (by run id, so a resumed run's
-/// list spans both processes).
+/// The run's accuracy record (`docs/storage.md §Local Analysis Suite Storage`):
+/// every holding's scores by symbol — carried and failed ones included, since
+/// their checks ran this run too — the episodes this run opened, and the checks
+/// it wrote (by run id, so a resumed run's list spans both processes).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AccuracyRecord {
     /// `None` when the episode store could not be read this run — the scores
@@ -567,16 +539,12 @@ impl OutcomePriceSource for LiveOutcomePrices {
         from: NaiveDate,
         _to: NaiveDate,
     ) -> Result<Vec<DatedValue>> {
-        // The FMP dated-EOD fetch is now-anchored; a lookback from today
-        // covering `from` spans the requested range, which is why the range's
-        // own upper bound goes unread here.
-        // A lookback COUNT, not a session key: the UTC date is fine here —
-        // one extra day of history is harmless, and the bars are then
-        // selected by their own dates.
-        // An honest empty serve (an HTTP-200 `[]`) passes through as a served
-        // series with no close: the check writes the horizon unscorable at once
-        // and the symbol spends no further pull. Only a failed fetch is `Err`,
-        // leaving the horizon pending.
+        // The FMP dated-EOD fetch is now-anchored: a lookback from today that
+        // covers `from` spans the range, so `_to` goes unread. The lookback is
+        // a count, not a session key, so the UTC date is fine here. An honest
+        // empty serve (HTTP-200 `[]`) passes through as a served series with
+        // no close, so the horizon is written unscorable at once; only a failed
+        // fetch is `Err`, leaving the horizon pending.
         let today = chrono::Utc::now().date_naive();
         let lookback = (today - from).num_days().max(1);
         self.fmp
@@ -585,9 +553,8 @@ impl OutcomePriceSource for LiveOutcomePrices {
     }
 }
 
-/// A source with nothing to serve — every refresh fails, so every due horizon
-/// that needs a series stays pending (the posture of a job run with no price
-/// source).
+/// A source with nothing to serve: every refresh fails, so every due horizon
+/// that needs a series stays pending (a run with no price source).
 pub struct UnavailablePriceSource;
 
 impl OutcomePriceSource for UnavailablePriceSource {
@@ -688,17 +655,13 @@ mod tests {
         let none = std::collections::HashSet::new();
         // On the horizon date itself: not due (that session's close is unsettled).
         assert!(due_horizons(&eps, &none, d("2026-04-05")).is_empty());
-        // The session after: the three-month horizon is due.
         assert_eq!(due_horizons(&eps, &none, d("2026-04-06")), vec![(1, Horizon::ThreeMonth)]);
-        // Written once, it is never due again.
         let written = std::collections::HashSet::from([(1, Horizon::ThreeMonth)]);
         assert!(due_horizons(&eps, &written, d("2026-05-01")).is_empty());
-        // Long after: every horizon past its date is due, in horizon order.
         assert_eq!(
             due_horizons(&eps, &none, d("2029-02-01")),
             vec![(1, Horizon::ThreeMonth), (1, Horizon::TwelveMonth), (1, Horizon::ThreeYear)]
         );
-        // The stored keys name their horizons.
         for h in Horizon::ALL {
             assert_eq!(Horizon::from_key(h.key()), Some(h));
         }
@@ -710,7 +673,6 @@ mod tests {
         assert_eq!(per_check_score(100.0, 100.0), 100.0);
         assert!((per_check_score(110.0, 100.0) - 90.0).abs() < 1e-9);
         assert!((per_check_score(90.0, 100.0) - 90.0).abs() < 1e-9);
-        // An error larger than the close floors at zero, never negative.
         assert_eq!(per_check_score(250.0, 100.0), 0.0);
     }
 
@@ -864,7 +826,6 @@ mod tests {
         assert_eq!(engine.checks, 2);
         // The unscorable check moves nothing.
         assert_eq!((engine.last_moved_on.as_str(), engine.last_moved_check), ("2026-05-06", 7));
-        // No score yet where no check landed.
         assert_eq!(s.twelve_month, HorizonAccuracy::default());
         assert!(s.three_year.model.is_none());
     }
@@ -974,7 +935,6 @@ mod tests {
         assert!(arm.read_by(Some(7)));
         assert!(arm.read_by(Some(9)));
         assert!(!arm.read_by(Some(6)));
-        // A prior that read no accuracy record read nothing.
         assert!(!arm.read_by(None));
     }
 
@@ -987,15 +947,12 @@ mod tests {
             scored_check(5, 1, Horizon::TwelveMonth, "2027-01-06", Some(60.0), Some(50.0)),
         ];
         let s = subject_accuracy(&eps, &checks, "AAPL");
-        // No mark: every check is new, newest horizon date first.
         let all = checks_since(&s, None, REVIEW_CHECK_LINES);
         assert_eq!(all.total, 3);
         assert_eq!(all.lines.iter().map(|(_, c, _)| c.id).collect::<Vec<_>>(), vec![5, 4, 3]);
         assert_eq!(all.lines[0].2, d("2027-01-05"));
-        // A mark leaves the checks it covers out.
         let since = checks_since(&s, Some(3), REVIEW_CHECK_LINES);
         assert_eq!(since.lines.iter().map(|(_, c, _)| c.id).collect::<Vec<_>>(), vec![5, 4]);
-        // The cap trims the oldest horizons and keeps the total.
         let capped = checks_since(&s, None, 2);
         assert_eq!(capped.total, 3);
         assert_eq!(capped.lines.iter().map(|(_, c, _)| c.id).collect::<Vec<_>>(), vec![5, 4]);
@@ -1007,7 +964,6 @@ mod tests {
         let s = subject_accuracy(&eps, &tied, "AAPL");
         let t = checks_since(&s, None, REVIEW_CHECK_LINES);
         assert_eq!(t.lines.iter().map(|(_, c, _)| c.id).collect::<Vec<_>>(), vec![9, 8]);
-        // Everything read: none landed.
         assert_eq!(checks_since(&s, Some(9), REVIEW_CHECK_LINES).total, 0);
     }
 }

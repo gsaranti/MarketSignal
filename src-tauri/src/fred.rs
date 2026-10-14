@@ -1,56 +1,7 @@
-//! Real FRED (Federal Reserve Economic Data) adapter for the macro / commodity
-//! half of the baseline market-data scan.
-//!
-//! The second data-source adapter behind the `MarketDataSource` trait
-//! (`data_sources`), the sibling of `fmp`. It owns the Step-3 market internals FMP
-//! does not serve on its free tier (verified live: HTTP 402 "premium"): the
-//! **2Y / 10Y Treasury yields**, the **US dollar index**, and the **oil / natural
-//! gas** commodity prices (`docs/report-workflow.md §Step 3`,
-//! `docs/data-sources.md §FRED`). Each is a canonical free FRED daily series; the
-//! results are appended to the baseline's `internals` group alongside FMP's VIX and
-//! gold by the composite source. (Gold is served free on FMP via `GCUSD` and stays
-//! there — FRED's former gold benchmark series were removed, so this adapter owns no
-//! gold series.)
-//!
-//! It also owns the Step-3 **macro levels** group (`macro_levels`): the Fed-funds
-//! target range as the policy-stance proxy (futures-implied expectations aren't on
-//! FRED's free tier, and no other data source supplies them free), the 5y / 10y
-//! inflation breakevens, U. Michigan consumer sentiment, and the PCE price index.
-//! These are point-in-time levels reusing the same observations machinery, kept in a
-//! group distinct from the market internals. Daily series (target range, breakevens)
-//! report a day-over-day `change`; monthly series (sentiment, PCE), month-over-
-//! month.
-//!
-//! It additionally owns the Step-3 **economic-release calendar** (`calendar`): the
-//! recent and upcoming US economic reports (CPI, PCE, jobs, GDP, …), built
-//! from FRED's free *release-dates* schedule rather than the observations endpoint; the
-//! actual figures reach the model through the series groups above. On the report path
-//! the adapter also carries FMP's paid economic calendar
-//! ([`FredDataSource::with_consensus`]): each release joins its tracked prints' consensus
-//! and surprise inside the calendar loop, where the release id is in scope, and the Fed /
-//! FOMC events FRED has no schedule for are appended (`econ_calendar`). A free FMP key or
-//! an FMP outage leaves the calendar at names and dates. Unlike the series groups the
-//! calendar has no completeness floor — an empty window is valid.
-//!
-//! Like `fmp`, the HTTP call is synchronous (`reqwest::blocking`) so the trait
-//! stays sync; the blocking work is offloaded via `spawn_blocking` at the Tauri
-//! command seam. The key rides as a query param (`api_key`), FRED's required
-//! per-request credential (`docs/configuration.md` — FRED, unlike BLS/GDELT, is
-//! not keyless).
-//!
-//! Degradation policy. The same rule as `fmp`: **every failure degrades to a recorded
-//! gap, so one flaky series or a whole-provider outage never throws away the rest of the
-//! scan.** One pure function, `interpret_response`, classifies each response into a
-//! [`Disposition`] — a 2xx value to shape, or a `Gap(reason)`. FRED differs from FMP in
-//! *how* it signals: a rejected key and a missing series are **both HTTP 400**,
-//! distinguished only by the JSON `error_message`, so this classifies 400 by body (series
-//! "does not exist" → `OutOfScope`; an `api_key` problem → `Rejected`; any other 400 →
-//! `Malformed`) rather than by a status allowlist. A 429 / 5xx is `Unavailable`; a 2xx
-//! whose observations are all FRED's `"."` gap marker is also `Unavailable` (no value
-//! this run, not a permanent absence — only an explicit "does not exist" is `OutOfScope`).
-//! No floor lives here — resolving no series leaves the groups empty plus their
-//! gaps, and the central coverage gate (`pipeline::enforce_coverage`) decides the run's
-//! floor.
+//! FRED adapter for the macro / commodity half of the baseline scan: the yield, dollar,
+//! oil / gas and spread internals, the macro levels group, and the economic-release
+//! calendar (`docs/report-workflow.md §Step 3`, `docs/data-sources.md §FRED`). Every
+//! failure degrades to a recorded gap; `pipeline::enforce_coverage` owns the floor.
 
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
@@ -68,36 +19,22 @@ use crate::cadence::ReportCadence;
 use crate::econ_calendar::{self, CalendarRow, EconomicCalendarSource};
 use crate::progress::RunContext;
 
-/// Base URL for FRED's API. The endpoint paths below are joined onto it in each
-/// request helper; a test redirects the whole adapter at a localhost mock via
-/// [`FredDataSource::with_base_url`], so the wire path runs offline.
 const FRED_BASE: &str = "https://api.stlouisfed.org/fred";
 
-/// FRED's observations endpoint — the series time-series the baseline reads.
 const FRED_OBSERVATIONS_PATH: &str = "/series/observations";
 
-/// Short timeout per request: the baseline scan issues several sequential calls,
-/// none of which should park for the model adapter's 120s ceiling. Mirrors `fmp`.
+/// Per-request timeout; the scan issues several sequential calls, none of which should
+/// park for the model adapter's 120s ceiling.
 const FRED_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 
-/// How many of the most recent observations to request per series. Newest-first,
-/// enough to find the two most recent *numeric* values across FRED's `"."` gaps
-/// (weekends / holidays / unpublished days) so the day-over-day change resolves.
+/// Newest-first observations per series: enough to find the two most recent numeric
+/// values across FRED's `"."` gaps (weekends / holidays) so the change resolves.
 const OBSERVATION_LIMIT: &str = "10";
 
 /// The FRED-owned market internals of the Step-3 baseline
-/// (`docs/report-workflow.md §Step 3`), paired with a display name and the `price` unit. Each is a
-/// free FRED daily series; the FRED `series_id` doubles as the quote `symbol`. Yields
-/// and the breakevens are quoted in percent; the dollar index is an index level; oil
-/// and gas are dollar prices — the unit labels which, so the model doesn't read a yield
-/// as a dollar figure.
-///
-/// The credit spreads (high-yield and investment-grade OAS) and the 10y−3m / 10y−2y
-/// Treasury curve spreads join here too: daily, market-priced risk gauges feeding the
-/// report's risk-posture and market-cycle reads. For these the **level** is the signal,
-/// and `change` reports the **point change** (`latest − prior`) rather than a
-/// percent-of-prior — see [`RATE_DELTA_SERIES`] — since a percent move is unstable for a
-/// spread that can sit near zero or invert.
+/// (`docs/report-workflow.md §Step 3`) as `(series_id, display name, unit)`. The
+/// `series_id` doubles as the quote `symbol`; the unit labels what `price` is quoted
+/// in, so the model doesn't read a yield as a dollar figure.
 const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
     ("DGS2", "2-Year Treasury Yield", "percent"),
     ("DGS10", "10-Year Treasury Yield", "percent"),
@@ -113,11 +50,10 @@ const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
     ("BAMLC0A0CM", "US Investment-Grade Corporate OAS", "percent"),
     ("T10Y3M", "10-Year minus 3-Month Treasury Spread", "percent"),
     ("T10Y2Y", "10-Year minus 2-Year Treasury Spread", "percent"),
-    // Volatility term structure (pair VXVCLS with the FMP VIX for a backwardation read)
-    // and the Nasdaq-100 implied-vol gauge; the level is the signal, like the spreads
-    // above. NB use VXNCLS (the CBOE VXN, ~20s), NOT the similarly-named NASDAQVOLNDX —
-    // that series was discontinued (frozen Jan 2026) and reads ~11,900, an index level not
-    // a vol gauge (live-verified Jun 2026).
+    // Volatility term structure (VXVCLS pairs with the FMP VIX for a backwardation read)
+    // and the Nasdaq-100 vol gauge. Use VXNCLS (the CBOE VXN, ~20s), NOT the
+    // similarly-named NASDAQVOLNDX — discontinued (frozen Jan 2026) and reading ~11,900,
+    // an index level, not a vol gauge.
     (
         "VXVCLS",
         "CBOE S&P 500 3-Month Volatility (VXV)",
@@ -128,36 +64,16 @@ const INTERNALS_SERIES: &[(&str, &str, &str)] = &[
         "CBOE NASDAQ-100 Volatility Index (VXN)",
         "index points",
     ),
-    // Credit-quality dispersion on top of the aggregate HY/IG OAS: BBB (lowest IG rung)
-    // and single-B (mid HY) widen at different speeds as risk appetite deteriorates.
+    // Credit-quality dispersion: BBB (lowest IG rung) and single-B (mid HY) widen at
+    // different speeds as risk appetite deteriorates.
     ("BAMLC0A4CBBB", "US Corporate BBB OAS", "percent"),
     ("BAMLH0A2HYB", "US High-Yield B OAS", "percent"),
 ];
 
-/// The FRED-owned macro levels of the Step-3 baseline
-/// (`docs/report-workflow.md §Step 3`, the "Macro" group): the Fed-funds target range as the
-/// policy-stance proxy (futures-implied expectations aren't on FRED's free tier), the
-/// 5y / 10y inflation breakevens, U. Michigan consumer sentiment, the PCE price index,
-/// and the headline activity reports — PPI, retail sales, job openings (JOLTS), and real
-/// GDP — that supply the **actual readings** for the economic-release `calendar`'s
-/// recent entries (so the report sees what each release printed, not just that it
-/// landed). Two **forward-looking expectation gauges** join alongside the actual readings:
-/// the Atlanta Fed GDPNow current-quarter real-GDP nowcast and the Cleveland Fed 1-year
-/// expected-inflation series — a forward complement to the actual GDP print and the
-/// breakevens. Mixed daily (target range, breakevens), monthly (sentiment, PCE, PPI,
-/// retail, JOLTS, expected inflation) and quarterly (GDP, GDPNow) series; `change`
-/// reads the change off the prior observation accordingly — except GDP, whose change is
-/// **annualized** (the BEA/headline convention; see [`ANNUALIZED_SERIES`]). GDPNow's value
-/// is already an annual rate (SAAR), so unlike GDP it is **not** annualized again. Same `(series_id, display name, unit)` shape as the internals
-/// — the `series_id` doubles as the quote `symbol`, and the unit labels what each `price`
-/// level is quoted in (percent, an index level with its base period, a dollar figure, or
-/// a count).
-///
-/// The weekly risk/cycle gauges added alongside join this group too: the financial-
-/// conditions composites (NFCI, the adjusted ANFCI, and the St. Louis stress index
-/// STLFSI4), the weekly jobless-claims series (initial and continued), the Fed balance
-/// sheet (WALCL), and the 30-year mortgage rate — each read the same way (latest level
-/// + change off the prior observation).
+/// The FRED-owned macro levels of the Step-3 baseline (`docs/report-workflow.md §Step
+/// 3`), same `(series_id, display name, unit)` shape as the internals. Mixed daily,
+/// weekly, monthly and quarterly series; `change` reads off the prior observation
+/// accordingly, except GDP, whose change is annualized ([`ANNUALIZED_SERIES`]).
 const MACRO_SERIES: &[(&str, &str, &str)] = &[
     (
         "DFEDTARU",
@@ -197,13 +113,10 @@ const MACRO_SERIES: &[(&str, &str, &str)] = &[
         "Real Gross Domestic Product (growth annualized)",
         "billions of chained 2017 USD",
     ),
-    // Forward-looking expectation gauges — what the market / models *expect* for the
-    // headline aggregates, a complement to the actual readings above. GDPNow's value is
-    // already an annualized growth rate (SAAR), so it is deliberately **not** in
-    // ANNUALIZED_SERIES; both it and EXPINF1YR are rate-valued, so their `change` is a
-    // point delta (see RATE_DELTA_SERIES) — a percent-of-prior on GDPNow's nowcast reads as
-    // a spurious ~128% "move". EXPINF1YR is a model-based inflation expectation alongside
-    // the market-implied breakevens (T5YIE / T10YIE).
+    // Forward-looking expectation gauges. GDPNow is already an annualized rate (SAAR),
+    // so it is deliberately NOT in ANNUALIZED_SERIES; both are rate-valued, so their
+    // change is a point delta (RATE_DELTA_SERIES) — a percent-of-prior on the nowcast
+    // reads as a spurious ~128% "move".
     (
         "GDPNOW",
         "Atlanta Fed GDPNow — Real GDP Growth Nowcast (annualized rate)",
@@ -240,16 +153,11 @@ const MACRO_SERIES: &[(&str, &str, &str)] = &[
     ("MORTGAGE30US", "30-Year Fixed Mortgage Rate", "percent"),
 ];
 
-/// Publication cadence of a FRED series — the axis the freshness guard reads.
-/// `fetch_series` requests the newest observations with **no date bound**, so a
-/// **discontinued / frozen** series (its last datum published months ago — the
-/// `NASDAQVOLNDX` class of bug, see the internals doc-comment above) still "resolves"
-/// to a stale quote with no error. The guard ([`observations_to_quote`]) drops a quote
-/// whose latest observation is older than its cadence allows, so a frozen series
-/// becomes a recorded `Unavailable` gap rather than feeding a months-old level into
-/// the baseline. Bounds are deliberately **loose** — sized to catch a multi-month
-/// freeze, not to nitpick normal publication lag (JOLTS prints ~6 weeks after its
-/// reference month; GDP a month after quarter-end with later revisions).
+/// Publication cadence of a FRED series, the axis of the freshness guard: `fetch_series`
+/// requests the newest observations with no date bound, so a discontinued series still
+/// resolves to a stale quote with no error, and [`observations_to_quote`] drops a quote
+/// older than its cadence allows. Bounds are deliberately loose — sized to catch a
+/// multi-month freeze, not normal publication lag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Cadence {
     Daily,
@@ -259,19 +167,11 @@ enum Cadence {
 }
 
 impl Cadence {
-    /// Maximum acceptable staleness (today − latest observation date), in days,
-    /// before a series reads as discontinued rather than merely lagging.
-    ///
-    /// FRED dates each observation at its period **start**, so staleness peaks just
-    /// before the *next* period's value is published — that peak, not the cadence
-    /// interval, sets each bound. Every bound is sized to the laggiest member of its
-    /// bucket: weekly to continued claims (CCSA lags initial claims by a week → ~17–19d
-    /// live peak); monthly to JOLTS (~6-week lag, ~95d peak); quarterly to GDP (~210d
-    /// peak, the Qn advance estimate landing ~7 months after Qn started). The guard is
-    /// coarse for slow series by design — it reliably catches a multi-month freeze, not a
-    /// one-cycle delay; the daily bound stays tightest, where the guard has the most
-    /// value. The `#[ignore]`d `tuning_freshness_headroom_probe` reports live headroom
-    /// against these bounds so they can be re-tuned from real lag rather than guessed.
+    /// Maximum acceptable staleness (today − latest observation date) in days before a
+    /// series reads as discontinued. FRED dates each observation at its period start,
+    /// so staleness peaks just before the next period's value publishes; each bound is
+    /// sized to the laggiest member of its bucket. `tuning_freshness_headroom_probe`
+    /// reports live headroom against these bounds.
     const fn max_staleness_days(self) -> i64 {
         match self {
             Cadence::Daily => 16, // laggiest daily is EIA oil/gas (~8d live); margin for weekends/holidays
@@ -281,11 +181,8 @@ impl Cadence {
         }
     }
 
-    /// Periods per year — the compounding exponent for annualizing a single-period
-    /// change (see [`ANNUALIZED_SERIES`]). A quarterly QoQ change of `r` annualizes to
-    /// `(1 + r)^4 − 1`, the BEA/headline convention for GDP. Only consulted for the
-    /// handful of series flagged annualized; for every other series the per-period
-    /// change ships as-is.
+    /// Periods per year, the compounding exponent for annualizing a single-period change
+    /// ([`ANNUALIZED_SERIES`]): a quarterly change `r` annualizes to `(1 + r)^4 − 1`.
     const fn periods_per_year(self) -> i32 {
         match self {
             Cadence::Daily => 252, // trading days
@@ -296,10 +193,9 @@ impl Cadence {
     }
 }
 
-/// Cadence for every `INTERNALS_SERIES` + `MACRO_SERIES` id, the freshness guard's
-/// lookup table. The `freshness_table_covers_every_series` parity test asserts this
-/// set equals the two series tables exactly, so a new series with no cadence fails
-/// offline CI rather than going unguarded.
+/// Cadence for every `INTERNALS_SERIES` + `MACRO_SERIES` id; the
+/// `freshness_table_covers_every_series` parity test asserts the sets match exactly, so
+/// a new series with no cadence fails offline rather than going unguarded.
 const FRESHNESS: &[(&str, Cadence)] = &[
     // Internals — all daily, market-priced series.
     ("DGS2", Cadence::Daily),
@@ -337,12 +233,9 @@ const FRESHNESS: &[(&str, Cadence)] = &[
     ("MORTGAGE30US", Cadence::Weekly),
 ];
 
-/// Look up a series' publication cadence. Falls back to the tightest bound (`Daily`)
-/// for an unmapped id — fail-tight, so an accidentally-unmapped series is guarded (and
-/// surfaces as a dropped / `Unavailable` gap) rather than slipping through unguarded.
-/// The `freshness_table_covers_every_series` parity test guarantees every shipped
-/// series is mapped, so the fallback is unreachable in practice; it exists only to keep
-/// the production path panic-free (the fail-soft scan must never abort on a lookup).
+/// Falls back to the tightest bound (`Daily`) for an unmapped id, so an unmapped series
+/// is guarded rather than slipping through; the parity test makes the fallback
+/// unreachable, and it exists only to keep the fail-soft scan panic-free.
 fn cadence_for(series_id: &str) -> Cadence {
     FRESHNESS
         .iter()
@@ -351,41 +244,23 @@ fn cadence_for(series_id: &str) -> Cadence {
         .unwrap_or(Cadence::Daily)
 }
 
-/// Series whose per-period change is reported **annualized** rather than as the raw
-/// change off the prior observation. Today this is GDP alone: FRED's `GDPC1` is a
-/// quarterly *level*, but the figure the world quotes ("GDP grew 2.8%") is the
-/// quarter-over-quarter change compounded to an annual rate (`(1 + qoq)^4 − 1`), the
-/// BEA convention. Keying it as data (rather than a special-case branch in the fetch
-/// loop) keeps the rule legible and lets a future quarterly/monthly series that also
-/// reports an annual rate join by id. The `price` level is untouched — only the `change`
-/// figure is annualized (its `kind` is [`ChangeKind::Annualized`]).
+/// Series whose change is reported annualized: FRED's `GDPC1` is a quarterly level, but
+/// the headline figure is the quarter-over-quarter change compounded to an annual rate
+/// (`(1 + qoq)^4 − 1`, the BEA convention). The `price` level is untouched.
 const ANNUALIZED_SERIES: &[&str] = &["GDPC1"];
 
-/// Whether a series' change should be annualized — see [`ANNUALIZED_SERIES`].
 fn is_annualized(series_id: &str) -> bool {
     ANNUALIZED_SERIES.contains(&series_id)
 }
 
-/// Series whose change should report the **point change** (`latest − prior`) rather
-/// than the percent change off the prior observation. These are series whose *level is
-/// already a rate, or a zero-centered index*, where a percent-of-prior is the wrong figure:
-/// for a yield / spread / policy rate / breakeven the market convention is the percentage-
-/// point (or basis-point) move, and for a spread or a financial-conditions index that can sit
-/// near zero or cross it, a percent-of-prior is mathematically unstable (it blows up near a
-/// zero denominator and flips sign across zero). Keyed as data, parallel to
-/// [`ANNUALIZED_SERIES`] — a series belongs to at most one change treatment (the
-/// `rate_delta_and_annualized_sets_are_disjoint` test pins the exclusivity). The `price`
-/// level is untouched; only the change figure changes, and its [`ChangeKind::PointDelta`]
-/// rides on `change.kind` so a reader knows the unit (percentage points for a percent-unit
-/// series, the level's own units for a centered index) without a display-name marker.
-///
-/// GDPNow (`GDPNOW`) is the motivating case: its value is a SAAR rate, so a percent change
-/// off the prior nowcast vintage reads as a spurious ~128% "move" where the honest figure is
-/// the percentage-point revision to the nowcast.
+/// Series whose change is the point change (`latest − prior`) rather than a percent of
+/// the prior: their level is already a rate or a zero-centered index, where the market
+/// convention is the percentage-point move and a percent-of-prior is unstable near zero
+/// (GDPNow's SAAR nowcast would read as a spurious ~128% "move"). Disjoint from
+/// [`ANNUALIZED_SERIES`]; [`ChangeKind::PointDelta`] rides on `change.kind` so the figure
+/// carries its unit without a display-name marker.
 const RATE_DELTA_SERIES: &[&str] = &[
-    // Percent-quoted rates (a point delta reads as percentage points): yields, the
-    // credit/curve spreads, the policy-rate bounds, the breakevens, expected inflation, the
-    // mortgage rate, and the GDPNow SAAR nowcast.
+    // Percent-quoted rates: a point delta reads as percentage points.
     "DGS2",
     "DGS10",
     "BAMLH0A0HYM2",
@@ -401,24 +276,16 @@ const RATE_DELTA_SERIES: &[&str] = &[
     "EXPINF1YR",
     "MORTGAGE30US",
     "GDPNOW",
-    // Zero-centered financial-conditions indices (a point delta reads in the index's own
-    // level units): a percent-of-prior is unstable across zero.
+    // Zero-centered conditions indices: a point delta reads in the index's own units.
     "NFCI",
     "ANFCI",
     "STLFSI4",
 ];
 
-/// Whether a series' change should be a point delta — see [`RATE_DELTA_SERIES`]. Keyed by
-/// FRED series id, which doubles as the quote `symbol`; a non-FRED symbol (an FMP index/VIX
-/// ticker) is not in the set, so it correctly reads as a percent quote.
 fn is_rate_delta(series_id: &str) -> bool {
     RATE_DELTA_SERIES.contains(&series_id)
 }
 
-/// The [`ChangeKind`] for a series — annualized series first, then point-delta rates, else
-/// the percent default. The two keyed sets are disjoint, so the order only sets the default.
-/// The kind rides onto the quote's [`Change`] (`change.kind`), so the change figure is
-/// self-describing wherever it is rendered — no display-name marker needed.
 fn change_kind_for(series_id: &str) -> ChangeKind {
     if is_annualized(series_id) {
         ChangeKind::Annualized
@@ -429,36 +296,24 @@ fn change_kind_for(series_id: &str) -> ChangeKind {
     }
 }
 
-/// FRED's release-dates endpoint — the economic-release *schedule* the Step-3 calendar
-/// reads, distinct from the series observations above. `include_release_dates_with_no_data`
-/// surfaces upcoming (not-yet-released) dates; the realtime window bounds the dates to
-/// the calendar span.
 const FRED_RELEASE_DATES_PATH: &str = "/release/dates";
 
-/// The economic-release calendar window: days back (reports already released since the
-/// previous report) and forward (the upcoming schedule) of today to keep. Applied both
-/// server-side (the `realtime_start` / `realtime_end` query params) and again in
-/// `releases_to_calendar`.
-///
-/// The *back* window scales with the run cadence ([`calendar_back_days`]) so a monthly run
-/// keeps the whole gap's releases, not just the last ~10 days; [`CALENDAR_BACK_DAYS`] is the
-/// floor and [`CALENDAR_BACK_MAX_DAYS`] the cap. The *forward* window stays fixed — the
-/// upcoming schedule is equally relevant regardless of the interval since the last report.
+/// The economic-release calendar's lookback floor in days. The lookback scales with the
+/// run cadence up to [`CALENDAR_BACK_MAX_DAYS`] ([`calendar_back_days`]) so a monthly run
+/// keeps the whole gap's releases; the forward window ([`CALENDAR_FWD_DAYS`]) stays fixed.
 const CALENDAR_BACK_DAYS: i64 = 10;
 
-/// Max age of the newest numeric print [`FredDataSource::latest_rate_dated`]
-/// accepts as a **current** rate anchor. The "." markers on weekends / holidays
-/// make a short lookback legitimate; past this bound the latest available print
-/// is a stale anchor, not a current one, and the read fails onto the callers'
-/// hard-fail / unknown postures (ruled 2026-08-05, piece-3 Codex round).
+/// Max age of the newest numeric print [`FredDataSource::latest_rate_dated`] accepts as
+/// a current rate anchor: the "." markers on weekends / holidays make a short lookback
+/// legitimate; past this bound the latest print is stale, and the read fails onto the
+/// callers' hard-fail / unknown postures.
 const RATE_ANCHOR_MAX_AGE_DAYS: i64 = 10;
 const CALENDAR_BACK_MAX_DAYS: i64 = 45;
 const CALENDAR_FWD_DAYS: i64 = 21;
 
-/// The economic-release calendar lookback in whole days for this run: [`CALENDAR_BACK_DAYS`]
-/// on the first report (no prior interval), else the elapsed interval rounded up and clamped
-/// to `[CALENDAR_BACK_DAYS, CALENDAR_BACK_MAX_DAYS]`. The saturating `f64 as i64` cast makes a
-/// non-finite or absurd interval clamp to the floor/cap rather than panic.
+/// [`CALENDAR_BACK_DAYS`] on the first report (no prior interval), else the elapsed
+/// interval rounded up and clamped to the floor / cap. The saturating `f64 as i64` cast
+/// makes a non-finite interval clamp rather than panic.
 fn calendar_back_days(elapsed_days: Option<f64>) -> i64 {
     match elapsed_days {
         None => CALENDAR_BACK_DAYS,
@@ -467,17 +322,10 @@ fn calendar_back_days(elapsed_days: Option<f64>) -> i64 {
 }
 
 /// The curated market-moving US economic releases of the Step-3 calendar, as
-/// `(FRED release_id, display name)`. The ids are pinned against FRED's `releases`
-/// catalog, and each is verified live by `fred_baseline_smoke` two ways — by **name**
-/// against FRED's `releases` catalog (a wrong-but-valid id points at a different release,
-/// which `release/dates` can't catch since it just echoes the queried id) and by a
-/// **wide-window per-id probe** that it resolves to real dates (catching a retired id) —
-/// the per-symbol-resolution discipline the series groups use, so a wrong or retired id
-/// fails the smoke rather than silently thinning the calendar. FOMC is deliberately
-/// excluded: FRED has no
-/// scheduled-date calendar for the "FOMC Press Release" release, so requesting its
-/// upcoming dates fabricates one row per day (live-verified); the Fed's policy stance is
-/// instead carried by the Fed-funds target-range series in `macro_levels`.
+/// `(FRED release_id, display name)`; `fred_baseline_smoke` verifies each id live. FOMC
+/// is deliberately excluded: FRED has no scheduled-date calendar for its release, so
+/// requesting upcoming dates fabricates one row per day; the policy stance rides on the
+/// Fed-funds target-range series in `macro_levels` instead.
 const RELEASES: &[(u32, &str)] = &[
     (50, "Employment Situation"),
     (10, "Consumer Price Index"),
@@ -488,13 +336,8 @@ const RELEASES: &[(u32, &str)] = &[
     (53, "Gross Domestic Product"),
 ];
 
-/// FRED's observations response, trimmed to the two fields the baseline needs. Each
-/// observation's `value` is a **string** — a number like `"4.30"` or FRED's `"."`
-/// gap marker for a day with no datum — so it is parsed (and `"."` skipped) when
-/// shaping the quote, never deserialized as `f64` directly. The `date` (the
-/// observation's period, `"YYYY-MM-DD"`) is read off the latest numeric observation
-/// for the freshness guard: a frozen / discontinued series resolves to a stale value
-/// with no error, so its age is the only signal it has gone dark.
+/// FRED's observations response. Each `value` is a string — a number or FRED's `"."`
+/// gap marker — so it is parsed when shaping the quote, never deserialized as `f64`.
 #[derive(Debug, Deserialize)]
 struct FredObservations {
     observations: Vec<FredObservation>,
@@ -506,9 +349,8 @@ struct FredObservation {
     value: String,
 }
 
-/// FRED's release-dates response, trimmed to the one field the calendar needs. Each
-/// entry's `date` is the scheduled / actual release date (`"YYYY-MM-DD"`); the scoped
-/// endpoint omits the release name, so the name rides from the `RELEASES` table.
+/// FRED's release-dates response; the scoped endpoint omits the release name, which
+/// rides from the `RELEASES` table.
 #[derive(Debug, Deserialize)]
 struct FredReleaseDates {
     release_dates: Vec<FredReleaseDate>,
@@ -519,19 +361,16 @@ struct FredReleaseDate {
     date: String,
 }
 
-/// One FRED response classified into what the loop should do with it — the single place
-/// the degradation policy lives, in terms of [`GapReason`] rather than a fatal `Err`.
+/// One FRED response classified into a value to shape or a recorded gap.
 enum Disposition {
     Value(Value),
     Gap(GapReason),
 }
 
-/// Interpret one FRED response by status × body. Pure and total. Unlike FMP's status
-/// allowlist, FRED returns **400 for both** a rejected key and a missing series, so the
-/// body's `error_message` disambiguates them: an explicit "does not exist" is an
-/// `OutOfScope` per-series absence; an `api_key` problem is `Rejected`; any other 400 is
-/// `Malformed` (fail-closed — a broken request degrades to a recorded gap, not a silent
-/// skip). A 429 / 5xx is `Unavailable`; an unparseable 2xx body is `Malformed`.
+/// Interpret one FRED response by status × body. FRED returns 400 for both a rejected
+/// key and a missing series, so the body's `error_message` disambiguates: "does not
+/// exist" is `OutOfScope`, an `api_key` problem is `Rejected`, any other 400 is
+/// `Malformed` (fail-closed). A 429 / 5xx is `Unavailable`.
 fn interpret_response(status: u16, body: &str) -> Disposition {
     match status {
         200..=299 => match serde_json::from_str::<Value>(body) {
@@ -549,11 +388,11 @@ fn interpret_response(status: u16, body: &str) -> Disposition {
                 .unwrap_or_default();
             let lower = msg.to_ascii_lowercase();
             if lower.contains("does not exist") {
-                Disposition::Gap(GapReason::OutOfScope) // explicit series absence
+                Disposition::Gap(GapReason::OutOfScope)
             } else if lower.contains("api_key") || lower.contains("api key") {
-                Disposition::Gap(GapReason::Rejected) // key rejected
+                Disposition::Gap(GapReason::Rejected)
             } else {
-                Disposition::Gap(GapReason::Malformed) // unrecognized 400 — fail closed
+                Disposition::Gap(GapReason::Malformed)
             }
         }
         429 | 500..=599 => Disposition::Gap(GapReason::Unavailable),
@@ -561,35 +400,14 @@ fn interpret_response(status: u16, body: &str) -> Disposition {
     }
 }
 
-/// Shape a successful observations response into one quote: the most recent numeric
-/// observation is `price`, and `change` is its move from the prior numeric observation,
-/// computed per the series' [`ChangeKind`]: a percent change off the prior (the default,
-/// day-over-day, consistent with FMP's quote change); that single-period change compounded
-/// to an annual rate ([`ANNUALIZED_SERIES`], GDP today); or a point delta `latest − prior`
-/// ([`RATE_DELTA_SERIES`], rates + centered indices, where a percent-of-prior misleads).
-/// The kind rides on `change.kind` so the figure is self-describing — no display-name marker.
-/// Returns
-/// `Ok(None)` when the series has no usable current datum — either no numeric
-/// observation in the window (all gaps), or a **stale** latest observation (older
-/// than `cadence`'s bound relative to `today`): a per-series absence, not an error.
-///
-/// The freshness drop closes the frozen-series hole: `get` requests the newest
-/// observations with no date bound, so a discontinued series (the `NASDAQVOLNDX`
-/// class) resolves to a months-old value with no error. Dating the latest numeric
-/// observation against its [`Cadence`] catches that — the stale value is dropped to
-/// `Ok(None)`, recorded downstream as an `Unavailable` gap exactly like an all-gap
-/// window, rather than masquerading as a current level. `today` is injected (not read
-/// from the clock here) to keep the shaper pure and testable, mirroring
-/// [`releases_to_calendar`].
-///
-/// Fail-closed on the value: FRED's documented `"."` is the **only** skippable
-/// marker. Any other non-numeric value — or one that parses to a non-finite float
-/// (`NaN` / `inf`, which `f64::parse` accepts) — is a contract violation that fails
-/// the scan rather than being silently dropped as a gap (which would let a stale
-/// observation masquerade as current, or a `NaN` contaminate the change math). An
-/// unparseable `date` on the latest numeric observation is likewise an error (the
-/// freshness guard can't judge it), and a body that is not the expected observations
-/// shape is too.
+/// Shape an observations response into one quote: the latest numeric observation is
+/// `price`, and `change` is its move from the prior one per `change_kind`. `Ok(None)`
+/// means no usable current datum — every observation a `"."` gap, or the latest one
+/// staler than `cadence` allows relative to `today` (a frozen series resolves to an old
+/// value with no error) — a per-series absence, not an error. `today` is injected to
+/// keep the shaper pure. Fail-closed on the value: `"."` is the only skippable marker;
+/// any other non-numeric or non-finite value (`f64::parse` accepts `NaN` / `inf`), or an
+/// unparseable latest date, is an error rather than a silent drop.
 fn observations_to_quote(
     value: Value,
     symbol: &str,
@@ -601,15 +419,12 @@ fn observations_to_quote(
 ) -> Result<Option<Quote>> {
     let raw: FredObservations = serde_json::from_value(value)
         .context("FRED observations response did not match the expected shape")?;
-    // The most-recent numeric observations, newest-first; latest + prior is all the
-    // change needs, so stop at two. The latest's date is captured for the freshness
-    // guard (fail-closed if it won't parse).
     let mut numeric: Vec<f64> = Vec::with_capacity(2);
     let mut latest_date: Option<NaiveDate> = None;
     for obs in &raw.observations {
         let v = obs.value.trim();
         if v == "." {
-            continue; // documented "no datum for this date" gap — skip
+            continue;
         }
         let parsed: f64 = v
             .parse()
@@ -619,7 +434,6 @@ fn observations_to_quote(
                 anyhow!("FRED returned a non-numeric observation value {v:?} for series {symbol}")
             })?;
         if latest_date.is_none() {
-            // The first numeric row is the latest; date it for the freshness check.
             let d = NaiveDate::parse_from_str(obs.date.trim(), "%Y-%m-%d").with_context(|| {
                 format!(
                     "FRED returned an unparseable observation date {:?} for series {symbol}",
@@ -634,27 +448,18 @@ fn observations_to_quote(
         }
     }
     let Some(&latest) = numeric.first() else {
-        return Ok(None); // every observation was a "." gap — no recent datum
+        return Ok(None);
     };
-    // Freshness guard: drop a frozen / discontinued series whose latest datum is staler
-    // than its cadence allows, so a months-old level can't read as current. `latest_date`
-    // is `Some` whenever `numeric.first()` is (both set on the same row).
+    // Freshness guard; `latest_date` is `Some` whenever `numeric.first()` is.
     if let Some(d) = latest_date {
         let staleness = (today - d).num_days();
         if staleness > cadence.max_staleness_days() {
             return Ok(None);
         }
     }
-    // The change off the prior numeric observation, per the series' `ChangeKind`. A zero
-    // (or absent) prior yields no change rather than a division by zero / spurious move.
-    // For an annualized series (GDP) the single-period change is compounded to an annual
-    // rate — `(latest/prev)^periods − 1` — which needs a strictly positive prior as the
-    // ratio base (GDP levels always are; a non-positive prior falls back to no change like
-    // the percent path). The point-delta path is division-free, so it stays correct for a
-    // rate / spread / index that sits near zero or crosses it (where the percent path is
-    // unstable). The kind rides onto `change` so a reader knows the figure's unit without a
-    // name marker — percentage points for a percent-unit point delta, the level's own units
-    // otherwise.
+    // A zero or absent prior yields no change rather than a division by zero. Annualizing
+    // needs a strictly positive prior as the ratio base; the point-delta path is
+    // division-free, so it stays correct for a series that sits near or crosses zero.
     let value = match (change_kind, numeric.get(1)) {
         (ChangeKind::Annualized, Some(&prev)) if prev > 0.0 => {
             ((latest / prev).powi(cadence.periods_per_year()) - 1.0) * 100.0
@@ -675,15 +480,10 @@ fn observations_to_quote(
     }))
 }
 
-/// Shape a FRED release-dates response into calendar entries for one release, keeping
-/// only dates within the `[today − CALENDAR_BACK_DAYS, today + CALENDAR_FWD_DAYS]`
-/// window and classifying each as `"released"` (before today) or `"upcoming"` (today or
-/// later). The release `name` rides from the `RELEASES` table (the scoped endpoint omits
-/// it). The window is also enforced server-side by the query's realtime params; the
-/// re-check here keeps the function self-contained and testable. An unparseable date is a
-/// contract violation that `fetch_calendar` records as a `Malformed` gap rather than
-/// dropping silently. `surprises` yields each kept date's consensus surprises (the join
-/// against the attached feed; none without one).
+/// Shape a release-dates response into calendar entries for one release within
+/// `[today − back_days, today + CALENDAR_FWD_DAYS]`, each `"released"` (before today) or
+/// `"upcoming"` (today or later). An unparseable date is an error, which
+/// `fetch_calendar` records as a `Malformed` gap rather than dropping silently.
 fn releases_to_calendar(
     value: Value,
     name: &str,
@@ -693,9 +493,8 @@ fn releases_to_calendar(
 ) -> Result<Vec<EconomicRelease>> {
     let raw: FredReleaseDates = serde_json::from_value(value)
         .context("FRED release/dates response did not match the expected shape")?;
-    // The back window must be the caller's cadence-scaled one — re-filtering on
-    // the fixed floor here would silently drop released entries the scaled
-    // query deliberately kept (a monthly run's whole-gap releases).
+    // The back window must be the caller's cadence-scaled one: re-filtering on the fixed
+    // floor would silently drop released entries the scaled query deliberately kept.
     let earliest = today - Duration::days(back_days);
     let latest = today + Duration::days(CALENDAR_FWD_DAYS);
     let mut out = Vec::with_capacity(raw.release_dates.len());
@@ -705,7 +504,7 @@ fn releases_to_calendar(
             format!("FRED returned an unparseable release date {date_str:?} for release {name}")
         })?;
         if date < earliest || date > latest {
-            continue; // outside the window (defensive — the query already bounds it)
+            continue; // defensive — the query's realtime params already bound the window
         }
         let status = if date < today { "released" } else { "upcoming" };
         out.push(EconomicRelease {
@@ -723,15 +522,12 @@ fn releases_to_calendar(
 pub struct FredDataSource {
     api_key: String,
     http: reqwest::blocking::Client,
-    /// API origin the endpoint paths are joined onto. Defaults to [`FRED_BASE`]; an
-    /// offline round-trip test overrides it via [`FredDataSource::with_base_url`].
+    /// Defaults to [`FRED_BASE`]; tests redirect it at a localhost mock.
     base_url: String,
-    /// Run context for live progress + cooperative cancellation; a no-op by default
-    /// (tests / smokes), the live one attached via [`FredDataSource::with_context`].
+    /// A no-op unless attached via [`FredDataSource::with_context`].
     progress: Arc<RunContext>,
-    /// The consensus feed the calendar joins against — FMP's paid economic calendar,
-    /// attached on the report path alone via [`FredDataSource::with_consensus`]. `None`
-    /// leaves the calendar at names and dates.
+    /// The consensus feed the calendar joins against; `None` leaves the calendar at
+    /// names and dates.
     consensus: Option<Box<dyn EconomicCalendarSource>>,
 }
 
@@ -750,9 +546,7 @@ impl FredDataSource {
         })
     }
 
-    /// Redirect the adapter at an alternate API origin (a localhost mock) so the wire
-    /// path runs offline. Test-only; a trailing slash is trimmed so the joined path's
-    /// leading slash doesn't double up.
+    /// Redirect the adapter at a localhost mock so the wire path runs offline.
     #[cfg(test)]
     fn with_base_url(mut self, base_url: &str) -> Self {
         self.base_url = base_url.trim_end_matches('/').to_string();
@@ -766,35 +560,30 @@ impl FredDataSource {
         self
     }
 
-    /// Attach the consensus feed the economic-release calendar joins against, so each
-    /// release carries its tracked prints' consensus and surprise and the Fed / FOMC events
-    /// are appended (`docs/data-sources.md §Report enrichment`).
+    /// Attach the consensus feed the economic-release calendar joins against
+    /// (`docs/data-sources.md §Report enrichment`).
     pub fn with_consensus(mut self, source: impl EconomicCalendarSource + 'static) -> Self {
         self.consensus = Some(Box::new(source));
         self
     }
 
-    /// Resolve the adapter from the environment, for the live smoke and any caller
-    /// that bypasses the gate. The execution gate (`config::validate`) runs ahead
-    /// of this in the command path.
+    /// For the live smoke and any caller that bypasses the execution gate
+    /// (`config::validate`), which runs ahead of this in the command path.
     pub fn from_env() -> Result<Self> {
         Self::new(crate::config::AppConfig::from_env().fred_key()?)
     }
 
-    /// The latest numeric print of one rate series as a **decimal ratio** (`4.5` →
-    /// `0.045` — the suite's shared rate representation, normalized at the adapter
-    /// seam before any engine consumption; `docs/portfolio-analysis.md` §Starting
-    /// parameters). Errors on transport failure, a non-2xx, or no numeric
-    /// observation — the caller owns the posture (the run-level rate anchors are
-    /// **hard-fail** for a full run; `docs/portfolio-analysis.md` §Failure posture).
+    /// The latest numeric print of one rate series as a decimal ratio (`4.5` → `0.045`,
+    /// normalized at the adapter seam; `docs/portfolio-analysis.md` §Starting
+    /// parameters). Errors on transport failure, a non-2xx, or no numeric observation;
+    /// the caller owns the posture (`docs/portfolio-analysis.md` §Failure posture).
     pub fn latest_rate_decimal(&self, series_id: &str) -> Result<f64> {
         self.latest_rate_dated(series_id).map(|d| d.value)
     }
 
-    /// [`Self::latest_rate_decimal`] with the print's **observation date** attached —
-    /// the as-of date the persisted rate cache records so the engine-only quick
-    /// paths' fail-soft can age it against the drafted rate-cache max age
-    /// (`docs/portfolio-analysis.md` §Starting parameters).
+    /// [`Self::latest_rate_decimal`] with the print's observation date, the as-of date
+    /// the persisted rate cache ages against (`docs/portfolio-analysis.md` §Starting
+    /// parameters).
     pub fn latest_rate_dated(
         &self,
         series_id: &str,
@@ -818,8 +607,7 @@ impl FredDataSource {
                     o.value
                         .parse::<f64>()
                         .ok()
-                        // Finite only — same guard as the history read: a parsed
-                        // "NaN"/"inf" must read as a missing print, never a rate.
+                        // A parsed "NaN" / "inf" must read as a missing print, never a rate.
                         .filter(|v| v.is_finite())
                         .map(|percent| crate::portfolio::engine::DatedValue {
                             date: o.date.clone(),
@@ -827,18 +615,12 @@ impl FredDataSource {
                         })
                 })
                 .with_context(|| format!("no numeric observation for {series_id}"))?;
-            // Skipping "." markers to the prior print is correct FRED semantics
-            // (weekends / holidays publish no rate), but the fallback must be
-            // BOUNDED: a long malformed or unpublished run would otherwise serve
-            // an arbitrarily stale print as the current anchor. Ten days covers
-            // holiday + weekend clusters with margin; older is a missing anchor,
-            // taking the caller's existing hard-fail / unknown posture.
-            // The floor dates on the **ET session**, not the UTC date: FRED
-            // observation dates are market days, so an evening-ET run under a UTC
-            // date slides the floor a day forward and reads a print sitting exactly
-            // on the bound as stale. That `bail!` is not a degraded read — the
-            // Portfolio job's rate-anchor rule hard-fails the whole run on it
-            // before any per-holding work.
+            // Skipping "." markers to the prior print is correct FRED semantics, but the
+            // fallback is bounded so a long unpublished run never serves an arbitrarily
+            // stale print as the current anchor. The floor dates on the ET session, not
+            // the UTC date: observation dates are market days, so a UTC date on an
+            // evening-ET run slides the floor a day forward and reads a print sitting
+            // exactly on the bound as stale.
             let fresh_floor = crate::market_clock::et_session_date(chrono::Utc::now())
                 - chrono::Duration::days(RATE_ANCHOR_MAX_AGE_DAYS);
             let print_date = chrono::NaiveDate::parse_from_str(&latest.date, "%Y-%m-%d")
@@ -870,30 +652,21 @@ impl FredDataSource {
         result
     }
 
-    /// One date-ranged history request for a rate series, returned as **dated decimal
-    /// observations, oldest first** — the v2 anchor window's DGS10 history (the
-    /// acquisition rule on the DGS10 row, `docs/data-sources.md §Portfolio Analysis —
-    /// endpoint surface`: one request per run covering the trailing window plus
-    /// alignment slack, retained as dated observations for the
-    /// latest-published-on-or-before join).
+    /// One date-ranged history request for a rate series as dated decimal observations,
+    /// oldest first (`docs/data-sources.md §Portfolio Analysis — endpoint surface`).
     pub fn rate_history_decimal(
         &self,
         series_id: &str,
         from: NaiveDate,
         to: NaiveDate,
     ) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
-        // Rates normalize to decimal ratios at the adapter seam (the suite's
-        // shared rate representation — `docs/portfolio-analysis.md` §Starting
-        // parameters).
         self.dated_window(series_id, "suite-rate-history", "Rate history", 100.0, from, to)
     }
 
-    /// One date-ranged **level-basis** window for a commodity series — dated
-    /// observations, oldest first, on the series' own published units. This is
-    /// deliberately NOT [`Self::rate_history_decimal`]: the rate normalization
-    /// (`/100`) applied to a price level would fabricate the value, so price
-    /// series take this path (the run-level commodity context,
-    /// `docs/data-sources.md §Portfolio Analysis — endpoint surface`).
+    /// One date-ranged window for a commodity series — dated observations, oldest first,
+    /// on the series' own published units. Deliberately NOT [`Self::rate_history_decimal`]:
+    /// the rate normalization (`/100`) applied to a price level would fabricate the value
+    /// (`docs/data-sources.md §Portfolio Analysis — endpoint surface`).
     pub fn level_window(
         &self,
         series_id: &str,
@@ -903,11 +676,9 @@ impl FredDataSource {
         self.dated_window(series_id, "suite-commodity", "Commodity series", 1.0, from, to)
     }
 
-    /// The shared date-ranged observation fetch behind the rate-history and
-    /// commodity-level windows: dated observations, oldest first, each value
-    /// divided by `divisor` (100.0 for the rate normalization — the exact
-    /// division the seam has always used, bit-identical for pinned round-trips —
-    /// 1.0 for levels, which divides exactly to the raw value).
+    /// The shared date-ranged fetch behind the rate-history and commodity-level windows:
+    /// dated observations, oldest first, each value divided by `divisor` (100.0 for the
+    /// rate normalization, 1.0 for levels).
     fn dated_window(
         &self,
         series_id: &str,
@@ -945,9 +716,8 @@ impl FredDataSource {
                     o.value
                         .parse::<f64>()
                         .ok()
-                        // Finite only — Rust's parser accepts "NaN"/"inf", and a
-                        // non-finite anchor point would panic the percentile sort
-                        // (the baseline path rejects the same input explicitly).
+                        // `f64::parse` accepts "NaN" / "inf", and a non-finite point
+                        // would panic the percentile sort downstream.
                         .filter(|v| v.is_finite())
                         .map(|raw| crate::portfolio::engine::DatedValue {
                             date: o.date,
@@ -974,10 +744,8 @@ impl FredDataSource {
         result
     }
 
-    /// GET one series' most recent observations (newest-first), returning the
-    /// status and raw body for `interpret_response` to judge. A transport error
-    /// (the provider is unreachable) returns `Err` to the caller, which records it as an
-    /// `Unavailable` gap rather than failing the scan.
+    /// GET one series' newest observations; a transport error is `Err`, which the caller
+    /// records as an `Unavailable` gap rather than failing the scan.
     fn get(&self, series_id: &str) -> Result<(u16, String)> {
         let url = format!("{}{FRED_OBSERVATIONS_PATH}", self.base_url);
         crate::http_retry::send_with_retry("FRED", || {
@@ -991,15 +759,11 @@ impl FredDataSource {
         })
     }
 
-    /// Fetch one quote per FRED series in `series`, recording a [`DataGap`] in `group`
-    /// for any that don't resolve rather than failing the scan. A "does not exist" 400 is
-    /// an `OutOfScope` gap; an all-gap window — or a **stale** latest observation, dated
-    /// against the series' cadence relative to `today` — is `Unavailable` (no usable value
-    /// this run, so it counts against coverage); an `api_key` rejection is `Rejected`
-    /// and — being a whole-provider condition — stops the loop, recording the rest
-    /// without hammering; a systemic / unrecognized response or a body that won't shape
-    /// is `Unavailable` / `Malformed`. Shared by the internals and macro-levels groups,
-    /// which differ only in their series list and `group` tag.
+    /// Fetch one quote per series, recording a [`DataGap`] in `group` for any that
+    /// doesn't resolve rather than failing the scan. An all-gap or stale window is
+    /// `Unavailable` (it counts against coverage, unlike an `OutOfScope` absence); a
+    /// `Rejected` key is a whole-provider condition, so it stops the loop and records
+    /// the rest without hammering.
     fn fetch_series(
         &self,
         series: &[(&str, &str, &str)],
@@ -1024,7 +788,7 @@ impl FredDataSource {
             let out_before = out.len();
             let disposition = match self.get(series_id) {
                 Ok((status, body)) => interpret_response(status, &body),
-                Err(_) => Disposition::Gap(GapReason::Unavailable), // transport — unreachable
+                Err(_) => Disposition::Gap(GapReason::Unavailable),
             };
             match disposition {
                 Disposition::Value(value) => match observations_to_quote(
@@ -1037,10 +801,6 @@ impl FredDataSource {
                     change_kind_for(series_id),
                 ) {
                     Ok(Some(quote)) => out.push(quote),
-                    // No usable current value — every observation was a "." gap, or the
-                    // latest numeric one is staler than its cadence allows (a frozen /
-                    // discontinued series). Not a permanent/premium absence, so it counts
-                    // against coverage (Unavailable), unlike an explicit "does not exist".
                     Ok(None) => gaps.push(DataGap::new(
                         group,
                         *series_id,
@@ -1073,11 +833,9 @@ impl FredDataSource {
         out
     }
 
-    /// GET one release's scheduled dates within the calendar window, returning the status
-    /// and raw body for `interpret_response`. `include_release_dates_with_no_data=true`
-    /// surfaces *upcoming* (not-yet-released) dates; the realtime window bounds the dates
-    /// to the calendar's `[start, end]` span server-side. A transport error returns `Err`
-    /// to `fetch_calendar`, which records it as an `Unavailable` calendar gap.
+    /// GET one release's scheduled dates. `include_release_dates_with_no_data=true` is
+    /// what surfaces upcoming (not-yet-released) dates; the realtime window bounds the
+    /// dates server-side.
     fn get_release_dates(
         &self,
         release_id: u32,
@@ -1099,17 +857,11 @@ impl FredDataSource {
         })
     }
 
-    /// Gather the Step-3 economic-release calendar: each curated release's recent and
-    /// upcoming dates within the window, shaped into `EconomicRelease`s. The calendar is
-    /// an additive group with no floor, so it degrades quietly: a per-release "does not
-    /// exist" 400 is silent (a permanent absence shouldn't clutter the manifest), while a
-    /// this-run failure (auth / quota / 5xx / transport / malformed) is recorded as a
-    /// `Calendar` gap so the agent knows the schedule was thinned on this run. An empty
-    /// result (a quiet window) is valid; the actual figures reach the model through the
-    /// series groups regardless. With a consensus feed attached, one fetch over the window
-    /// (widened by the join's date tolerance) precedes the loop: each release's entries
-    /// join their prints' surprises by release id, and the Fed / FOMC events in the
-    /// window are appended after the releases.
+    /// Gather the economic-release calendar. An additive group with no floor: a
+    /// per-release "does not exist" is silent (a permanent absence shouldn't clutter the
+    /// manifest), a this-run failure is recorded as a `Calendar` gap, and an empty
+    /// window is valid. With a consensus feed attached, one fetch over the window
+    /// precedes the loop, and the Fed / FOMC events are appended after the releases.
     fn fetch_calendar(
         &self,
         today: NaiveDate,
@@ -1135,8 +887,6 @@ impl FredDataSource {
             if self.progress.is_cancelled() {
                 break;
             }
-            // `id_str` is borrowed (not moved) into the gaps so it survives for the
-            // tracker row emitted at the end of the iteration.
             let id_str = release_id.to_string();
             if rejected {
                 // No request made for a short-circuited release — no tracker row.
@@ -1212,10 +962,9 @@ impl FredDataSource {
         out
     }
 
-    /// The map-drift signal: when the consensus fetch returned rows but a mapped event of
-    /// a release dated in the window appears in none of them, one tracker row names the
-    /// missing events. A renamed FMP event otherwise fails soft to names and dates with no
-    /// trace; the model's prompt never sees this row.
+    /// When the consensus fetch returned rows but a mapped event of a release dated in
+    /// the window appears in none of them, one tracker row names the missing events — a
+    /// renamed FMP event otherwise fails soft with no trace. The prompt never sees it.
     fn emit_event_map_drift(&self, dated: &[u32], consensus: &[CalendarRow], gaps: &[DataGap]) {
         let missing = econ_calendar::absent_events(dated, consensus);
         if missing.is_empty() {
@@ -1244,18 +993,13 @@ impl FredDataSource {
 
 impl MarketDataSource for FredDataSource {
     fn baseline_scan(&self, cadence: ReportCadence) -> Result<BaselineMarketData> {
-        // Each series degrades to a recorded gap rather than failing the scan; an empty
-        // `internals` or `macro_levels` group is no longer this adapter's call to abort
-        // on — the central coverage gate (`pipeline::enforce_coverage`) decides the run's
-        // floor over the merged baseline. So this scan returns `Ok` for all data
-        // outcomes. FRED owns the internals + macro groups and the calendar; indices /
-        // sectors / labor are left empty for the composite to fill from FMP / BLS.
+        // Each series degrades to a recorded gap; `pipeline::enforce_coverage` decides the
+        // floor over the merged baseline, so the scan returns `Ok` for all data outcomes.
         let mut gaps = Vec::new();
-        // One `today` anchors both the freshness guard (per-series staleness) and the
-        // calendar window, so the whole scan reads against a single clock sample.
-        // It is the **ET session** date: every observation date FRED serves is a
-        // market day, so a UTC date on an evening-ET run ages each series by one and
-        // drops a print sitting exactly on its staleness bound to a gap.
+        // One `today` anchors both the freshness guard and the calendar window. It is the
+        // ET session date: every observation date FRED serves is a market day, so a UTC
+        // date on an evening-ET run ages each series by one and drops a print sitting
+        // exactly on its staleness bound to a gap.
         let today = crate::market_clock::et_session_date(Utc::now());
         let internals = self.fetch_series(INTERNALS_SERIES, GroupKind::Internals, today, &mut gaps);
         let macro_levels =
@@ -1270,14 +1014,12 @@ impl MarketDataSource for FredDataSource {
             labor_levels: Vec::new(),
             calendar,
             index_performance: Vec::new(),
-            // FMP owns the equity-market movers, earnings calendar, and valuation +
-            // finer-rotation snapshots; FRED contributes none of them.
+            // FMP, BLS and CFTC own the remaining groups; the composite fills them.
             movers: Vec::new(),
             earnings: Vec::new(),
             sector_pe: Vec::new(),
             industries: Vec::new(),
             market_risk_premium: Vec::new(),
-            // CFTC owns the COT positioning group, FMP the primary-market pace.
             cot_positioning: Vec::new(),
             primary_market: None,
             gaps,
@@ -1291,27 +1033,19 @@ mod tests {
     use crate::data_sources::{BeatMiss, SurpriseRelation};
     use crate::test_http::{Canned, MockHttp};
 
-    // `Cadence`, `FRESHNESS`, `cadence_for`, and `Cadence::max_staleness_days` now live
-    // in the production module above — the freshness guard runs in `observations_to_quote`,
-    // not just the smoke — and are reached here through `use super::*`. A fixed "today"
-    // near the offline fixtures' early-June-2026 dates keeps them fresh for the tests that
-    // aren't about freshness; the freshness behavior has its own dedicated tests below.
     #[test]
     fn calendar_back_days_floors_caps_and_scales() {
-        // First report (no interval) → the floor.
         assert_eq!(calendar_back_days(None), CALENDAR_BACK_DAYS);
-        // Sub-floor run keeps the default lookback.
         assert_eq!(calendar_back_days(Some(2.0)), CALENDAR_BACK_DAYS);
-        // A multi-week run rounds up to ~its interval, above the floor.
         assert_eq!(calendar_back_days(Some(20.0)), 20);
-        // A long gap is capped.
         assert_eq!(calendar_back_days(Some(90.0)), CALENDAR_BACK_MAX_DAYS);
-        // Degenerate intervals clamp to the floor/cap, never panic.
         assert_eq!(calendar_back_days(Some(-3.0)), CALENDAR_BACK_DAYS);
         assert_eq!(calendar_back_days(Some(f64::NAN)), CALENDAR_BACK_DAYS);
         assert_eq!(calendar_back_days(Some(f64::INFINITY)), CALENDAR_BACK_MAX_DAYS);
     }
 
+    // Near the offline fixtures' early-June-2026 dates, so they read fresh in the tests
+    // that aren't about freshness.
     fn fresh_today() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 6, 8).unwrap()
     }
@@ -1335,7 +1069,7 @@ mod tests {
             stray.is_empty(),
             "FRESHNESS entries for unknown series (remove them): {stray:?}"
         );
-        // No duplicate ids in the table (a dup would mask a missing entry).
+        // A duplicate id would mask a missing entry.
         assert_eq!(
             FRESHNESS.len(),
             freshness.len(),
@@ -1345,7 +1079,6 @@ mod tests {
 
     #[test]
     fn forward_expectation_gauges_are_present_and_gdpnow_is_not_annualized() {
-        // The two forward-looking gauges are in the macro group with the right cadence...
         let macro_ids: Vec<&str> = MACRO_SERIES.iter().map(|(id, _, _)| *id).collect();
         assert!(
             macro_ids.contains(&"GDPNOW"),
@@ -1357,9 +1090,7 @@ mod tests {
         );
         assert_eq!(cadence_for("GDPNOW"), Cadence::Quarterly);
         assert_eq!(cadence_for("EXPINF1YR"), Cadence::Monthly);
-        // ...and GDPNow stays out of ANNUALIZED_SERIES — its value is already an annual
-        // rate (SAAR), so annualizing its change would double-count. This pins that
-        // deliberate exclusion against a future "annualize every quarterly series" refactor.
+        // Pins the deliberate exclusion against an "annualize every quarterly series" refactor.
         assert!(
             !is_annualized("GDPNOW"),
             "GDPNow is already SAAR — must not be annualized"
@@ -1367,27 +1098,16 @@ mod tests {
         assert!(!is_annualized("EXPINF1YR"));
     }
 
-    /// The newest *numeric* observation's date in a FRED observations response, selecting
-    /// the value **exactly as [`observations_to_quote`] does**: skip FRED's `"."` gap
-    /// markers (newest-first, so the first non-`"."` row wins), and require that winning
-    /// value to parse to a **finite `f64`** — production rejects a non-numeric / non-finite
-    /// value (`"garbage"`, `"NaN"`, `"inf"`) by failing closed rather than skipping past it,
-    /// so this stops at the same row and returns `None` rather than dating a value the
-    /// baseline would never carry. `None` also when the body has no numeric observation or
-    /// doesn't match the observations shape; the freshness guard turns that `None` into a
-    /// loud panic, mirroring production's fail-closed. Used to date the value the baseline
-    /// would carry, catching a series frozen months ago.
+    /// The newest numeric observation's date, selected exactly as [`observations_to_quote`]
+    /// does: skip `"."` markers and require a finite value, returning `None` at a
+    /// non-numeric row rather than searching on past it.
     fn latest_numeric_observation_date(value: &Value) -> Option<NaiveDate> {
         let observations = value.get("observations")?.as_array()?;
         for obs in observations {
             let raw = obs.get("value")?.as_str()?.trim();
             if raw == "." {
-                continue; // documented gap — not a real datum
+                continue;
             }
-            // Mirror observations_to_quote: the latest non-gap value must be a finite
-            // number, else it's a contract violation — fail closed, don't let a malformed
-            // value masquerade as a fresh datum. Production errors here rather than skipping
-            // to the next row, so this returns `None` at the same row instead of searching on.
             raw.parse::<f64>().ok().filter(|n: &f64| n.is_finite())?;
             let date_str = obs.get("date")?.as_str()?.trim();
             return NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok();
@@ -1397,7 +1117,6 @@ mod tests {
 
     #[test]
     fn latest_numeric_observation_date_skips_gaps() {
-        // Newest-first with leading "." gaps: the first numeric row dates the value.
         let v: Value = serde_json::from_str(
             r#"{"observations":[
                 {"date":"2026-06-07","value":"."},
@@ -1411,17 +1130,12 @@ mod tests {
             latest_numeric_observation_date(&v),
             Some(NaiveDate::from_ymd_opt(2026, 6, 5).unwrap())
         );
-        // All gaps -> no dated value.
         let all_gaps: Value =
             serde_json::from_str(r#"{"observations":[{"date":"2026-06-07","value":"."}]}"#)
                 .unwrap();
         assert!(latest_numeric_observation_date(&all_gaps).is_none());
-        // Wrong shape -> None, not a panic.
         let bad: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
         assert!(latest_numeric_observation_date(&bad).is_none());
-        // A non-numeric / non-finite latest value fails closed -> None (the smoke then
-        // panics), mirroring observations_to_quote's rejection. It must not date the bogus
-        // value, nor skip past it to an older numeric row.
         for bad in ["garbage", "NaN", "inf", "-inf", "infinity"] {
             let v: Value = serde_json::from_str(&format!(
                 r#"{{"observations":[{{"date":"2026-06-05","value":"{bad}"}},{{"date":"2026-06-04","value":"4.30"}}]}}"#
@@ -1437,7 +1151,6 @@ mod tests {
     #[test]
     fn interpret_response_covers_the_full_matrix() {
         use GapReason::*;
-        // 2xx observations body -> a value to shape.
         assert!(matches!(
             interpret_response(
                 200,
@@ -1446,7 +1159,6 @@ mod tests {
             Disposition::Value(_)
         ));
 
-        // A 400 whose error_message says the series is absent -> OutOfScope per-series gap.
         let absent =
             r#"{"error_code":400,"error_message":"Bad Request. The series does not exist."}"#;
         assert!(matches!(
@@ -1454,21 +1166,17 @@ mod tests {
             Disposition::Gap(OutOfScope)
         ));
 
-        // A 400 whose error_message is an api_key problem -> Rejected (key rejected).
         let bad_key = r#"{"error_code":400,"error_message":"Bad Request. The value for variable api_key is not registered, is not active, or is otherwise invalid."}"#;
         assert!(matches!(
             interpret_response(400, bad_key),
             Disposition::Gap(Rejected)
         ));
 
-        // An unrecognized 400 (empty / unfamiliar message) fails closed as Malformed
-        // rather than being misread as a missing series.
         assert!(matches!(
             interpret_response(400, "{}"),
             Disposition::Gap(Malformed)
         ));
 
-        // Systemic statuses -> Unavailable regardless of body.
         for status in [429, 500, 503] {
             assert!(
                 matches!(
@@ -1479,7 +1187,6 @@ mod tests {
             );
         }
 
-        // A 2xx that isn't valid JSON is a contract violation -> Malformed.
         assert!(matches!(
             interpret_response(200, "not json at all"),
             Disposition::Gap(Malformed)
@@ -1488,11 +1195,6 @@ mod tests {
 
     // ---- Offline round trip: adapter -> retry -> interpret -> domain output ----
     //
-    // The matrix above pins `interpret_response` as a pure function; these drive the
-    // whole `get`/`get_release_dates` -> `send_with_retry` -> `interpret_response` path
-    // against a localhost mock (`crate::test_http`). FRED has two endpoints, each
-    // building its own URL, so each is rebased and covered: `fetch_series` (observations,
-    // through to the shaped `Quote`) and `get_release_dates` (the release-dates wire).
     // Single-reply scripts, so no `BASE_BACKOFF` sleep is incurred.
 
     fn test_source(base_url: &str) -> FredDataSource {
@@ -1594,7 +1296,6 @@ mod tests {
         );
         let entry = |name: &str| cal.iter().find(|e| e.release == name).unwrap();
 
-        // Matched: both Employment Situation prints carry, each by its own rule.
         let jobs = entry("Employment Situation");
         let events: Vec<_> = jobs
             .surprises
@@ -1613,15 +1314,12 @@ mod tests {
         assert_eq!(income.surprises.len(), 1);
         assert_eq!(income.surprises[0].event, "Personal Income MoM");
         assert_eq!(income.surprises[0].beat_miss, Some(BeatMiss::Miss));
-        // Unmatched: no consensus row for JOLTS — names and dates.
         let jolts = entry("Job Openings and Labor Turnover Survey");
         assert_eq!(jolts.status, "upcoming");
         assert!(jolts.surprises.is_empty());
-        // Upcoming with a consensus: the estimate alone.
         let gdp = entry("Gross Domestic Product");
         assert_eq!(gdp.surprises.len(), 1);
         assert_eq!((gdp.surprises[0].estimate, gdp.surprises[0].actual), (0.9, None));
-        // The Fed events in the window follow the releases, as their own class.
         let fed: Vec<_> = cal
             .iter()
             .filter(|e| e.class == CalendarEventClass::Fed)
@@ -1668,10 +1366,8 @@ mod tests {
 
     #[test]
     fn a_mapped_event_missing_from_the_whole_window_raises_one_event_map_row() {
-        // The fixture feed carries no Average Hourly Earnings, Core PCE, Personal
-        // Spending, JOLTs or GDP Price Index print anywhere in the window, while each of
-        // their releases has a FRED date in it; the CPI release has none, so its events
-        // are not checked.
+        // The fixture feed carries none of the five named prints while each of their
+        // releases has a FRED date in the window; CPI has no date, so its events go unchecked.
         let server = MockHttp::serve(calendar_replies());
         let (rec, ctx) = recording_context();
         let source = test_source(&server.base_url)
@@ -1758,8 +1454,7 @@ may need re-verifying"
 
     #[test]
     fn every_mapped_release_id_is_a_tracked_fred_release() {
-        // The map keys on the numeric release id: a row naming an id outside `RELEASES`
-        // could never join, and a tracked release with no row never carries consensus.
+        // A row naming an id outside `RELEASES` could never join.
         for m in crate::econ_calendar::EVENT_MAP {
             assert!(
                 RELEASES.iter().any(|(id, _)| *id == m.release_id),
@@ -1807,7 +1502,6 @@ may need re-verifying"
 
     #[test]
     fn fetch_series_round_trips_an_absent_series_into_an_out_of_scope_gap() {
-        // A 400 "series does not exist" must classify as an OutOfScope gap over the wire.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 400,
             headers: vec![],
@@ -1831,8 +1525,7 @@ may need re-verifying"
 
     #[test]
     fn get_release_dates_round_trips_through_the_rebased_endpoint() {
-        // The second endpoint builds its own URL; this proves it is rebased onto the
-        // mock and the (status, body) rides back through the retry seam intact.
+        // The second endpoint builds its own URL, so it must rebase onto the mock too.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![],
@@ -1843,8 +1536,6 @@ may need re-verifying"
             .get_release_dates(10, "2026-06-08", "2026-06-22")
             .expect("release-dates request reaches the mock");
         assert_eq!(server.attempts(), 1);
-        // The distinct second-endpoint path proves it rebased onto the mock, not just
-        // that some FRED URL did — a `FRED_RELEASE_DATES_PATH` typo would fail here.
         assert_eq!(server.request_paths(), ["/release/dates"]);
         assert_eq!(status, 200);
         assert!(body.contains("\"release_id\":10"));
@@ -1852,7 +1543,6 @@ may need re-verifying"
 
     #[test]
     fn observations_to_quote_takes_latest_and_computes_change() {
-        // Newest-first: latest 4.30, prior 4.20 -> +2.38% (off the prior value).
         let v: Value = serde_json::from_str(
             r#"{"observations":[
                 {"date":"2026-06-04","value":"4.30"},
@@ -1875,15 +1565,12 @@ may need re-verifying"
         assert_eq!(q.name, "10-Year Treasury Yield");
         assert!((q.price - 4.30).abs() < 1e-9);
         assert!((q.change.value - (0.10 / 4.20 * 100.0)).abs() < 1e-9);
-        // The series' unit rides onto the quote from the table, labelling `price`.
         assert_eq!(q.unit, "percent");
     }
 
     #[test]
     fn observations_to_quote_annualizes_a_quarterly_rate() {
-        // GDP: the quarter-over-quarter change is compounded to an annual rate, the
-        // headline figure. Latest 23500, prior 23300 -> a ~0.86% QoQ move that
-        // annualizes to ~3.5% — the change the model must see, not the raw quarterly one.
+        // 23500 from 23300 is a ~0.86% QoQ move that annualizes to ~3.5%.
         let v: Value = serde_json::from_str(
             r#"{"observations":[
                 {"date":"2026-01-01","value":"23500"},
@@ -1902,12 +1589,9 @@ may need re-verifying"
         )
         .unwrap()
         .expect("a quote");
-        // The level (price) is untouched — only the change is annualized.
         assert!((q.price - 23500.0).abs() < 1e-9);
         let expected = ((23500.0_f64 / 23300.0).powi(4) - 1.0) * 100.0;
         assert!((q.change.value - expected).abs() < 1e-9);
-        // And the annualized rate is materially larger than the raw quarterly change —
-        // the whole point of the convention.
         let raw_qoq = (23500.0_f64 - 23300.0) / 23300.0 * 100.0;
         assert!(
             q.change.value > raw_qoq * 3.0,
@@ -1919,9 +1603,6 @@ may need re-verifying"
 
     #[test]
     fn observations_to_quote_leaves_a_nonannualized_series_unchanged() {
-        // The same two observations, but for a non-annualized series, keep the simple
-        // per-period change — annualization is opt-in via `ANNUALIZED_SERIES`, not the
-        // default for every series.
         let body = r#"{"observations":[
                 {"date":"2026-01-01","value":"23500"},
                 {"date":"2025-10-01","value":"23300"}
@@ -1940,8 +1621,7 @@ may need re-verifying"
         .expect("a quote");
         let raw_qoq = (23500.0_f64 - 23300.0) / 23300.0 * 100.0;
         assert!((q.change.value - raw_qoq).abs() < 1e-9);
-        // The marker is keyed to GDP, not to the cadence: GDPC1 is annualized, a
-        // sibling quarterly series is not.
+        // Keyed to the series, not the cadence.
         assert!(is_annualized("GDPC1"));
         assert!(!is_annualized("PCEPI"));
         assert_eq!(Cadence::Quarterly.periods_per_year(), 4);
@@ -1949,8 +1629,6 @@ may need re-verifying"
 
     #[test]
     fn change_kind_for_maps_each_series_to_its_treatment() {
-        // GDP level → annualized; rates + the GDPNow SAAR nowcast + a centered conditions
-        // index → point delta; a plain index/level series → the percent default.
         assert_eq!(change_kind_for("GDPC1"), ChangeKind::Annualized);
         assert_eq!(change_kind_for("GDPNOW"), ChangeKind::PointDelta);
         assert_eq!(change_kind_for("DGS10"), ChangeKind::PointDelta);
@@ -1961,9 +1639,7 @@ may need re-verifying"
 
     #[test]
     fn rate_delta_and_annualized_sets_are_disjoint() {
-        // The two change treatments are mutually exclusive — a series is annualized XOR a
-        // point delta XOR the percent default, never two at once. `change_kind_for`'s
-        // if/else-if would hide an overlap silently, so pin disjointness here.
+        // `change_kind_for`'s if/else-if would hide an overlap silently.
         for id in ANNUALIZED_SERIES {
             assert!(
                 !RATE_DELTA_SERIES.contains(id),
@@ -1974,10 +1650,7 @@ may need re-verifying"
 
     #[test]
     fn rate_delta_series_are_rate_or_centered_index_units() {
-        // Guard against a level/price/count series sneaking into the point-delta set: every
-        // member must be quoted either in percent (a rate) or as a zero-centered index
-        // (where a percent-of-prior is unstable). Units come from the production series
-        // tables, so a mislabeled addition fails offline.
+        // Guards against a level / price / count series sneaking into the point-delta set.
         for id in RATE_DELTA_SERIES {
             let unit = INTERNALS_SERIES
                 .iter()
@@ -1996,9 +1669,6 @@ may need re-verifying"
 
     #[test]
     fn observations_to_quote_reports_a_point_delta_for_a_rate_series() {
-        // A rate series (yield): the change is the percentage-point move `latest − prior`,
-        // NOT a percent-of-prior. 4.30 from 4.20 → +0.10 pp, carried as a PointDelta kind so
-        // the model reads the figure as points, not percent — and the name stays untagged.
         let v: Value = serde_json::from_str(
             r#"{"observations":[
                 {"date":"2026-06-04","value":"4.30"},
@@ -2023,16 +1693,13 @@ may need re-verifying"
             q.change.value
         );
         assert_eq!(q.change.kind, ChangeKind::PointDelta);
-        // The change's unit lives on `change.kind` now, so the display name is untagged.
         assert_eq!(q.name, "10-Year Treasury Yield");
     }
 
     #[test]
     fn observations_to_quote_point_delta_is_signed_and_stable_across_zero() {
-        // The division-free path is the whole point: a centered index crossing zero
-        // (−0.05 → +0.10) reports +0.15, where a percent-of-prior would blow up / flip sign.
-        // It carries the same PointDelta kind as a rate — the level-vs-pp reading is the
-        // consumer's job (it combines `change.kind` with the quote's `unit`).
+        // A centered index crossing zero (−0.05 → +0.10) reports +0.15, where a
+        // percent-of-prior would blow up / flip sign.
         let v: Value = serde_json::from_str(
             r#"{"observations":[
                 {"date":"2026-06-04","value":"0.10"},
@@ -2057,16 +1724,12 @@ may need re-verifying"
             q.change.value
         );
         assert_eq!(q.change.kind, ChangeKind::PointDelta);
-        // The display name is untagged — the kind, not a marker, carries the unit.
         assert_eq!(q.name, "Chicago Fed National Financial Conditions Index");
     }
 
     #[test]
     fn a_point_delta_quote_serializes_self_describing_with_no_name_marker() {
-        // The slice's point: in the serialized baseline (the JSON the main agent reads) the
-        // change is self-describing via `change.kind`, and the display name no longer carries
-        // a `(Δ pp)` marker. Pins both halves end-to-end (kind mapping → serde) so the
-        // name-marker hack can't creep back. DGS10 routes to PointDelta via `change_kind_for`.
+        // Pins kind mapping → serde end to end so a `(Δ pp)` name marker can't creep back.
         let v: Value = serde_json::from_str(
             r#"{"observations":[
                 {"date":"2026-06-04","value":"4.30"},
@@ -2098,8 +1761,6 @@ may need re-verifying"
 
     #[test]
     fn observations_to_quote_skips_gap_markers() {
-        // FRED's "." gap markers are skipped: the latest *numeric* value wins, and
-        // the change is computed off the next numeric value past the gap.
         let v: Value = serde_json::from_str(
             r#"{"observations":[
                 {"date":"2026-06-07","value":"."},
@@ -2126,8 +1787,6 @@ may need re-verifying"
 
     #[test]
     fn observations_to_quote_all_gaps_is_a_skip_not_an_error() {
-        // A series with no numeric observation in the window returns Ok(None) (a skip,
-        // not an error) — the caller then records it as an Unavailable gap.
         let v: Value =
             serde_json::from_str(r#"{"observations":[{"date":"2026-06-07","value":"."}]}"#)
                 .unwrap();
@@ -2146,7 +1805,6 @@ may need re-verifying"
 
     #[test]
     fn observations_to_quote_single_value_has_no_change() {
-        // One numeric observation -> a quote with a 0.0 change (no prior to diff).
         let v: Value =
             serde_json::from_str(r#"{"observations":[{"date":"2026-06-04","value":"4.30"}]}"#)
                 .unwrap();
@@ -2167,7 +1825,6 @@ may need re-verifying"
 
     #[test]
     fn observations_to_quote_rejects_a_malformed_body() {
-        // A 2xx body without the `observations` array is a contract violation.
         let v: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
         assert!(observations_to_quote(
             v,
@@ -2183,10 +1840,6 @@ may need re-verifying"
 
     #[test]
     fn observations_to_quote_rejects_nonnumeric_and_nonfinite_values() {
-        // "." is the only skippable marker. A non-numeric value — or one that parses
-        // to a non-finite float (NaN / inf, which f64::parse accepts) — returns an error
-        // the caller records as a Malformed gap, not a silent drop. Otherwise a stale
-        // value could read as current, or a NaN could contaminate the change math.
         for bad in ["garbage", "NaN", "inf", "-inf", "infinity"] {
             let v: Value = serde_json::from_str(&format!(
                 r#"{{"observations":[{{"date":"2026-06-04","value":"{bad}"}}]}}"#
@@ -2210,9 +1863,6 @@ may need re-verifying"
 
     #[test]
     fn observations_to_quote_drops_a_stale_latest_observation() {
-        // A frozen / discontinued series resolves to an old value with no error; dated
-        // against its cadence it is too stale, so it drops to Ok(None) (an Unavailable gap
-        // downstream) rather than feeding a months-old level into the baseline.
         let v: Value = serde_json::from_str(
             r#"{"observations":[
                 {"date":"2026-01-02","value":"4.30"},
@@ -2236,9 +1886,7 @@ may need re-verifying"
 
     #[test]
     fn observations_to_quote_freshness_is_a_closed_band_at_the_cadence_bound() {
-        // The guard keeps an observation exactly at the bound and drops one a day past it,
-        // pinning the inclusive `<=` and referencing the cadence's own const so a re-tune
-        // can't silently invalidate the test (mirrors the FMP industry-P/E closed band).
+        // Built on the cadence's own const so a re-tune can't silently invalidate the test.
         let today = fresh_today();
         let bound = Cadence::Daily.max_staleness_days();
         let at_bound = (today - Duration::days(bound))
@@ -2289,9 +1937,7 @@ may need re-verifying"
 
     #[test]
     fn observations_to_quote_freshness_respects_per_cadence_bounds() {
-        // The same age reads as fresh for a slow cadence and stale for a fast one: a
-        // ~100-day-old observation is within the Monthly bound (110) but past the Daily
-        // bound (16), so cadence — not just age — decides the drop.
+        // 100 days is within the Monthly bound (110) but past the Daily bound (16).
         let today = fresh_today();
         let old = (today - Duration::days(100)).format("%Y-%m-%d").to_string();
         let body = format!(r#"{{"observations":[{{"date":"{old}","value":"4.30"}}]}}"#);
@@ -2330,9 +1976,6 @@ may need re-verifying"
 
     #[test]
     fn observations_to_quote_rejects_an_unparseable_latest_date() {
-        // The latest numeric observation must carry a parseable date — the freshness guard
-        // can't judge an unparseable one, so it fails closed (a Malformed gap downstream)
-        // rather than letting an undateable value through.
         let v: Value =
             serde_json::from_str(r#"{"observations":[{"date":"June 4th","value":"4.30"}]}"#)
                 .unwrap();
@@ -2353,9 +1996,6 @@ may need re-verifying"
 
     #[test]
     fn fetch_series_records_a_stale_series_as_an_unavailable_gap() {
-        // End to end over the wire: a series whose latest observation is months old drops
-        // to an Unavailable gap (counts against coverage), not a quote — the production
-        // freshness guard exercised through the adapter, not just the pure shaper.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![],
@@ -2378,9 +2018,7 @@ may need re-verifying"
     #[test]
     fn releases_to_calendar_classifies_status_and_windows() {
         let today = NaiveDate::from_ymd_opt(2026, 6, 6).unwrap();
-        // Window is [2026-05-27, 2026-06-27]. A too-old date and a too-far-ahead date
-        // are dropped; a past date is "released", today and a future in-window date are
-        // "upcoming".
+        // Window is [2026-05-27, 2026-06-27].
         let v: Value = serde_json::from_str(
             r#"{"release_dates":[
                 {"release_id":10,"date":"2026-05-01"},
@@ -2408,14 +2046,9 @@ may need re-verifying"
 
     #[test]
     fn latest_rate_anchor_skips_markers_but_bounds_the_fallback() {
-        // Skipping "." markers to the prior business day is correct FRED
-        // semantics — but the fallback is bounded: a print older than the
-        // anchor max age must error onto the callers' hard-fail / unknown
-        // postures, never serve as a current anchor.
-        // Dates build on the **ET session**, the basis the bound itself uses.
-        // Under `Utc::now().date_naive()` this test failed for the evening-ET
-        // hours after the UTC rollover: the fixture's stale date landed exactly
-        // on the ET-dated floor and read fresh.
+        // Dates build on the ET session, the basis the bound itself uses: under a UTC
+        // date the stale fixture lands exactly on the ET-dated floor during the
+        // evening-ET hours after the UTC rollover and reads fresh.
         let today = crate::market_clock::et_session_date(chrono::Utc::now());
         let recent = (today - Duration::days(2)).format("%Y-%m-%d").to_string();
         let marker = today.format("%Y-%m-%d").to_string();
@@ -2449,9 +2082,6 @@ may need re-verifying"
 
     #[test]
     fn level_window_preserves_published_levels_and_sorts_oldest_first() {
-        // The level basis is the point: a WTI print of 78.4 must arrive as 78.4,
-        // never through the rate normalization (/100) — while the rate-history
-        // path keeps normalizing on the shared windowed fetch.
         let body = r#"{"observations":[
             {"date":"2026-08-18","value":"78.40"},
             {"date":"2025-08-20","value":"82.10"},
@@ -2486,9 +2116,7 @@ may need re-verifying"
 
     #[test]
     fn releases_to_calendar_honors_the_scaled_back_window() {
-        // The cadence-scaled lookback must reach the filter: a release 25 days
-        // back is kept under a 45-day window and dropped under the 10-day floor
-        // (the pre-fix behavior re-filtered on the floor unconditionally).
+        // A release 25 days back is kept under a 45-day window, dropped under the 10-day floor.
         let today = NaiveDate::from_ymd_opt(2026, 6, 6).unwrap();
         let v = || -> Value {
             serde_json::from_str(r#"{"release_dates":[{"release_id":10,"date":"2026-05-12"}]}"#)
@@ -2513,10 +2141,8 @@ may need re-verifying"
     #[test]
     fn releases_to_calendar_rejects_malformed_body_and_bad_date() {
         let today = NaiveDate::from_ymd_opt(2026, 6, 6).unwrap();
-        // A body without the `release_dates` array is a contract violation.
         let bad_shape: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
         assert!(releases_to_calendar(bad_shape, "x", today, CALENDAR_BACK_DAYS, |_| Vec::new()).is_err());
-        // An unparseable date fails closed rather than being silently dropped.
         let bad_date: Value =
             serde_json::from_str(r#"{"release_dates":[{"date":"June 6th"}]}"#).unwrap();
         assert!(releases_to_calendar(bad_date, "x", today, CALENDAR_BACK_DAYS, |_| Vec::new()).is_err());
@@ -2528,11 +2154,8 @@ may need re-verifying"
         let src = FredDataSource::from_env().expect("FRED_API_KEY set");
         let data = src.baseline_scan(ReportCadence::default()).expect("live baseline scan");
 
-        // Print the resolved mapping so a maintainer can confirm each series came
-        // back (run with `-- --ignored --nocapture`); the offline tests can only
-        // check fixture shapes, not the live series — this is where a removed or
-        // renamed series id surfaces (the lesson of the original gold id, since
-        // moved to FMP).
+        // Print the resolved mapping (run with `-- --ignored --nocapture`): a removed or
+        // renamed series id surfaces here, not in the offline fixture tests.
         let dump = |label: &str, quotes: &[Quote]| {
             eprintln!("{label} ({}):", quotes.len());
             for q in quotes {
@@ -2545,10 +2168,8 @@ may need re-verifying"
         dump("internals", &data.internals);
         dump("macro_levels", &data.macro_levels);
 
-        // Both groups are non-optional Step-3 baseline data. Assert each resolves in
-        // full so a silently dropped (renamed / discontinued) series fails the smoke
-        // loudly rather than thinning the baseline unnoticed — the per-symbol-assert
-        // discipline `fmp_baseline_smoke` uses for its free-tier-sensitive symbols.
+        // Each group must resolve in full, so a renamed / discontinued series fails the
+        // smoke loudly rather than thinning the baseline unnoticed.
         assert_eq!(
             data.internals.len(),
             INTERNALS_SERIES.len(),
@@ -2562,13 +2183,9 @@ may need re-verifying"
 
         let today = Utc::now().date_naive();
 
-        // Freshness guard — the count asserts above prove each series *resolves*, but a
-        // discontinued / frozen series still resolves to a stale value (it just stops
-        // getting new observations, so the no-date-bound `get` returns its last real
-        // datum from months ago — the `NASDAQVOLNDX` class of bug). Re-fetch each series
-        // (FRED is 120 req/min with no daily cap) and assert its latest *numeric*
-        // observation is recent enough for its cadence, so a series going discontinued
-        // fails the smoke loudly rather than feeding a stale level into the baseline.
+        // The count asserts prove each series resolves, but a frozen series still
+        // resolves to a stale value; re-fetch each (FRED is 120 req/min with no daily
+        // cap) and assert its latest numeric observation is fresh for its cadence.
         eprintln!("freshness (today = {today}):");
         for (series_id, name, _unit) in INTERNALS_SERIES.iter().chain(MACRO_SERIES) {
             let (status, body) = src.get(series_id).expect("freshness re-fetch");
@@ -2595,13 +2212,9 @@ may need re-verifying"
             );
         }
 
-        // The economic-release calendar is additive (no completeness floor), so assert it
-        // resolved *something* and that every entry is well-formed — a curated release
-        // name, a released/upcoming status, and an in-window date. A wrong / retired
-        // release_id surfaces in the per-release dump below by contributing no rows; a
-        // strict per-id assert would be flaky for the lower-cadence releases (GDP and
-        // other quarterly reports) that legitimately have no date in a given ~month
-        // window.
+        // The calendar has no completeness floor, so assert it resolved something and
+        // that every entry is well-formed; a strict per-id assert would be flaky for the
+        // quarterly releases that legitimately have no date in a ~month window.
         eprintln!("calendar ({}):", data.calendar.len());
         for c in &data.calendar {
             eprintln!("  {:<9} {:<46} {}", c.status, c.release, c.date);
@@ -2629,14 +2242,11 @@ may need re-verifying"
             );
         }
 
-        // Per-id validation — two distinct failure modes, each caught explicitly:
-        //  (1) wrong-but-valid id (points at a *different* real release): `release/dates`
-        //      can't catch it — it echoes whatever id you query — so verify each id by
-        //      name against FRED's `releases` catalog.
-        //  (2) retired / scheduleless id: verify each resolves to >=1 real date over a
-        //      wide window (the windowed calendar can't — a low-cadence release like GDP
-        //      legitimately has no date in the ±~month window).
-        // Together these are the per-symbol-resolution discipline the series smokes use.
+        // Per-id validation, two failure modes:
+        //  (1) a wrong-but-valid id points at a different real release, and `release/dates`
+        //      echoes whatever id is queried, so verify each by name against the catalog;
+        //  (2) a retired id resolves to no dates, which only a wide window can show (a
+        //      quarterly release legitimately has none in the ±~month window).
         #[derive(Deserialize)]
         struct Catalog {
             releases: Vec<CatalogEntry>,
@@ -2698,12 +2308,8 @@ may need re-verifying"
     #[ignore = "hits the live FRED API; set FRED_API_KEY. Calibration aid, not a gate — \
                 run with `-- --ignored --nocapture` to read the headroom table."]
     fn tuning_freshness_headroom_probe() {
-        // Reports each series' live staleness against its cadence bound (headroom =
-        // bound − staleness), tightest first, so the four `max_staleness_days` values can
-        // be re-tuned from real publication lag rather than guessed. Unlike the freshness
-        // assert in `fred_baseline_smoke` (the gate), this only reports — a series with
-        // thin or negative headroom is a signal to investigate / re-tune, not a failure.
-        // Tighten a bound only above the live max its members reach here.
+        // Reports headroom (bound − staleness) per series, tightest first, so the
+        // `max_staleness_days` values are re-tuned from real lag; it only reports.
         let src = FredDataSource::from_env().expect("FRED_API_KEY set");
         let today = Utc::now().date_naive();
         let mut rows: Vec<(i64, &str, &str, Cadence, i64, NaiveDate)> = Vec::new();

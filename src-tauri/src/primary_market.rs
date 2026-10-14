@@ -1,16 +1,9 @@
 //! The primary-market pace (`docs/data-sources.md §Report enrichment`): FMP's paid
-//! `ipos-calendar` and `mergers-acquisitions-latest` reduced to one compact read — the IPO
-//! and registered-deal counts in the recent window against the equal-length window before
-//! it, the IPOs scheduled ahead, and the recent window's notable names.
-//!
-//! This module is the pure half of the enrichment. [`FrothWindows`] sizes the three
-//! half-open windows on the ET session date. [`ipo_activity`] counts the calendar rows that
-//! carry a share count — priced ones in the recent and prior windows, expected ones in the
-//! upcoming window — and ranks the recent window's largest offerings. [`deal_activity`]
-//! counts one deal per registration filing and maps how the page walk ended onto the three
-//! completion states. A count is a completeness claim, so a side whose feed served a row it
-//! could have counted but no reader could place is withheld, never undercounted. The wire fetch, the row shapers and the walk live in `fmp`; the raw
-//! calendar and deal rows never ride the baseline, only the counts and the notable names.
+//! `ipos-calendar` and `mergers-acquisitions-latest` reduced to IPO and deal counts in
+//! the recent window against the equal-length window before it, the IPOs scheduled
+//! ahead, and the recent window's notable names. The wire fetch, the row shapers and
+//! the walk live in `fmp`. A count is a completeness claim, so a side whose feed served
+//! a row no reader could place is withheld, never undercounted.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
@@ -133,16 +126,10 @@ impl IpoRow {
     }
 }
 
-/// The IPO side over the calendar's readable rows, with the gap the manifest records.
-/// `undated_offerings` counts the served rows that carry a share count but no readable date:
-/// an offering the counts cannot place withholds the read with a `Malformed` gap. A calendar
-/// with no row in any of the three windows is a fault of the feed, never a freeze: no read
-/// and an `Unavailable` gap. One row per symbol, the latest-dated winning, a row without a
-/// symbol counting alone; a row counts only when it carries a share count (the calendar also
-/// lists fund launches, notes, warrants, rights and when-issued lines, none of which do): a
-/// priced row in the recent or prior window, an expected row in the upcoming window. The
-/// notable names are the recent window's largest priced offerings by `deal_size`, sizeless
-/// ones after by date.
+/// The IPO side over the calendar's readable rows, with the gap the manifest records
+/// (`docs/data-sources.md §Report enrichment`). `undated_offerings` counts served rows
+/// with a share count but no readable date: one withholds the read with a `Malformed`
+/// gap. No row in any window is a fault of the feed, never a freeze: `Unavailable`.
 pub fn ipo_activity(
     rows: &[IpoRow],
     undated_offerings: usize,
@@ -220,20 +207,12 @@ fn by_size_then_date(a: &IpoRow, b: &IpoRow) -> Ordering {
         .then_with(|| a.symbol.cmp(&b.symbol))
 }
 
-/// The deal side over the walk, with the gap the manifest records. One deal per filing is
-/// taken over every walked row, the boundary page's rows before the windows included, so a
-/// deal sits in the window of its earliest walked row. A row the walk could not read on a
-/// page whose other rows it read withholds the read with a `Malformed` gap: every M&A row is
-/// a deal row. A page with no readable row is a failed page, which the three completion
-/// states govern — its rows are older than any row already read, so after a row in the prior
-/// window they cannot touch the recent count:
-/// - the walk reached the windows' first day or the feed's end → both counts;
-/// - it stopped short (the page cap, a later page's failure) after a row dated in the prior
-///   window, so the recent window was covered → the recent count, `prior_count` `None`, no
-///   gap;
-/// - otherwise no deal read and one gap: the failing request's reason, `Unavailable` on
-///   the cap or an empty feed. A first-page 402 / 404 (`OutOfScope`) and a cancel record
-///   none.
+/// The deal side over the walk, with the gap the manifest records
+/// (`docs/data-sources.md §Report enrichment`): one deal per filing, sitting in the
+/// window of its earliest walked row; an unreadable row withholds the read with a
+/// `Malformed` gap; an incomplete walk reads the recent count alone once a row in the
+/// prior window was seen, else no read and the stopping reason as the gap. A first-page
+/// `OutOfScope` and a cancel record none.
 pub fn deal_activity(
     walk: &MaWalk,
     windows: &FrothWindows,

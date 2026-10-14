@@ -1,28 +1,8 @@
-//! Real Tavily adapter for Step-7 news ingestion (`NewsSource`).
-//!
-//! Tavily is the primary research / news-ingestion source (`docs/data-sources.md`
-//! §Tavily) — it contributes AI-oriented market and research headlines. This
-//! adapter issues one `/search` request per `news::NEWS_TOPICS` topic and maps
-//! the results into provider-agnostic `RawHeadline`s.
-//!
-//! Like `fmp`, the HTTP call is synchronous (`reqwest::blocking`) so the
-//! `NewsSource` trait stays sync; the blocking work is offloaded via
-//! `spawn_blocking` at the Tauri command seam. The key rides as a Bearer token —
-//! the convention `connection_test` already uses for Tavily.
-//!
-//! Degradation policy. `interpret_tavily` still turns any non-2xx into an error per
-//! call (401/403 a rejected key, 429/5xx an availability problem, anything else
-//! unexpected); that error surfaces on the `SearchBackend` path the Step-9 executor
-//! drives, and as a `failed` tracker row on each topic. But the Step-7 `gather` sweep is
-//! **per-topic fail-soft** (`sweep_topics`): a single failed topic degrades to no
-//! headlines for that topic and the sweep continues — like `fmp`'s per-series skip — so
-//! one bad topic (a persistent 5xx, or a malformed 2xx that retry doesn't cover) never
-//! discards the other topics, nor GDELT's headlines via `CompositeNewsSource`. This is the
-//! research half's fully-fail-soft posture (`pipeline::assemble_research_packet`): a
-//! thinned or empty news set degrades the report rather than failing the run. (Earlier this
-//! gather was loud — fail the whole sweep on any non-2xx — which made sense when a Tavily
-//! failure failed the run; once research went fully fail-soft, loud-gather only turned a
-//! single-topic blip into a silent total news loss, so the sweep degrades per topic now.)
+//! Tavily adapter for news ingestion (`NewsSource`; `docs/data-sources.md`
+//! §Tavily): one `/search` request per `news::NEWS_TOPICS` topic. Each call
+//! fails loud on a non-2xx, but the `gather` sweep is per-topic fail-soft so
+//! one bad topic never discards the rest, nor GDELT's headlines via
+//! `CompositeNewsSource`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,32 +15,24 @@ use crate::cadence::ReportCadence;
 use crate::news::{host_of, NewsSource, RawHeadline, NEWS_TOPICS};
 use crate::progress::RunContext;
 
-/// Base URL for Tavily's API. The single endpoint path below is joined onto it in
-/// [`TavilyNewsSource::run_search`]; a test redirects the adapter at a localhost mock
-/// via [`TavilyNewsSource::with_base_url`], so the wire path runs offline.
 const TAVILY_BASE: &str = "https://api.tavily.com";
 const TAVILY_SEARCH_PATH: &str = "/search";
 
-/// Per-request timeout. The gather issues one request per topic sequentially;
-/// none should park for the model adapter's 120s ceiling.
+/// Topics run sequentially; none should park for the model adapter's 120s
+/// ceiling.
 const TAVILY_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Results requested per topic query. With ~7 topics this gathers on the order of
-/// ~140 raw headlines from Tavily before dedup — well inside Step 7's ~500 funnel
-/// budget once GDELT and FMP Articles are added. 20 is Tavily's `basic` per-query
-/// ceiling.
+/// Tavily's `basic` per-query ceiling.
 const RESULTS_PER_QUERY: u32 = 20;
 
-/// Floor and cap (in days) on the cadence-sized Tavily recency window. The floor keeps
-/// a same-day regeneration from asking for a sub-day window; the cap holds a long gap to
-/// a month of recency. App-layer tunables, not doc-pinned. The first report (no elapsed
-/// interval) omits the window entirely and takes Tavily's own default.
+/// Floor and cap (days) on the cadence-sized recency window. The floor keeps a
+/// same-day regeneration from asking for a sub-day window; the cap holds a
+/// long gap to a month. App-layer tunables. The first report (no elapsed
+/// interval) omits the window and takes Tavily's own default.
 const TAVILY_WINDOW_FLOOR_DAYS: u32 = 1;
 const TAVILY_WINDOW_CAP_DAYS: u32 = 30;
 
-/// Clamp the elapsed interval to the Tavily lookback window in whole days, or `None` on
-/// the first report (no interval). Rounds *up* (a partial day still covers its whole
-/// span) and clamps to `[TAVILY_WINDOW_FLOOR_DAYS, TAVILY_WINDOW_CAP_DAYS]`.
+/// Rounds *up* so a partial day still covers its whole span.
 fn tavily_window_days(elapsed_days: Option<f64>) -> Option<u32> {
     elapsed_days.map(|d| {
         let days = d.ceil().max(0.0) as u32;
@@ -68,13 +40,9 @@ fn tavily_window_days(elapsed_days: Option<f64>) -> Option<u32> {
     })
 }
 
-/// The Tavily `start_date` (`YYYY-MM-DD`) for this run: `reference` (today) minus the
-/// cadence-sized lookback window, so the topic sweep looks back over the elapsed
-/// interval since the previous report. `None` on the first report — the parameter is
-/// then omitted and Tavily applies its own default. `reference` is injected so the
-/// mapping is unit-testable without the wall clock. The documented Tavily recency
-/// parameter is `start_date`/`end_date` (or the coarser `time_range`); the former
-/// `days` field is no longer part of the Search API, so a date bound is used instead.
+/// The Tavily `start_date` (`YYYY-MM-DD`): `reference` minus the cadence-sized
+/// window, `None` on the first report. Tavily's recency parameter is
+/// `start_date`/`end_date`; its `days` field is not part of the Search API.
 fn tavily_start_date(reference: chrono::NaiveDate, elapsed_days: Option<f64>) -> Option<String> {
     tavily_window_days(elapsed_days).map(|days| {
         (reference - chrono::Duration::days(i64::from(days)))
@@ -83,11 +51,9 @@ fn tavily_start_date(reference: chrono::NaiveDate, elapsed_days: Option<f64>) ->
     })
 }
 
-/// Build the Tavily `/search` request body. The `start_date` recency bound is included
-/// only when `Some` — a `None` (the first report, and the Step-9 executor path) omits
-/// it so Tavily applies its own default. Split out as the unit-test seam for the wire
-/// shape (the round trip itself runs against the localhost mock, which does not capture
-/// POST bodies).
+/// A `None` `start_date` is omitted from the body so Tavily applies its own
+/// default. The unit-test seam for the wire shape: the localhost mock does not
+/// capture POST bodies.
 fn search_body(query: &str, start_date: Option<&str>) -> serde_json::Value {
     let mut body = json!({
         "query": query,
@@ -101,10 +67,8 @@ fn search_body(query: &str, start_date: Option<&str>) -> serde_json::Value {
     body
 }
 
-/// One Tavily search result, trimmed to the fields a headline needs. `title` and
-/// `url` are what the filter keys on; `content` is the excerpt Tavily returns and
-/// `published_date` rides only on the `news` topic. All default so a result
-/// missing an optional field still parses.
+/// All fields default so a result missing one still parses; `published_date`
+/// rides only on the `news` topic.
 #[derive(Debug, Deserialize)]
 struct TavilyResultRaw {
     #[serde(default)]
@@ -123,8 +87,7 @@ struct TavilySearchResponse {
     results: Vec<TavilyResultRaw>,
 }
 
-/// Interpret a Tavily HTTP response by status, parsing the body only on a 2xx.
-/// Any non-2xx is fatal to the gather (see the module header's degradation note).
+/// Parses the body only on a 2xx; any non-2xx is an error.
 fn interpret_tavily(status: u16, body: &str) -> Result<TavilySearchResponse> {
     match status {
         200..=299 => serde_json::from_str(body).context("Tavily returned an unparseable 2xx body"),
@@ -137,9 +100,7 @@ fn interpret_tavily(status: u16, body: &str) -> Result<TavilySearchResponse> {
     }
 }
 
-/// Shape a parsed Tavily response into raw headlines, dropping any result missing
-/// a URL or title (nothing the filter could key on). The publisher `source` is
-/// the URL's host; the snippet is Tavily's `content` excerpt when present.
+/// Drops any result missing a URL or title (nothing the filter could key on).
 fn headlines_from_response(resp: TavilySearchResponse) -> Vec<RawHeadline> {
     resp.results
         .into_iter()
@@ -158,15 +119,13 @@ fn headlines_from_response(resp: TavilySearchResponse) -> Vec<RawHeadline> {
         .collect()
 }
 
-/// Live Tavily adapter behind the `NewsSource` trait.
 pub struct TavilyNewsSource {
     api_key: String,
     http: reqwest::blocking::Client,
-    /// API origin the endpoint path is joined onto. Defaults to [`TAVILY_BASE`]; an
-    /// offline round-trip test overrides it via [`TavilyNewsSource::with_base_url`].
+    /// Defaults to [`TAVILY_BASE`]; a test overrides it via
+    /// [`TavilyNewsSource::with_base_url`].
     base_url: String,
-    /// Run context for the per-topic tracker rows the `gather` sweep emits. Defaults
-    /// to a no-op (tests / offline smokes); the live command attaches the real one via
+    /// Defaults to a no-op; the live command attaches the real one via
     /// [`TavilyNewsSource::with_context`].
     progress: Arc<RunContext>,
 }
@@ -185,38 +144,25 @@ impl TavilyNewsSource {
         })
     }
 
-    /// Redirect the adapter at an alternate API origin (a localhost mock) so the wire
-    /// path runs offline. Test-only; a trailing slash is trimmed so the joined path's
-    /// leading slash doesn't double up.
     #[cfg(test)]
     fn with_base_url(mut self, base_url: &str) -> Self {
         self.base_url = base_url.trim_end_matches('/').to_string();
         self
     }
 
-    /// Attach a live run context so the topic sweep streams one request row per Tavily
-    /// call to the tracker. Without it the adapter keeps its no-op context.
     pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
         self.progress = ctx;
         self
     }
 
-    /// Resolve the adapter from the environment, for the live smoke and any caller
-    /// that bypasses the gate. The execution gate (`config::validate`) runs ahead
-    /// of this in the command path.
+    /// For the live smoke and any caller that bypasses the gate; the execution
+    /// gate (`config::validate`) runs ahead of this in the command path.
     pub fn from_env() -> Result<Self> {
         Self::new(crate::config::AppConfig::from_env().tavily_key()?)
     }
 
-    /// Issue one search query, returning its headlines. Drives both the fixed
-    /// Step-7 topic sweep (`gather`) and the Step-9 executor's arbitrary plan
-    /// queries (`SearchBackend`). A transport error (Tavily unreachable) or any
-    /// non-2xx response propagates as a fatal error.
-    ///
-    /// `start_date` is the recency bound: the Step-7 gather passes a cadence-sized date
-    /// so an on-demand run looks back over the elapsed interval rather than a fixed
-    /// default; the Step-9 executor passes `None` and lets Tavily apply its own default.
-    /// When `None`, the parameter is omitted entirely.
+    /// Shared by the topic sweep (`gather`) and the executor's plan queries
+    /// (`SearchBackend`). A transport error or any non-2xx is an error.
     fn run_search(&self, query: &str, start_date: Option<&str>) -> Result<Vec<RawHeadline>> {
         let body = search_body(query, start_date);
         let url = format!("{}{TAVILY_SEARCH_PATH}", self.base_url);
@@ -227,13 +173,10 @@ impl TavilyNewsSource {
     }
 }
 
-/// Run the fixed Step-7 topic sweep through `search`, **per-topic fail-soft**: a topic
-/// whose search errors degrades to no headlines for that topic — logged, with a `failed`
-/// tracker row so the loss stays visible — and the sweep continues. One bad topic never
-/// discards the rest (nor GDELT, via `CompositeNewsSource`), matching `fmp`'s per-series
-/// skip and the research half's fully-fail-soft posture. Cooperative cancel breaks the
-/// sweep at the next topic boundary. Extracted from `gather` so the soft-skip is
-/// unit-testable without a live HTTP client.
+/// Per-topic fail-soft: a topic whose search errors degrades to no headlines,
+/// with a `failed` tracker row so the loss stays visible, and the sweep
+/// continues. Extracted from `gather` so the soft-skip is unit-testable
+/// without a live HTTP client.
 fn sweep_topics(
     topics: &[&str],
     progress: &RunContext,
@@ -244,9 +187,9 @@ fn sweep_topics(
         if progress.is_cancelled() {
             break;
         }
-        // One tracker row per actual Tavily call (the run-tracking invariant), keyed by
-        // topic. The `SearchBackend::search` path issues no row here — the Step-9 executor
-        // brackets those calls itself, so sharing `run_search` does not double-count.
+        // The tracker row lives here, not in `run_search`: the executor brackets
+        // its own `SearchBackend::search` calls, so sharing `run_search` does
+        // not double-count.
         progress.request_started("Tavily", "news", topic, topic);
         match search(topic) {
             Ok(headlines) => {
@@ -271,14 +214,9 @@ fn sweep_topics(
 
 impl NewsSource for TavilyNewsSource {
     fn gather(&self, cadence: ReportCadence) -> Result<Vec<RawHeadline>> {
-        // Size the recency window to the elapsed interval since the last report: a
-        // `start_date` of today minus the cadence-sized lookback.
-        //
         // Deliberately the UTC date, not the ET session: this only anchors a
-        // fetch range's lower bound over a cadence-sized window of days, so a
-        // one-day roll shifts the window's start and keys no session. Only
-        // session-KEYED reads convert (`docs/data-sources.md`, the cross-cutting
-        // session-dating rule).
+        // fetch range's bound over a window of days and keys no session
+        // (`docs/data-sources.md`, the session-dating rule).
         let today = chrono::Utc::now().date_naive();
         let start_date = tavily_start_date(today, cadence.elapsed_days());
         Ok(sweep_topics(NEWS_TOPICS, &self.progress, |query| {
@@ -288,9 +226,7 @@ impl NewsSource for TavilyNewsSource {
 }
 
 impl crate::research_executor::SearchBackend for TavilyNewsSource {
-    /// The Step-9 executor drives arbitrary plan queries through the same Tavily
-    /// `/search` path the topic sweep uses — with no recency bound (`None`), since a
-    /// plan query targets a topic, not a time slice.
+    /// No recency bound: a plan query targets a topic, not a time slice.
     fn search(&self, query: &str) -> Result<Vec<RawHeadline>> {
         self.run_search(query, None)
     }
@@ -303,30 +239,20 @@ mod tests {
 
     #[test]
     fn interpret_tavily_covers_the_status_matrix() {
-        // A 2xx body parses into results.
         let body = r#"{"results":[{"title":"t","url":"https://x.com/a","content":"c"}]}"#;
         assert_eq!(interpret_tavily(200, body).unwrap().results.len(), 1);
-        // A 2xx with no results array still parses (serde default -> empty).
         assert!(interpret_tavily(200, "{}").unwrap().results.is_empty());
 
-        // Auth / availability / unexpected statuses are all fatal.
         for status in [401, 403, 429, 500, 503, 400, 404] {
             assert!(
                 interpret_tavily(status, "").is_err(),
                 "HTTP {status} should be fatal"
             );
         }
-        // A 2xx that isn't valid JSON is a contract violation -> fatal.
         assert!(interpret_tavily(200, "not json").is_err());
     }
 
     // ---- Offline round trip: adapter -> retry -> interpret -> domain output ----
-    //
-    // The matrix above pins `interpret_tavily` as a pure function; these drive the whole
-    // `run_search` -> `send_with_retry` -> `interpret_tavily` -> `headlines_from_response`
-    // path against a localhost mock (`crate::test_http`). A non-retryable error status
-    // keeps the round trip a single sleepless request (retry mechanics live in
-    // `http_retry`).
 
     fn test_source(base_url: &str) -> TavilyNewsSource {
         TavilyNewsSource::new("test-key".to_string())
@@ -336,35 +262,27 @@ mod tests {
 
     #[test]
     fn window_days_are_sized_to_the_elapsed_interval_and_clamped() {
-        // First report (no interval) omits the window — Tavily's own default applies.
         assert_eq!(tavily_window_days(None), None);
-        // A partial day rounds up to the floor.
         assert_eq!(tavily_window_days(Some(0.3)), Some(1));
-        // A whole interval rounds up to its day count.
         assert_eq!(tavily_window_days(Some(7.0)), Some(7));
         assert_eq!(tavily_window_days(Some(6.2)), Some(7));
-        // A long gap is held to the cap.
         assert_eq!(tavily_window_days(Some(90.0)), Some(30));
-        // Clock skew floors to the minimum window.
+        // Clock skew (a negative interval) floors to the minimum window.
         assert_eq!(tavily_window_days(Some(-2.0)), Some(1));
     }
 
     #[test]
     fn start_date_is_today_minus_the_clamped_window() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 18).unwrap();
-        // First report: no bound.
         assert_eq!(tavily_start_date(today, None), None);
-        // A weekly gap looks back seven days from the reference date.
         assert_eq!(
             tavily_start_date(today, Some(7.0)).as_deref(),
             Some("2026-06-11")
         );
-        // A partial day floors to a one-day lookback.
         assert_eq!(
             tavily_start_date(today, Some(0.3)).as_deref(),
             Some("2026-06-17")
         );
-        // A long gap is held to the 30-day cap (not an unbounded lookback).
         assert_eq!(
             tavily_start_date(today, Some(120.0)).as_deref(),
             Some("2026-05-19")
@@ -373,14 +291,10 @@ mod tests {
 
     #[test]
     fn search_body_includes_start_date_only_when_present() {
-        // The Step-7 gather passes a date bound: `start_date` reaches the wire body
-        // (the documented Tavily recency parameter — not the retired `days` field).
         let with = search_body("fed policy", Some("2026-06-11"));
         assert_eq!(with["start_date"], serde_json::json!("2026-06-11"));
         assert_eq!(with["topic"], serde_json::json!("news"));
         assert!(with.get("days").is_none(), "the retired days field is not sent");
-        // The first report / Step-9 executor path passes None: `start_date` is absent
-        // so Tavily applies its default rather than an empty window.
         let without = search_body("fed policy", None);
         assert!(
             without.get("start_date").is_none(),
@@ -408,8 +322,8 @@ mod tests {
 
     #[test]
     fn run_search_propagates_a_non_2xx_as_fatal() {
-        // A 401 is non-retryable and fatal: `run_search` surfaces an Err over the wire
-        // (the sweep then degrades that topic to empty — covered in `sweep_topics`).
+        // A 401 is non-retryable, so the round trip stays a single sleepless
+        // request.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 401,
             headers: vec![],
@@ -441,7 +355,6 @@ mod tests {
         assert_eq!(headlines[0].published.as_deref(), Some("2026-06-05"));
         assert_eq!(headlines[0].snippet.as_deref(), Some("excerpt"));
 
-        // A blank content excerpt becomes None rather than an empty string.
         assert_eq!(headlines[1].title, "no snippet");
         assert_eq!(headlines[1].snippet, None);
     }
@@ -458,9 +371,6 @@ mod tests {
 
     #[test]
     fn sweep_topics_skips_a_failing_topic_and_keeps_the_rest() {
-        // The middle topic's search errors; the surrounding topics must still land — one
-        // bad topic does not discard the whole sweep (and so does not, via the composite,
-        // discard GDELT either).
         let topics = ["alpha", "bravo", "charlie"];
         let ctx = crate::progress::RunContext::noop();
         let out = sweep_topics(&topics, &ctx, |q| {
@@ -475,8 +385,6 @@ mod tests {
 
     #[test]
     fn sweep_topics_returns_empty_when_every_topic_fails() {
-        // A rejected key fails every topic; the sweep degrades to no headlines rather than
-        // erroring — the assembler then sees an empty news set and the run continues.
         let topics = ["alpha", "bravo"];
         let ctx = crate::progress::RunContext::noop();
         let out = sweep_topics(&topics, &ctx, |_| anyhow::bail!("rejected key"));
@@ -490,7 +398,6 @@ mod tests {
 
         use crate::progress::{NoopReporter, RunContext};
 
-        // A context already cancelled: the sweep issues no searches and returns empty.
         let topics = ["alpha", "bravo"];
         let ctx = RunContext::new("t", Arc::new(NoopReporter), Arc::new(AtomicBool::new(true)));
         let mut calls = 0;

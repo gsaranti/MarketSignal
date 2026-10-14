@@ -1,27 +1,10 @@
-//! The pre-run execution gate: structured configuration validation.
-//!
-//! `docs/report-workflow.md §Step 1` and `docs/configuration.md` require
-//! that no report run starts until the configuration is complete — all four
-//! agent models selected, both provider API tokens present, and both external
-//! data-provider credentials present. This module turns that requirement into a
-//! pure function: `validate(&AppConfig) -> ValidationReport`. The report drives
-//! both the backend block (the Tauri command refuses to run when blocked) and
-//! the frontend Persistent Warning Area (`docs/interface.md`).
-//!
-//! `AppConfig` is the config substrate. `load` reads the persisted Settings
-//! store (`app_settings`, written by `settings::save`) with the environment
-//! variables as a per-field fallback, so the env-based live smoke keeps working
-//! until a value is saved; `from_env` is the env-only path the smoke and the
-//! gate-bypassing adapter use. The store read is confined to these two
-//! constructors; `validate` is pure over the struct and never touches the
-//! environment or the database, so the pass/block matrix is unit-testable
-//! without env mutation.
-//!
-//! Scope note: the non-blocking failed-job warning category is modeled in
-//! `WarningKind` but produced from job history by `jobs::failure_warning`, not
-//! here. Network reachability is not a gate check — an unreachable provider
-//! surfaces as a job *failure* (`docs/scheduling.md §Offline Behavior`), not a
-//! pre-run block.
+//! The pre-run execution gate (`docs/report-workflow.md §Step 1`,
+//! `docs/configuration.md`): `validate(&AppConfig) -> ValidationReport`, pure over the
+//! struct, drives both the backend block and the frontend Persistent Warning Area
+//! (`docs/interface.md`). `AppConfig::load` reads the persisted Settings store with
+//! the environment as a per-field fallback; `from_env` is the env-only path. Network
+//! reachability is not a gate check: an unreachable provider is a job failure
+//! (`docs/scheduling.md §Offline Behavior`), not a pre-run block.
 
 use anyhow::{anyhow, Result};
 use rusqlite::Connection;
@@ -31,9 +14,7 @@ use crate::agent::Posture;
 use crate::model_agent::{AgentModel, MainAgentConfig, Provider};
 use crate::storage;
 
-/// `app_settings` keys backing the persisted configuration. `settings::save`
-/// writes them; `AppConfig::load` reads them with the env vars as a per-field
-/// fallback. The slugs deliberately match the `AppConfig` field names.
+/// `app_settings` keys; the slugs deliberately match the `AppConfig` field names.
 pub const KEY_MAIN_AGENT_MODEL: &str = "main_agent_model";
 pub const KEY_BULL_AGENT_MODEL: &str = "bull_agent_model";
 pub const KEY_BEAR_AGENT_MODEL: &str = "bear_agent_model";
@@ -45,30 +26,28 @@ pub const KEY_FRED_API_KEY: &str = "fred_api_key";
 pub const KEY_TAVILY_API_KEY: &str = "tavily_api_key";
 
 /// Local analysis suite settings (`docs/configuration.md §Local Analysis Suite
-/// Configuration`, `docs/local-models.md`). These gate the **local jobs only** and
-/// are deliberately absent from `validate` — the cloud-report gate is independent, so
-/// a machine set up for one need not be set up for the other.
+/// Configuration`, `docs/local-models.md`). They gate the local jobs only and are
+/// deliberately absent from `validate`: the cloud-report gate is independent.
 pub const KEY_LOCAL_DAEMON_ENDPOINT: &str = "local_daemon_endpoint";
 pub const KEY_LOCAL_REASONER_MODEL: &str = "local_reasoner_model";
 pub const KEY_LOCAL_FAST_MODEL: &str = "local_fast_model";
 
-/// The local SearXNG instance's endpoint (`docs/configuration.md §Web
-/// Research`). Deliberately absent from every gate — SearXNG sits **off the
-/// execution gate**: unreachable means a degraded run behind a pre-run notice,
-/// never a block (`docs/web-research.md §Search backend`).
+/// The local SearXNG endpoint (`docs/configuration.md §Web Research`). Off every
+/// gate: unreachable means a degraded run behind a pre-run notice, never a block
+/// (`docs/web-research.md §Search backend`).
 pub const KEY_SEARXNG_ENDPOINT: &str = "searxng_endpoint";
 
-/// The Charles Schwab developer app's client id (`docs/schwab-integration.md`). An
-/// identifier, not a bearer secret, so it rides the SQLite `app_settings` store like
-/// the other non-sensitive config — the *client secret* and OAuth tokens live on the
-/// Keychain rail (`crate::schwab_secrets`) instead. Local-suite config: absent from the
-/// cloud `validate` gate.
+/// The Schwab developer app's client id (`docs/schwab-integration.md`): an identifier,
+/// not a bearer secret, so it rides `app_settings` while the client secret and OAuth
+/// tokens live on the Keychain rail (`crate::schwab_secrets`). Absent from the cloud
+/// `validate` gate.
 pub const KEY_SCHWAB_CLIENT_ID: &str = "schwab_client_id";
 
-/// The four de-duplicating Persistent Warning Area categories (walk Q4,
-/// `docs/interface.md §Persistent Warning Area`). The three configuration
-/// categories are produced by `validate`; the one job category (`FailedJob`) is
-/// produced from job history and is modeled here so the warning structure is whole.
+/// The de-duplicating Persistent Warning Area categories (`docs/interface.md
+/// §Persistent Warning Area`). The cloud configuration categories are produced by
+/// `validate`; `FailedJob` from job history (`jobs::failure_warning`); the local-suite
+/// ones where their state is reachable. All are modeled here so the warning
+/// structure is whole.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WarningKind {
@@ -76,24 +55,18 @@ pub enum WarningKind {
     ApiTokens,
     ProviderCredentials,
     FailedJob,
-    /// The local analysis suite's own gate gap (daemon unreachable, roster
-    /// incomplete, or local config not yet set). Produced by `local_model::local_gate`,
-    /// never by `validate`; modeled here so the warning structure stays whole and the
-    /// frontend can render it identically (`docs/local-models.md §Failure posture`).
+    /// The local analysis suite's own gate gap, produced by `local_model::local_gate`
+    /// (`docs/local-models.md §Failure posture`).
     LocalModels,
-    /// The local analysis suite's Schwab-connection gap: no connected account, or the
-    /// 7-day refresh token has lapsed (`docs/schwab-integration.md §A connected Schwab
-    /// account is required`). Like `LocalModels`, it gates the **local jobs only** and is
-    /// produced where the Keychain token rail is reachable, never by the cloud-report
-    /// `validate` (which is pure over `AppConfig` and cannot see the tokens); modeled here
-    /// so the warning structure stays whole.
+    /// The local suite's Schwab-connection gap (`docs/schwab-integration.md §A
+    /// connected Schwab account is required`). Gates the local jobs only; produced
+    /// where the Keychain rail is reachable, never by `validate`, which cannot see
+    /// the tokens.
     Schwab,
 }
 
 impl WarningKind {
-    /// Whether a warning of this kind blocks a run. The three configuration
-    /// gaps block (a run cannot proceed without them); the job categories are
-    /// informational history, not gate failures.
+    /// The configuration gaps block; the job categories are informational history.
     pub fn is_blocking(&self) -> bool {
         matches!(
             self,
@@ -106,16 +79,12 @@ impl WarningKind {
     }
 }
 
-/// One warning category for display: its kind, a human-readable title used as
-/// the Persistent Warning Area row label, and the concrete missing items.
-///
-/// `dismiss_id` is the *identity* of the specific warning being shown, for the one
-/// dismissible (non-blocking) category — the failed run's id. The frontend echoes it
-/// back to `dismiss_warning` so the dismissal targets the rendered warning, not
-/// whatever the backend would re-derive as current at click time
-/// (`docs/interface.md §Persistent Warning Area` — a later event must still surface
-/// fresh). `None` for the blocking config categories, which are gate state and carry
-/// no dismiss control.
+/// `title` is the Persistent Warning Area row label. `dismiss_id` is the identity of
+/// the rendered warning (the failed run's id) for the one dismissible category; the
+/// frontend echoes it back to `dismiss_warning` so the dismissal targets the rendered
+/// warning, not whatever the backend would re-derive at click time
+/// (`docs/interface.md §Persistent Warning Area`). `None` for the blocking
+/// categories, which carry no dismiss control.
 #[derive(Debug, Clone, Serialize)]
 pub struct WarningCategory {
     pub kind: WarningKind,
@@ -124,17 +93,15 @@ pub struct WarningCategory {
     pub dismiss_id: Option<String>,
 }
 
-/// The result of validating the configuration: the active warning categories
-/// (only non-empty ones are included) and whether any of them blocks a run.
+/// Only non-empty categories are included.
 #[derive(Debug, Clone, Serialize)]
 pub struct ValidationReport {
     pub categories: Vec<WarningCategory>,
     pub is_blocked: bool,
 }
 
-/// The configuration substrate. Each field is `None` when neither the persisted
-/// store nor its env var carries a value; blank values are treated as unset by
-/// `present`. Built by `from_env` (env only) or `load` (store, env-fallback).
+/// Each field is `None` when neither the persisted store nor its env var carries a
+/// value; blank values are treated as unset by `present`.
 #[derive(Debug, Clone, Default)]
 pub struct AppConfig {
     pub main_agent_model: Option<String>,
@@ -146,31 +113,24 @@ pub struct AppConfig {
     pub fmp_api_key: Option<String>,
     pub fred_api_key: Option<String>,
     pub tavily_api_key: Option<String>,
-    /// Local analysis suite config (`docs/local-models.md`). Read by
-    /// `local_model::{endpoint_from_config, roster_from_config, local_gate}`; not part
-    /// of the cloud `validate` gate.
+    /// Local analysis suite config (`docs/local-models.md`); not part of the cloud
+    /// `validate` gate.
     pub local_daemon_endpoint: Option<String>,
     pub local_reasoner_model: Option<String>,
     pub local_fast_model: Option<String>,
-    /// The web-research tool's SearXNG endpoint (`docs/configuration.md §Web
-    /// Research`). Off every gate; read by the research loop and the pre-run
-    /// web-research notice.
+    /// Off every gate (`docs/configuration.md §Web Research`).
     pub searxng_endpoint: Option<String>,
-    /// Schwab developer app client id (`docs/schwab-integration.md`). Read by the
-    /// `schwab_connect` command; not part of the cloud `validate` gate.
+    /// Not part of the cloud `validate` gate (`docs/schwab-integration.md`).
     pub schwab_client_id: Option<String>,
 }
 
-/// A set-and-non-blank value, or `None`. An env var set to "" is effectively
-/// unset for gate purposes, so it must not pass validation. `pub(crate)` so the
-/// local-suite gate (`local_model`) reuses the same blank-is-unset rule.
+/// An env var set to "" is effectively unset for gate purposes, so it must not pass
+/// validation. `pub(crate)` so the local-suite gate reuses the same rule.
 pub(crate) fn present(opt: &Option<String>) -> Option<&str> {
     opt.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
 impl AppConfig {
-    /// Read the configuration from the environment. Variable names follow the
-    /// existing `MARKET_SIGNAL_MAIN_AGENT_MODEL` / `OPENAI_API_KEY` convention.
     pub fn from_env() -> Self {
         let get = |k: &str| std::env::var(k).ok();
         Self {
@@ -191,14 +151,11 @@ impl AppConfig {
         }
     }
 
-    /// Read the configuration from the persisted Settings store, falling back to
-    /// the environment per field: a saved `app_settings` value wins, an unset key
-    /// (or a read error) defers to the env var. So a fresh install with no saved
-    /// settings behaves exactly like `from_env`, and the env-based live smoke
-    /// keeps working until the user saves something in Settings.
+    /// A saved `app_settings` value wins; an unset key or a read error defers to the
+    /// env var, so a fresh install behaves like `from_env` and the env-based live
+    /// smoke keeps working until a value is saved.
     pub fn load(conn: &Connection) -> Self {
         let env = Self::from_env();
-        // Some(saved) wins; None (unset key or read error) falls back to env.
         let saved = |key: &str, fallback: Option<String>| -> Option<String> {
             storage::get_setting(conn, key).ok().flatten().or(fallback)
         };
@@ -220,11 +177,9 @@ impl AppConfig {
         }
     }
 
-    /// Resolve the Main Agent's adapter config from validated configuration:
-    /// the selected model and the API key for that model's provider. Used by the
-    /// command once the gate has passed, and by the live smoke via
-    /// `ModelMainAgent::from_env`. Errors mirror the gate's wording so a caller
-    /// that bypasses the gate still gets a legible message.
+    /// The selected Main Agent model and the API key for its provider. Errors mirror
+    /// the gate's wording so a caller that bypasses the gate still gets a legible
+    /// message.
     pub fn main_agent_config(&self) -> Result<MainAgentConfig> {
         let label = present(&self.main_agent_model).ok_or_else(|| {
             anyhow!("MARKET_SIGNAL_MAIN_AGENT_MODEL is not set (no Main Agent model selected)")
@@ -242,13 +197,9 @@ impl AppConfig {
         Ok(MainAgentConfig { model, api_key })
     }
 
-    /// Resolve one analyst adapter's config (`docs/configuration.md §Agent Model
-    /// Configuration`): the user-selected model for the given [`Posture`] and the API
-    /// key for that model's provider. Mirrors `main_agent_config` — same post-gate
-    /// resolution and error wording — but keyed by posture, since each of the three
-    /// analysts (Bull / Bear / Balanced) is independently configurable. Reuses
-    /// `MainAgentConfig` ({model, api_key}); the posture is carried by the adapter, not
-    /// the config.
+    /// The selected model for one analyst [`Posture`] and the API key for its provider
+    /// (`docs/configuration.md §Agent Model Configuration`). The posture is carried by
+    /// the adapter, not the config.
     pub fn analyst_config(&self, posture: Posture) -> Result<MainAgentConfig> {
         let (label_opt, var) = match posture {
             Posture::Bull => (&self.bull_agent_model, "MARKET_SIGNAL_BULL_AGENT_MODEL"),
@@ -274,10 +225,8 @@ impl AppConfig {
         Ok(MainAgentConfig { model, api_key })
     }
 
-    /// The FMP API key for the baseline market-data scan
-    /// (`docs/report-workflow.md §Step 3`), resolved from validated configuration. Mirrors
-    /// `main_agent_config`'s post-gate resolution: after a passing `validate` the
-    /// credential is present, so the error arm is defensive.
+    /// For the baseline market-data scan (`docs/report-workflow.md §Step 3`). After a
+    /// passing `validate` the credential is present, so the error arm is defensive.
     pub fn fmp_key(&self) -> Result<String> {
         Ok(present(&self.fmp_api_key)
             .ok_or_else(|| {
@@ -286,9 +235,8 @@ impl AppConfig {
             .to_string())
     }
 
-    /// The FRED API key for the macro / commodity half of the baseline scan
-    /// (`docs/report-workflow.md §Step 3`), resolved from validated
-    /// configuration. Mirrors `fmp_key`: after a passing `validate` the credential
+    /// For the macro / commodity half of the baseline scan
+    /// (`docs/report-workflow.md §Step 3`). After a passing `validate` the credential
     /// is present, so the error arm is defensive.
     pub fn fred_key(&self) -> Result<String> {
         Ok(present(&self.fred_api_key)
@@ -298,10 +246,8 @@ impl AppConfig {
             .to_string())
     }
 
-    /// The Tavily API key for Step-7 news ingestion (`docs/report-workflow
-    /// .md §Step 7`), resolved from validated configuration. Mirrors `fmp_key` /
-    /// `fred_key`: after a passing `validate` the credential is present (Tavily is
-    /// a required provider credential), so the error arm is defensive.
+    /// For news ingestion (`docs/report-workflow.md §Step 7`). After a passing
+    /// `validate` the credential is present, so the error arm is defensive.
     pub fn tavily_key(&self) -> Result<String> {
         Ok(present(&self.tavily_api_key)
             .ok_or_else(|| {
@@ -310,12 +256,10 @@ impl AppConfig {
             .to_string())
     }
 
-    /// The OpenAI API key for the fixed internal headline-filter model (GPT-5
-    /// mini, `docs/agents.md §Headline Filtering`), resolved from validated
-    /// configuration. Distinct from `main_agent_config`, which resolves the
-    /// user-selected agent model's provider key — this is for the non-configurable
-    /// internal stages, which always use OpenAI. After a passing `validate` the
-    /// OpenAI token is present (always required), so the error arm is defensive.
+    /// For the fixed internal headline-filter model (`docs/agents.md §Headline
+    /// Filtering`), which always uses OpenAI regardless of the user-selected agent
+    /// models. After a passing `validate` the token is present, so the error arm is
+    /// defensive.
     pub fn openai_key(&self) -> Result<String> {
         Ok(present(&self.openai_api_key)
             .ok_or_else(|| {
@@ -324,12 +268,10 @@ impl AppConfig {
             .to_string())
     }
 
-    /// The Anthropic API key for the fixed internal research-routing model (Claude
-    /// Sonnet, `docs/agents.md §Research Routing`), resolved from validated
-    /// configuration. Like `openai_key`, this is for a non-configurable internal
-    /// stage, distinct from `main_agent_config`'s user-selected agent key. After a
-    /// passing `validate` the Anthropic token is present (always required, since the
-    /// fixed internal stages span both providers), so the error arm is defensive.
+    /// For the fixed internal research-routing model (`docs/agents.md §Research
+    /// Routing`), which always uses Anthropic regardless of the user-selected agent
+    /// models. After a passing `validate` the token is present, so the error arm is
+    /// defensive.
     pub fn anthropic_key(&self) -> Result<String> {
         Ok(present(&self.anthropic_api_key)
             .ok_or_else(|| {
@@ -345,13 +287,9 @@ struct AgentSlot<'a> {
     value: &'a Option<String>,
 }
 
-/// Validate the configuration against the execution gate. Pure: no I/O, no env
-/// access — every input is on `cfg`. Only non-empty categories are returned, so
-/// a clean configuration yields an empty `categories` and `is_blocked == false`.
-/// Join names into a readable Oxford-comma list: "A", "A and B", "A, B, and C".
-/// Keeps each warning category to one scannable sentence instead of one row per
-/// missing item. `pub(crate)` so the local-suite gate (`local_model`) renders its
-/// items the same way.
+/// An Oxford-comma list ("A", "A and B", "A, B, and C"), so each warning category is
+/// one scannable sentence instead of one row per missing item. `pub(crate)` so the
+/// local-suite gate renders its items the same way.
 pub(crate) fn join_list(items: &[&str]) -> String {
     match items {
         [] => String::new(),
@@ -364,10 +302,10 @@ pub(crate) fn join_list(items: &[&str]) -> String {
     }
 }
 
+/// Pure: no I/O, no env access. Only non-empty categories are returned.
 pub fn validate(cfg: &AppConfig) -> ValidationReport {
     let mut categories: Vec<WarningCategory> = Vec::new();
 
-    // Agent configuration: all four agents need a present, parseable model.
     let slots = [
         AgentSlot {
             name: "Main Agent",
@@ -386,8 +324,8 @@ pub fn validate(cfg: &AppConfig) -> ValidationReport {
             value: &cfg.balanced_agent_model,
         },
     ];
-    // One concise line per problem rather than one row per agent, so the warning
-    // area reads as a brief status, not a wall of repeated predicates.
+    // One line per problem rather than one row per agent, so the warning area
+    // reads as a brief status.
     let mut not_selected: Vec<&str> = Vec::new();
     let mut unknown: Vec<String> = Vec::new();
     for slot in slots {
@@ -419,8 +357,8 @@ pub fn validate(cfg: &AppConfig) -> ValidationReport {
         });
     }
 
-    // API tokens: both are always required (the fixed internal stages span both
-    // providers — docs/configuration.md §API Tokens).
+    // Both tokens are always required: the fixed internal stages span both
+    // providers (docs/configuration.md §API Tokens).
     let mut missing_tokens: Vec<&str> = Vec::new();
     if present(&cfg.openai_api_key).is_none() {
         missing_tokens.push("OpenAI");
@@ -437,10 +375,8 @@ pub fn validate(cfg: &AppConfig) -> ValidationReport {
         });
     }
 
-    // External data-provider credentials: FMP, FRED, and Tavily are all required
-    // to run (docs/configuration.md §External Data Provider Credentials). FRED
-    // joined the gate when its adapter landed — it now sources non-optional Step-3
-    // baseline series (Treasury yields, the dollar index, commodities).
+    // All three data-provider credentials are required
+    // (docs/configuration.md §External Data Provider Credentials).
     let mut missing_creds: Vec<&str> = Vec::new();
     if present(&cfg.fmp_api_key).is_none() {
         missing_creds.push("Financial Modeling Prep");
@@ -467,12 +403,9 @@ pub fn validate(cfg: &AppConfig) -> ValidationReport {
     }
 }
 
-/// A concise one-line reason a run was blocked, for the command's error return.
-/// The structured detail lives in the `ValidationReport` the frontend already
-/// shows in the Persistent Warning Area; this is only the fallback summary.
-/// `action` names the blocked job ("generate report", "run Portfolio Analysis",
-/// "run the quick check") so a Portfolio-surface block never reads as a report
-/// failure.
+/// The one-line fallback summary for the command's error return; the structured
+/// detail is the `ValidationReport` itself. `action` names the blocked job so a
+/// Portfolio-surface block never reads as a report failure.
 pub fn blocked_summary_named(action: &str, report: &ValidationReport) -> String {
     let titles: Vec<&str> = report
         .categories
@@ -491,10 +424,9 @@ pub fn blocked_summary(report: &ValidationReport) -> String {
     blocked_summary_named("generate report", report)
 }
 
-/// The local full-run variant: names the job and carries the documented
-/// Settings → Test Connection pointer (`docs/interface.md` §Connection status —
-/// the run-gate inline block points at the manual daemon test). The quick check
-/// never probes the daemon, so its block uses [`blocked_summary_named`] alone.
+/// The local full-run variant, carrying the Settings → Test Connection pointer
+/// (`docs/interface.md` §Connection status). The quick check never probes the daemon,
+/// so its block uses [`blocked_summary_named`] alone.
 pub fn blocked_summary_local_run(action: &str, report: &ValidationReport) -> String {
     format!(
         "{} If the local daemon is unreachable, use Settings → Test Connection.",
@@ -506,7 +438,7 @@ pub fn blocked_summary_local_run(action: &str, report: &ValidationReport) -> Str
 mod tests {
     use super::*;
 
-    /// A fully-configured AppConfig — the all-green baseline each test perturbs.
+    /// The all-green cloud baseline each test perturbs.
     fn complete() -> AppConfig {
         AppConfig {
             main_agent_model: Some("claude-opus".into()),
@@ -518,8 +450,7 @@ mod tests {
             fmp_api_key: Some("fmp-key".into()),
             fred_api_key: Some("fred-key".into()),
             tavily_api_key: Some("tavily-key".into()),
-            // Local-suite fields are not part of the cloud gate, so the all-green
-            // cloud baseline leaves them unset.
+            // The local-suite fields are not part of the cloud gate.
             ..AppConfig::default()
         }
     }
@@ -536,10 +467,8 @@ mod tests {
 
     #[test]
     fn load_prefers_a_saved_value_over_the_environment() {
-        // A saved value is authoritative regardless of any ambient env var, so
-        // these assertions are env-independent. The env-fallback direction is
-        // `Option::or` and is left to `from_env` + the live smoke to exercise,
-        // to keep this test free of (unsafe, racy) env mutation.
+        // The env-fallback direction is left to `from_env` and the live smoke, to
+        // keep this test free of racy env mutation.
         let conn = mem();
         storage::set_setting(&conn, KEY_MAIN_AGENT_MODEL, "claude-sonnet").unwrap();
         storage::set_setting(&conn, KEY_OPENAI_API_KEY, "sk-saved").unwrap();
@@ -550,8 +479,6 @@ mod tests {
 
     #[test]
     fn load_reads_a_blank_saved_value_that_validate_treats_as_unset() {
-        // A model explicitly cleared in Settings is stored as "" and read back as
-        // Some(""), which `present` (and thus `validate`) reports as unselected.
         let conn = mem();
         storage::set_setting(&conn, KEY_MAIN_AGENT_MODEL, "").unwrap();
         let cfg = AppConfig::load(&conn);
@@ -561,7 +488,6 @@ mod tests {
 
     #[test]
     fn load_reads_local_suite_settings_and_validate_ignores_them() {
-        // The local-suite settings round-trip through the same K/V store...
         let conn = mem();
         storage::set_setting(&conn, KEY_LOCAL_DAEMON_ENDPOINT, "http://localhost:11434").unwrap();
         storage::set_setting(&conn, KEY_LOCAL_REASONER_MODEL, "qwen3.5:122b").unwrap();
@@ -571,9 +497,6 @@ mod tests {
             Some("http://localhost:11434")
         );
         assert_eq!(cfg.local_reasoner_model.as_deref(), Some("qwen3.5:122b"));
-        // ...but they are not part of the cloud gate: with only local keys set, the
-        // cloud gate still blocks on its own (agents/tokens/creds) and never emits a
-        // LocalModels category — that lives in `local_model::local_gate`.
         let report = validate(&cfg);
         assert!(report.is_blocked);
         assert!(category(&report, WarningKind::AgentConfiguration).is_some());
@@ -676,7 +599,6 @@ mod tests {
         assert!(category(&report, WarningKind::AgentConfiguration).is_some());
         assert!(category(&report, WarningKind::ApiTokens).is_some());
         assert!(category(&report, WarningKind::ProviderCredentials).is_some());
-        // Each category condenses to a single line that names every missing item.
         let agents = category(&report, WarningKind::AgentConfiguration).unwrap();
         assert_eq!(agents.items.len(), 1);
         for name in [
@@ -711,8 +633,6 @@ mod tests {
 
     #[test]
     fn blocked_summary_named_names_the_job_not_the_report() {
-        // A Portfolio-surface block must never read as a report failure
-        // (`docs/interface.md` §Connection status).
         let report = validate(&AppConfig::default());
         let summary = blocked_summary_named("run the quick check", &report);
         assert!(summary.starts_with("Cannot run the quick check"), "{summary}");
@@ -812,13 +732,9 @@ mod tests {
 
     #[test]
     fn schwab_warning_blocks_but_never_enters_the_cloud_validate_gate() {
-        // Schwab gates the local jobs, so it blocks like the other config gaps...
         assert!(WarningKind::Schwab.is_blocking());
-        // ...but it is a local-suite category produced where the Keychain rail is
-        // reachable, never by the cloud-report gate. `validate` is pure over `AppConfig`
-        // (no token rail), so it must never emit a Schwab category — neither for a
-        // fully-configured cloud config nor a fully-empty one — which is what keeps a
-        // disconnected Schwab account from ever blocking the Market Signal Report.
+        // `validate` cannot see the token rail, so a disconnected Schwab account can
+        // never block the Market Signal Report.
         for cfg in [complete(), AppConfig::default()] {
             let report = validate(&cfg);
             assert!(!report

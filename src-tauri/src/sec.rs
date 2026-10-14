@@ -1,16 +1,7 @@
-//! SEC EDGAR — a keyless primary source for company financials
-//! (`docs/data-sources.md §SEC EDGAR`), used by the local Portfolio Analysis job
-//! alongside FMP. This slice reads the **XBRL company-facts** API
-//! (`/api/xbrl/companyfacts/CIK##########.json`), pulling the latest annual values
-//! for a handful of GAAP concepts so the financial-analysis engine can cross-check
-//! and fill gaps the FMP per-company pull leaves.
-//!
-//! Like the gated adapters it carries a base-URL injection seam so a localhost mock
-//! exercises the full URL-build → retry → parse → domain-output wire path offline
-//! (`crate::test_http`). It is **keyless** (like BLS/CFTC) — the only requirement is
-//! a descriptive `User-Agent`, which SEC asks all automated clients to send. Failures
-//! are fail-soft: a concept that can't be resolved is a `None`, not a fabricated
-//! level, mirroring the data-honesty stance of every other adapter.
+//! SEC EDGAR, a keyless primary source for company financials
+//! (`docs/data-sources.md §SEC EDGAR`): the XBRL company-facts read, the submissions
+//! filing index, the ticker → CIK map, and the earnings-release recovery parsers.
+//! Fail-soft: a concept that can't be resolved reads `None`, never a fabricated level.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,20 +11,18 @@ use serde_json::Value;
 
 use crate::progress::RunContext;
 
-/// SEC EDGAR data host. The company-facts path is joined onto this.
 const SEC_DATA_BASE: &str = "https://data.sec.gov";
 
-/// SEC asks automated clients to identify themselves with a descriptive User-Agent
-/// (a generic browser UA gets throttled). Static, since this is an app-level client.
+/// SEC asks automated clients to identify themselves with a descriptive User-Agent;
+/// a generic browser UA gets throttled.
 pub(crate) const SEC_USER_AGENT: &str = "MarketSignal local-analysis (support@market-signal.app)";
 
-/// The company-facts endpoint path; `{cik}` is the 10-digit zero-padded CIK.
+/// `cik10` is the 10-digit zero-padded CIK.
 fn company_facts_path(cik10: &str) -> String {
     format!("/api/xbrl/companyfacts/CIK{cik10}.json")
 }
 
-/// The submissions endpoint serving a filer's recent-filings index — the quick
-/// check's EDGAR filing sweep (`docs/portfolio-analysis.md` §The quick check).
+/// A filer's recent-filings index (`docs/portfolio-analysis.md` §The quick check).
 fn submissions_path(cik10: &str) -> String {
     format!("/submissions/CIK{cik10}.json")
 }
@@ -290,14 +279,13 @@ pub(crate) mod earnings {
                 return None;
             }
             // Missing information may come from the other lead; conflicting
-            // information may not. Check partial and internally ambiguous leads
-            // together before the Option-based complete-period fallback.
+            // information may not, so ambiguity across both leads is checked before
+            // the complete-period fallback.
             if quarters(&words).len() > 1 || years(&words).len() > 1 {
                 return None;
             }
-            // Title and URL are leads, not evidence. Conflicting explicit
-            // periods are unresolved; a year in a URL is never shifted to Q4
-            // of the prior year to make a candidate fit.
+            // Conflicting explicit periods are unresolved; a year in a URL is never
+            // shifted to Q4 of the prior year to make a candidate fit.
             match (requested_period(path), requested_period(title)) {
                 (Some(a), Some(b)) if a != b => None,
                 (Some(a), _) | (_, Some(a)) => Some(a),
@@ -793,8 +781,8 @@ pub(crate) mod earnings {
                 true
             )
             .unwrap());
-            // Source markup can split the phrase; the pure period matcher pins
-            // the semantic boundary separately from this real DOM fixture.
+            // Source markup can split the phrase, so the pure matcher is pinned apart
+            // from the DOM fixture.
             assert!(!target().matches_filing(
                 "Report date August 5, 2026. Quarter ended June 30, 2025.",
                 true
@@ -1188,17 +1176,14 @@ pub(crate) mod earnings {
     }
 }
 
-/// The latest annual values pulled from a company's XBRL facts — each `None` when the
-/// concept was not reported (or could not be resolved). Deliberately a small set: the
-/// lines the engine cross-checks against FMP.
+/// The latest annual values from a company's XBRL facts, each `None` when the concept
+/// was not reported or could not be resolved.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompanyFacts {
     pub revenue: Option<i64>,
-    /// The prior fiscal year's revenue — read from the **same concept** that
-    /// supplied `revenue` (never a different tag, so the growth read can't mix
-    /// bases), the second-latest distinct annual period end. Feeds the annual-basis
-    /// `revenue_growth` fallback where the FMP quarterly prints are too thin for
-    /// the TTM basis (the grade-band slice's F5 closure).
+    /// The prior fiscal year's revenue, read from the same concept that supplied
+    /// `revenue` so the growth read can't mix bases; the annual-basis
+    /// `revenue_growth` fallback where the FMP quarterly prints are too thin.
     pub revenue_prior: Option<i64>,
     pub gross_profit: Option<i64>,
     pub net_income: Option<i64>,
@@ -1207,7 +1192,7 @@ pub struct CompanyFacts {
 }
 
 impl CompanyFacts {
-    /// Whether any fact resolved — the dossier uses this to decide if SEC contributed.
+    /// Whether any fact resolved; the dossier reads this as "SEC contributed".
     pub fn is_empty(&self) -> bool {
         self.revenue.is_none()
             && self.revenue_prior.is_none()
@@ -1218,39 +1203,34 @@ impl CompanyFacts {
     }
 }
 
-/// Where the full ticker → CIK map lives. It is served from the `www.sec.gov` host,
-/// not the `data.sec.gov` API host the company-facts call uses, so it carries its own
-/// base-URL seam.
+/// The ticker → CIK map is served from `www.sec.gov`, not the `data.sec.gov` API host,
+/// so it carries its own base-URL seam.
 const SEC_TICKERS_BASE: &str = "https://www.sec.gov";
 
-/// The company-tickers file path on [`SEC_TICKERS_BASE`].
 const SEC_TICKERS_PATH: &str = "/files/company_tickers.json";
 
-/// How long a cached `company_tickers.json` stays fresh before a run refreshes it
-/// (drafted — CIK assignments change rarely, so a week keeps the map current without
-/// re-downloading the ~1 MB file per run). A stale cache is still used when the
-/// refresh fetch fails: fail-soft, never a run blocker.
+/// How long a cached `company_tickers.json` stays fresh: CIK assignments change
+/// rarely, so a week keeps the map current without re-downloading ~1 MB per run. A
+/// stale cache is still used when the refresh fails.
 pub const CIK_CACHE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-/// The ticker → CIK resolver over SEC's full `company_tickers.json` map
-/// (`docs/data-sources.md §SEC EDGAR`). Resolution returns the 10-digit zero-padded
-/// CIK EDGAR expects; an unresolved ticker stays `None` and degrades to a typed gap
-/// at the caller, never a fabricated mapping.
+/// The ticker → CIK resolver over SEC's `company_tickers.json` map
+/// (`docs/data-sources.md §SEC EDGAR`); an unresolved ticker is `None`, never a
+/// fabricated mapping.
 #[derive(Debug, Clone, Default)]
 pub struct CikResolver {
     map: std::collections::HashMap<String, String>,
 }
 
 impl CikResolver {
-    /// An empty resolver — every lookup misses. The fail-soft floor when neither a
-    /// cache nor a fetch is available.
+    /// The fail-soft floor when neither a cache nor a fetch is available.
     pub fn empty() -> Self {
         Self::default()
     }
 
     /// Parse the `company_tickers.json` body: an object keyed by row index, each row
-    /// `{cik_str, ticker, title}`. The CIK is zero-padded to the 10 digits EDGAR paths
-    /// expect.
+    /// `{cik_str, ticker, title}`. The CIK is zero-padded to the 10 digits EDGAR
+    /// paths expect.
     pub fn from_json(body: &str) -> Result<Self> {
         let value: Value = serde_json::from_str(body).context("parsing company_tickers.json")?;
         let rows = value
@@ -1269,13 +1249,11 @@ impl CikResolver {
         Ok(Self { map })
     }
 
-    /// The 10-digit zero-padded CIK for a ticker (case-insensitive), or `None` when
-    /// the symbol has no EDGAR mapping.
+    /// The 10-digit zero-padded CIK for a ticker, case-insensitive.
     pub fn resolve(&self, ticker: &str) -> Option<&str> {
         self.map.get(&ticker.to_ascii_uppercase()).map(String::as_str)
     }
 
-    /// How many tickers resolve — zero means the resolver is the empty fail-soft floor.
     pub fn len(&self) -> usize {
         self.map.len()
     }
@@ -1285,12 +1263,10 @@ impl CikResolver {
     }
 }
 
-/// The file name of the cached `company_tickers.json`, kept beside the app database.
 const CIK_CACHE_FILE: &str = "sec_company_tickers.json";
 
-/// Where the ticker → CIK cache lives for a given app database: the sibling
-/// [`CIK_CACHE_FILE`] in the database's directory (the bare file name when the
-/// path has no parent). Single-homed so both local jobs resolve against one cache.
+/// The cache sits beside the app database so both local jobs resolve against one
+/// copy; the bare file name when the path has no parent.
 pub fn cik_cache_path_beside(db_path: &std::path::Path) -> std::path::PathBuf {
     db_path
         .parent()
@@ -1298,20 +1274,14 @@ pub fn cik_cache_path_beside(db_path: &std::path::Path) -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from(CIK_CACHE_FILE))
 }
 
-/// Load the ticker → CIK resolver: the on-disk cache when fresh
-/// ([`CIK_CACHE_MAX_AGE`]), else a fetch that rewrites the cache. Fail-soft at every
-/// step — a failed fetch falls back to a stale cache when one exists, and to the
-/// empty resolver when none does, so an SEC outage degrades filings coverage to
-/// typed gaps rather than blocking the run.
-///
-/// The refresh fetch honors the shared cancel flag like every SEC request
-/// ([`SecEdgarSource::fetch_company_tickers`] bails without a request when it is
-/// set), so it falls to the same stale-or-empty floor. That flag is only cleared
-/// once a job owns the global run slot (`RunContext::reset_cancel`), which is why
-/// the live jobs defer this load to first use inside the slot
-/// ([`LazyCikResolver`]) rather than calling it eagerly at setup: an eager load
-/// after a cancelled run would silently ship a stale or empty map into the whole
-/// run, and its request row would fire before `run_started`.
+/// The on-disk cache when fresh ([`CIK_CACHE_MAX_AGE`]), else a fetch that rewrites
+/// it. Fail-soft at every step: a failed fetch falls back to a stale cache, then to
+/// the empty resolver, so an SEC outage degrades filings coverage to typed gaps
+/// rather than blocking the run. The refresh honors the shared cancel flag (no
+/// request under a set flag), and that flag is only cleared once a job owns the run
+/// slot (`RunContext::reset_cancel`), which is why the live jobs defer this load to
+/// first use inside the slot ([`LazyCikResolver`]): an eager load after a cancelled
+/// run would silently ship a stale or empty map into the whole run.
 pub fn load_cik_resolver(cache_path: &std::path::Path, source: &SecEdgarSource) -> CikResolver {
     let cached = std::fs::read_to_string(cache_path).ok();
     let cache_fresh = std::fs::metadata(cache_path)
@@ -1330,8 +1300,8 @@ pub fn load_cik_resolver(cache_path: &std::path::Path, source: &SecEdgarSource) 
     match source.fetch_company_tickers() {
         Ok(body) => match CikResolver::from_json(&body) {
             Ok(resolver) => {
-                // Best-effort cache write: a failed write costs the next run a
-                // re-download, never this run's resolution.
+                // A failed cache write costs the next run a re-download, never this
+                // run's resolution.
                 if let Some(dir) = cache_path.parent() {
                     let _ = std::fs::create_dir_all(dir);
                 }
@@ -1351,16 +1321,12 @@ fn stale_or_empty(cached: Option<String>) -> CikResolver {
         .unwrap_or_else(CikResolver::empty)
 }
 
-/// The ticker → CIK resolver **deferred to first use** — the carrier of the local
-/// jobs' ordering invariant: every external fetch happens inside the global run
-/// slot, after `try_begin` + `reset_cancel` + `run_started`, so the ticker-map
-/// refresh (a) sees the run's own cancel state rather than a prior cancelled run's
-/// leftover flag, and (b) streams its request row under the active step instead
-/// of firing before the tracker is listening. Constructing one performs no I/O;
-/// the first [`Self::get`] runs [`load_cik_resolver`] once and memoizes the result
-/// for the run (a fail-soft stale/empty map is memoized too — the same one-load-
-/// per-run behavior the eager call had). The daemon probe stays the one pre-slot
-/// check, and it is local-only.
+/// The ticker → CIK resolver deferred to first use, carrying the ordering invariant
+/// that every external fetch happens inside the run slot, after `try_begin` +
+/// `reset_cancel` + `run_started`: the refresh then sees the run's own cancel state
+/// and streams its request row under the active step. Constructing one performs no
+/// I/O; the first [`Self::get`] runs [`load_cik_resolver`] once and memoizes the
+/// result for the run, a fail-soft stale or empty map included.
 pub struct LazyCikResolver {
     cache_path: std::path::PathBuf,
     resolver: std::sync::OnceLock<CikResolver>,
@@ -1375,8 +1341,7 @@ impl LazyCikResolver {
         }
     }
 
-    /// A resolver that is already resolved — no cache, no fetch, ever. For a
-    /// caller that holds a map (tests, offline smokes).
+    /// Already resolved: no cache, no fetch, ever.
     pub fn preloaded(resolver: CikResolver) -> Self {
         let cell = std::sync::OnceLock::new();
         let _ = cell.set(resolver);
@@ -1386,33 +1351,29 @@ impl LazyCikResolver {
         }
     }
 
-    /// The resolver, loading it through `source` on the first call (see
-    /// [`load_cik_resolver`]) and serving the memoized map after that.
+    /// Loads through `source` on the first call; memoized after that.
     pub fn get(&self, source: &SecEdgarSource) -> &CikResolver {
         self.resolver
             .get_or_init(|| load_cik_resolver(&self.cache_path, source))
     }
 
-    /// Resolve one ticker, loading the map on first use — [`CikResolver::resolve`]
-    /// behind the lazy load.
     pub fn resolve(&self, source: &SecEdgarSource, ticker: &str) -> Option<&str> {
         self.get(source).resolve(ticker)
     }
 
-    /// Whether the map has been loaded yet — the ordering tests' probe.
+    /// The ordering tests' probe.
     #[cfg(test)]
     pub fn is_loaded(&self) -> bool {
         self.resolver.get().is_some()
     }
 }
 
-/// The keyless SEC EDGAR company-facts adapter. Mirrors the gated adapters' shape
-/// (`http` + `base_url` + `progress`), minus the API key.
+/// The keyless SEC EDGAR adapter.
 pub struct SecEdgarSource {
     http: reqwest::blocking::Client,
     base_url: String,
-    /// The `www.sec.gov` host serving `company_tickers.json` — a distinct base from
-    /// the `data.sec.gov` API host, with its own test seam.
+    /// The `www.sec.gov` host serving `company_tickers.json`, distinct from the
+    /// `data.sec.gov` API host.
     tickers_base_url: String,
     progress: Arc<RunContext>,
 }
@@ -1433,10 +1394,8 @@ impl SecEdgarSource {
         })
     }
 
-    /// Point the adapter at a mock base URL for the offline round-trip test. Trailing
-    /// slash trimmed so the joined path's leading slash doesn't double up. Points both
-    /// hosts at the mock, since a test exercises one endpoint at a time (crate-visible
-    /// so the portfolio job's slot-ordering test can drive the real fetch path).
+    /// Point both hosts at a mock; crate-visible so the portfolio job's slot-ordering
+    /// test can drive the real fetch path.
     #[cfg(test)]
     pub(crate) fn with_base_url(mut self, base_url: &str) -> Self {
         let base = base_url.trim_end_matches('/').to_string();
@@ -1445,9 +1404,7 @@ impl SecEdgarSource {
         self
     }
 
-    /// Fetch the raw `company_tickers.json` body (the caller parses and caches it —
-    /// [`load_cik_resolver`]). A transport error or non-2xx returns `Err`; resolution
-    /// then falls back fail-soft.
+    /// The raw `company_tickers.json` body; [`load_cik_resolver`] parses and caches it.
     pub fn fetch_company_tickers(&self) -> Result<String> {
         if self.progress.is_cancelled() {
             anyhow::bail!("SEC ticker-map fetch skipped (run cancelled)");
@@ -1490,13 +1447,10 @@ impl SecEdgarSource {
         self
     }
 
-    /// Fetch the company-facts JSON for a CIK and shape it into [`CompanyFacts`]. A
-    /// transport error or non-2xx returns `Err`; the caller (the dossier) treats that
-    /// fail-soft, since SEC supplements FMP rather than gating the run.
+    /// `Err` on transport failure or a non-2xx; the dossier treats that fail-soft,
+    /// since SEC supplements FMP rather than gating the run.
     pub fn fetch_company_facts(&self, cik10: &str) -> Result<CompanyFacts> {
-        // Cancel checkpoint before the request: a cancel already requested skips the
-        // network (no request, so no tracker row) and surfaces as an error the job's
-        // cancel path classifies as a user stop.
+        // A cancel already requested skips the network: no request, so no tracker row.
         if self.progress.is_cancelled() {
             anyhow::bail!("SEC fetch skipped (run cancelled)");
         }
@@ -1534,10 +1488,9 @@ impl SecEdgarSource {
         result
     }
 
-    /// A filer's recent filings from the submissions index, newest first — the quick
-    /// check's per-stock EDGAR filing sweep. `Err` on transport / non-2xx / parse
-    /// failure so the caller types the filing family `unknown` rather than reading a
-    /// failed sweep as no-new-filings.
+    /// A filer's recent filings, newest first. `Err` on transport / non-2xx / parse
+    /// failure, so the caller types the filing family `unknown` rather than reading
+    /// a failed sweep as no-new-filings.
     pub fn fetch_recent_filings(&self, cik10: &str) -> Result<Vec<RecentFiling>> {
         if self.progress.is_cancelled() {
             anyhow::bail!("SEC submissions fetch skipped (run cancelled)");
@@ -1582,37 +1535,27 @@ impl SecEdgarSource {
 pub struct RecentFiling {
     /// The form type as EDGAR reports it (`10-Q`, `8-K`, `10-K/A`, `4`, …).
     pub form: String,
-    /// The filing date, ISO.
+    /// ISO date.
     pub filing_date: String,
-    /// The filer-declared item codes for an 8-K (`["4.01", "9.01"]` — the
-    /// submissions feed's `items` column, split on commas), empty on other forms.
-    /// Filer-declared structured metadata, mandatory in the 8-K submission types,
-    /// so an 8-K row filed after 2004 reliably carries its items — what lets the
-    /// hard-forensic producer classify an Item 4.01 / 4.02 filing without
-    /// fetching the document (`docs/data-sources.md §SEC EDGAR`).
-    /// `None` = the column was absent or this row's entry unreadable — the row is
-    /// **unclassifiable**, which the forensic sweep must surface as `unknown`,
-    /// never fold into a clean result (the fabricated-clear failure mode);
-    /// `Some(vec![])` = the column served an honestly empty entry (a non-8-K).
+    /// The filer-declared item codes of an 8-K (the `items` column split on commas),
+    /// which classify an Item 4.01 / 4.02 filing without fetching the document
+    /// (`docs/data-sources.md §SEC EDGAR`). `None` means the column was absent or
+    /// the entry unreadable: the row is unclassifiable, which the forensic sweep
+    /// must surface as `unknown`, never fold into a clean result. `Some(vec![])` is
+    /// an honestly empty entry (a non-8-K).
     pub items: Option<Vec<String>>,
-    /// The filing's accession number — the event record's source lineage.
+    /// The event record's source lineage.
     pub accession: String,
 }
 
-/// Shape the submissions body's `filings.recent` parallel arrays (`form[i]` ↔
-/// `filingDate[i]`) into rows, newest first as EDGAR serves them. A body without the `filings.recent`
-/// arrays is malformed or drifted (the submissions schema always carries them,
-/// empty arrays included, for every filer) — `Err`, never an empty success, so
-/// the sweep types the filing family `unknown` instead of reading
-/// "no new filings" off a body it couldn't interpret. The form + date legs are
-/// **strict**: unpaired arrays, a non-string leg, or an undatable
-/// `filingDate` all `Err` rather than dropping the row — a silently dropped
-/// 8-K would fold into a clean forensic sweep, and a garbage date compares
-/// lexically against the classifier's lookback bound (the fabricated-clear
-/// rule, `crate::portfolio::ForensicFilingState`). The `accessionNumber`
-/// column stays lenient per row (absent → empty lineage); the `items` column
-/// is honest per row — an absent column or an unreadable entry yields `None`
-/// (unclassifiable), never an empty list.
+/// Shape `filings.recent`'s parallel arrays into rows, newest first as EDGAR serves
+/// them. The schema always carries the arrays, so a body without them is `Err`,
+/// never an empty success. The form + date legs are strict (unpaired arrays, a
+/// non-string leg or an undatable date all `Err` rather than dropping the row): a
+/// silently dropped 8-K would fold into a clean forensic sweep, and a garbage date
+/// compares lexically against the classifier's lookback bound
+/// (`crate::portfolio::ForensicFilingState`). `accessionNumber` stays lenient per
+/// row; `items` yields `None` for an absent column or unreadable entry.
 fn recent_filings_from_value(value: &Value) -> Result<Vec<RecentFiling>> {
     let recent = &value["filings"]["recent"];
     let (Some(forms), Some(dates)) = (recent["form"].as_array(), recent["filingDate"].as_array())
@@ -1642,11 +1585,9 @@ fn recent_filings_from_value(value: &Value) -> Result<Vec<RecentFiling>> {
             let filing_date = date
                 .as_str()
                 .with_context(|| format!("SEC submissions row {i}: non-string filingDate leg"))?;
-            // Store the CANONICAL fixed-width render, never the source text:
-            // chrono accepts unpadded fields, and a datable-but-noncanonical
-            // "2026-9-30" sorts lexically after "2026-10-01" — exactly the
-            // comparison the forensic lookback bound makes (the same hazard
-            // `fmp::canonical_date` guards; Codex 2026-08-20 round 3).
+            // Store the canonical fixed-width render, never the source text: chrono
+            // accepts unpadded fields, and "2026-9-30" sorts lexically after
+            // "2026-10-01", exactly the comparison the forensic lookback bound makes.
             let filing_date = chrono::NaiveDate::parse_from_str(filing_date, "%Y-%m-%d")
                 .with_context(|| {
                     format!("SEC submissions row {i}: undatable filingDate {filing_date:?}")
@@ -1678,9 +1619,8 @@ fn recent_filings_from_value(value: &Value) -> Result<Vec<RecentFiling>> {
 
 // ---- Hard-forensic filing kinds (the item-classified producer) -----------------
 
-/// The typed hard-forensic event kinds — the shared producer contract
-/// (`docs/trade-opportunities-workflow.md §Step 5c`; Portfolio's engine and
-/// continuity seams consume the same records).
+/// The typed hard-forensic event kinds (`docs/trade-opportunities-workflow.md
+/// §Step 5c`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ForensicEventKind {
@@ -1688,10 +1628,8 @@ pub enum ForensicEventKind {
     Restatement,
     /// An Item 4.01 auditor-change 8-K.
     AuditorChange,
-    /// The research-fed kind — no structured enumeration exists, so it enters
-    /// only as a validated `forensic_event` research claim (the 6d channel,
-    /// merged by `pipeline::merge_research_forensic_event`). This filings
-    /// classifier never emits it.
+    /// Research-fed only (`pipeline::merge_research_forensic_event`); no structured
+    /// enumeration exists, so this filings classifier never emits it.
     Fraud,
 }
 
@@ -1705,34 +1643,27 @@ impl ForensicEventKind {
     }
 }
 
-/// One typed hard-forensic event — `{ event kind, issuer, event / filing date,
-/// source lineage, confidence }`, the producer contract's record. The filing
-/// kinds are engine-detected and model-free; a bare model assertion is never one
-/// of these.
+/// One typed hard-forensic event. The filing kinds are engine-detected and
+/// model-free; a bare model assertion is never one of these.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ForensicEvent {
     pub kind: ForensicEventKind,
-    /// The issuer, as the consuming job identifies it (the holding's symbol).
+    /// As the consuming job identifies it (the holding's symbol).
     pub issuer: String,
-    /// The filing date, ISO — the event date the hard rule's lookback reads.
+    /// ISO date; the event date the hard rule's lookback reads.
     pub filing_date: String,
-    /// Source lineage — the form type plus accession number of the classifying
-    /// filing.
+    /// The form type plus accession number of the classifying filing.
     pub source: String,
-    /// How the event was established. Filing kinds are filer-declared item
-    /// codes, structural rather than judged.
+    /// How the event was established; filing kinds are filer-declared item codes,
+    /// structural rather than judged.
     pub confidence: String,
 }
 
-/// Classify the hard-forensic **filing kinds** from an already-fetched
-/// submissions sweep: an 8-K (or 8-K/A) whose filer-declared items carry `4.02`
-/// (non-reliance restatement) or `4.01` (auditor change), filed on or after
-/// `since` (ISO date, inclusive — the consumer's lookback bound). Model-free and
-/// pure. `Err` when any in-lookback 8-K row is **unclassifiable** (its `items`
-/// read `None` — the column absent or the entry unreadable): the caller must
-/// type the sweep `unknown`, because "couldn't read the items" folded into a
-/// clean result is exactly the fabricated clear the contract forbids. The fraud
-/// kind never comes from here (research-fed only).
+/// Classify the hard-forensic filing kinds from a submissions sweep: an 8-K or 8-K/A
+/// whose items carry `4.02` or `4.01`, filed on or after `since` (ISO, inclusive).
+/// `Err` when any in-lookback 8-K row is unclassifiable (`items` is `None`): the
+/// caller must type the sweep `unknown`, because unreadable items folded into a
+/// clean result is exactly the fabricated clear the contract forbids.
 pub fn forensic_events_from_filings(
     issuer: &str,
     filings: &[RecentFiling],
@@ -1779,11 +1710,9 @@ const REVENUE_CONCEPTS: &[&str] = &[
     "SalesRevenueNet",
 ];
 
-/// Shape an `/api/xbrl/companyfacts` body into [`CompanyFacts`]. Pure, so the
-/// envelope contract is unit-testable without a live call. The prior-year revenue
-/// deliberately comes from the **same concept ladder rung** that supplied the latest
-/// print — a growth read across two different revenue tags would compare different
-/// economics.
+/// The prior-year revenue deliberately comes from the same concept rung that
+/// supplied the latest print: a growth read across two revenue tags would compare
+/// different economics.
 fn facts_from_value(value: &Value) -> CompanyFacts {
     let (revenue, revenue_prior) = REVENUE_CONCEPTS
         .iter()
@@ -1802,31 +1731,26 @@ fn facts_from_value(value: &Value) -> CompanyFacts {
     }
 }
 
-/// The latest annual (form `10-K`, full-year) USD value for one GAAP concept, picked
-/// by the most recent `end` date. `None` when the concept is absent or has no annual
-/// USD datapoint. Reading only the 10-K full-year rows avoids mixing a quarterly
-/// figure into an annual metric.
+/// The latest 10-K full-year USD value for one GAAP concept, by most recent `end`
+/// date; `None` when absent.
 fn latest_annual_usd(value: &Value, concept: &str) -> Option<i64> {
     let (latest, _) = latest_two_annual_usd(value, concept);
     latest
 }
 
-/// Instant (balance) concepts — a point-in-time fact carries no `start`, so the
-/// annual-duration span check does not apply. Everything else is treated as a
-/// duration (flow) concept and FAILS CLOSED without a parseable ~annual span:
-/// the safe default for any concept added later, since a mistakenly-instant
-/// read only skips a check while a mistakenly-duration read fabricates an
+/// Instant (balance) concepts carry no `start`, so the annual-span check does not
+/// apply. Everything else is a duration concept and fails closed without a parseable
+/// ~annual span: the safe default for a concept added later, since a mistakenly
+/// instant read only skips a check while a mistakenly duration read fabricates an
 /// annual value from a stub period.
 const INSTANT_CONCEPTS: &[&str] = &["Assets", "StockholdersEquity"];
 
-/// The latest **two** annual full-year USD values for one GAAP concept, by distinct
-/// `end` date descending — the second is the prior fiscal year's print (a 10-K
-/// carries its comparative-year rows under the same concept, which is what makes the
-/// prior read possible without a second request). Duplicate rows for one period end
-/// (an original filing plus a later 10-K's comparative) collapse to the
-/// **latest-filed** row — a later filing that restates the period (recast for a
-/// disposal, an accounting change) supersedes the original print; rows without a
-/// `filed` date fall back to array order, where EDGAR lists later filings later.
+/// The latest two annual full-year USD values for one concept, by distinct `end`
+/// date descending; the second is the prior year's print (a 10-K carries its
+/// comparative-year rows under the same concept). Duplicate rows for one period end
+/// collapse to the latest-filed row, since a later filing that restates the period
+/// supersedes the original; rows without a `filed` date fall back to array order,
+/// where EDGAR lists later filings later.
 fn latest_two_annual_usd(value: &Value, concept: &str) -> (Option<i64>, Option<i64>) {
     let Some(units) = value
         .pointer(&format!("/facts/us-gaap/{concept}/units/USD"))
@@ -1834,15 +1758,13 @@ fn latest_two_annual_usd(value: &Value, concept: &str) -> (Option<i64>, Option<i
     else {
         return (None, None);
     };
-    // (end, filed, array index, val) — sorted so the row to keep per period end
-    // comes first: end desc, then filed desc (absent filed sorts behind any
-    // present one), then array position desc as the filing-order proxy.
+    // (end, filed, array index, val), sorted so the row to keep per period end comes
+    // first: end desc, filed desc (absent sorts behind present), array position desc.
     let mut dated: Vec<(String, Option<String>, usize, i64)> = units
         .iter()
         .enumerate()
-        // Prefix match: a 10-K/A restating the year is the most direct
-        // supersession vehicle — an exact "10-K" test would keep serving the
-        // withdrawn original print until the next annual report's comparative.
+        // Prefix match: an exact "10-K" test would keep serving a print a 10-K/A
+        // withdrew until the next annual report's comparative.
         .filter(|(_, row)| {
             row.get("form")
                 .and_then(Value::as_str)
@@ -1855,14 +1777,10 @@ fn latest_two_annual_usd(value: &Value, concept: &str) -> (Option<i64>, Option<i
                 .map(|fp| fp == "FY")
                 .unwrap_or(true)
         })
-        // Duration facts must span roughly a year: company-facts arrays mix
-        // sub-annual durations under the same concept and form, and a Q4/stub
-        // row sharing the FY `end` date would otherwise win on a tie-break and
-        // masquerade as the annual value. CONCEPT-AWARE and fail-closed: a
-        // duration concept's row with an absent or unparseable `start` is
-        // excluded (a pass-through would readmit exactly the stub rows the
-        // filter exists to stop), while instant concepts skip the check —
-        // point-in-time facts legitimately carry no `start`.
+        // Duration facts must span roughly a year: the arrays mix sub-annual
+        // durations under the same concept and form, and a Q4 / stub row sharing the
+        // FY `end` date would otherwise win a tie-break. Fail-closed on an absent or
+        // unparseable `start`, which would readmit exactly those stub rows.
         .filter(|(_, row)| {
             if INSTANT_CONCEPTS.contains(&concept) {
                 return true;
@@ -1906,11 +1824,8 @@ mod tests {
     use crate::test_http::{Canned, MockHttp};
 
     fn facts_body() -> &'static str {
-        // Two revenue datapoints (older + newer 10-K, the older year appearing twice:
-        // the original print and a later-filed 10-K comparative that RESTATES it) and
-        // one each for the rest. The parser must pick the latest annual by `end`
-        // date, the prior year from the same concept's second-distinct end, and the
-        // latest-FILED row where one period end appears twice.
+        // The older revenue year appears twice: the original print and a later-filed
+        // 10-K comparative that restates it.
         r#"{
           "facts": {
             "us-gaap": {
@@ -1944,28 +1859,18 @@ mod tests {
     fn parses_latest_annual_facts_and_ignores_quarterly_rows() {
         let value: Value = serde_json::from_str(facts_body()).unwrap();
         let facts = facts_from_value(&value);
-        // Latest annual revenue (the 2024 10-K), not the prior year.
         assert_eq!(facts.revenue, Some(391_035_000_000));
-        // The prior year comes from the SAME concept's second-distinct end; the
-        // duplicated period end collapses to the latest-FILED row (the later 10-K's
-        // restated comparative supersedes the original print), and the older
-        // `Revenues` concept (a different tag, different economics) never mixes in.
+        // The restated comparative wins the duplicated period end, and the older
+        // `Revenues` concept never mixes in.
         assert_eq!(facts.revenue_prior, Some(380_000_000_000));
-        // The 10-Q net-income row is filtered out; the 10-K stands.
         assert_eq!(facts.net_income, Some(93_736_000_000));
         assert_eq!(facts.stockholders_equity, Some(56_950_000_000));
-        // A concept that wasn't reported stays absent rather than fabricated.
         assert_eq!(facts.total_assets, None);
         assert!(!facts.is_empty());
     }
 
     #[test]
     fn amendments_supersede_and_sub_annual_durations_are_excluded() {
-        // A 10-K/A restating the year is the most direct supersession vehicle —
-        // the prefix match must let its later-filed row win the period-end
-        // dedup — and a Q4-duration fact sharing the FY `end` date on a 10-K
-        // row must not masquerade as the annual value (the tie-break would
-        // otherwise fall to serialization order).
         let body = r#"{
           "facts": {
             "us-gaap": {
@@ -1983,11 +1888,8 @@ mod tests {
         }"#;
         let value: Value = serde_json::from_str(body).unwrap();
         let facts = facts_from_value(&value);
-        // The amendment's restated print wins (later filed, same period end);
-        // the Q4-duration row (90 days) is excluded outright, and so is the
-        // start-less duration row — filed latest, it would WIN the dedup under
-        // a fail-open span check (duration concepts fail closed; only instant
-        // concepts legitimately omit `start`).
+        // The 10-K/A wins; the 90-day row and the start-less row (filed latest, so it
+        // would win the dedup under a fail-open span check) are excluded.
         assert_eq!(facts.revenue, Some(359_752_200_000));
         assert_eq!(facts.revenue_prior, Some(383_285_000_000));
     }
@@ -2045,10 +1947,6 @@ mod tests {
 
     #[test]
     fn recent_filings_parse_items_honestly_per_row() {
-        // The items column is the 8-K classification surface (comma-separated,
-        // filer-declared): a served entry parses (an empty entry is an honest
-        // `Some(vec![])`), while an absent column reads `None` — unclassifiable,
-        // for the forensic sweep to surface as unknown, never fold into clean.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![],
@@ -2068,8 +1966,7 @@ mod tests {
         assert_eq!(filings[0].accession, "0000320193-26-000042");
         assert_eq!(filings[1].items, Some(vec![]));
 
-        // No items / accession arrays at all: rows still parse (the form + date
-        // hard floor holds), but every row's items read `None`.
+        // No items / accession arrays at all.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![],
@@ -2087,11 +1984,6 @@ mod tests {
 
     #[test]
     fn malformed_form_or_date_legs_error_never_drop_the_row() {
-        // A null date leg on an in-scope 8-K must not vanish into a clean
-        // sweep, and a garbage date must not survive to compare lexically
-        // against the classifier's lookback bound — the whole fetch errors
-        // onto the callers' unknown postures (Codex 2026-08-20 round 2,
-        // finding 1).
         let bodies = [
             // Null date leg.
             r#"{"filings":{"recent":{"form":["8-K"],"filingDate":[null]}}}"#,
@@ -2112,9 +2004,7 @@ mod tests {
             assert!(sec.fetch_recent_filings("0000320193").is_err(), "{body}");
         }
 
-        // A datable-but-noncanonical date is stored in its canonical render —
-        // "2026-9-30" would otherwise sort lexically after "2026-10-01",
-        // exactly the classifier's lookback comparison.
+        // A datable-but-noncanonical date is stored in its canonical render.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![],
@@ -2134,15 +2024,12 @@ mod tests {
             accession: "acc-1".into(),
         };
         let filings = vec![
-            // Item 4.02 → restatement; the companion 9.01 produces nothing.
             filing("8-K", "2026-08-01", &["4.02", "9.01"]),
-            // An amended 8-K classifies too.
             filing("8-K/A", "2026-07-15", &["4.01"]),
-            // A non-forensic 8-K item → no event.
             filing("8-K", "2026-07-10", &["2.02"]),
-            // Outside the lookback → filtered.
+            // Outside the lookback.
             filing("8-K", "2024-01-05", &["4.02"]),
-            // A 10-Q never classifies, whatever its items column carries.
+            // A 10-Q never classifies, whatever its items carry.
             filing("10-Q", "2026-07-31", &["4.02"]),
         ];
         let events = forensic_events_from_filings("ACME", &filings, "2025-08-20").unwrap();
@@ -2152,8 +2039,7 @@ mod tests {
         assert_eq!(events[0].filing_date, "2026-08-01");
         assert!(events[0].source.contains("acc-1"), "{}", events[0].source);
         assert_eq!(events[1].kind, ForensicEventKind::AuditorChange);
-        // Tightening the lookback drops the older auditor change, keeping only
-        // the newer restatement — the bound is inclusive on `since`.
+        // The bound is inclusive on `since`.
         assert_eq!(
             forensic_events_from_filings("ACME", &filings, "2026-07-20")
                 .unwrap()
@@ -2161,9 +2047,8 @@ mod tests {
             1
         );
 
-        // An in-lookback 8-K whose items column is unreadable makes the whole
-        // sweep unclassifiable — `Err`, never a clean or partial result (the
-        // fabricated-clear rule). Outside the lookback it is ignorable.
+        // An unreadable in-lookback 8-K makes the whole sweep `Err`, never a partial
+        // result; outside the lookback it is ignorable.
         let mut with_unreadable = filings.clone();
         with_unreadable.push(RecentFiling {
             form: "8-K".into(),
@@ -2188,8 +2073,6 @@ mod tests {
 
     #[test]
     fn recent_filings_error_on_a_200_missing_the_recent_arrays() {
-        // Valid JSON without `filings.recent` is schema drift or a malformed
-        // response — `Err`, never an empty "no new filings" success.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![],
@@ -2238,7 +2121,6 @@ mod tests {
     fn load_cik_resolver_fetches_then_reuses_the_fresh_cache() {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("sec_company_tickers.json");
-        // First load: no cache → fetch → cache written.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![],
@@ -2248,8 +2130,7 @@ mod tests {
         let resolver = load_cik_resolver(&cache, &sec);
         assert_eq!(resolver.resolve("AAPL"), Some("0000320193"));
         assert!(cache.exists(), "the fetched map is cached beside the db");
-        // Second load: the fresh cache serves without any request — the mock has no
-        // second canned reply, so a fetch attempt would fail and fall to empty.
+        // An unreachable source, so the fresh cache must serve without a request.
         let sec_offline = SecEdgarSource::new().unwrap().with_base_url("http://127.0.0.1:1");
         let resolver = load_cik_resolver(&cache, &sec_offline);
         assert_eq!(resolver.resolve("MSFT"), Some("0000789019"));
@@ -2260,13 +2141,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("sec_company_tickers.json");
         std::fs::write(&cache, tickers_body()).unwrap();
-        // Age the cache past the freshness window so a refresh is attempted; the
-        // unreachable fetch then falls back to the stale cache rather than empty.
         age_past_freshness(&cache);
         let sec_offline = SecEdgarSource::new().unwrap().with_base_url("http://127.0.0.1:1");
         let resolver = load_cik_resolver(&cache, &sec_offline);
         assert_eq!(resolver.resolve("AAPL"), Some("0000320193"), "stale beats empty");
-        // No cache at all → the empty fail-soft floor.
         let resolver = load_cik_resolver(&dir.path().join("missing.json"), &sec_offline);
         assert!(resolver.is_empty());
     }
@@ -2278,12 +2156,9 @@ mod tests {
         file.set_modified(stale).unwrap();
     }
 
-    /// Documents the bail: the ticker-map refresh honors the shared cancel flag
-    /// like every SEC request, so under a set flag it makes **no request** and
-    /// falls to the stale map. This is exactly why the live jobs must not load
-    /// the resolver before the slot clears the flag (`reset_cancel`) — an eager
-    /// load after a cancelled run would ship this stale (or empty) map into the
-    /// whole run without a single request row.
+    /// Why the live jobs must not load the resolver before the slot clears the flag:
+    /// an eager load after a cancelled run would ship this stale or empty map into
+    /// the whole run without a single request row.
     #[test]
     fn load_cik_resolver_under_a_set_cancel_flag_and_stale_cache_returns_the_stale_map() {
         use std::sync::atomic::AtomicBool;
@@ -2291,7 +2166,7 @@ mod tests {
         let cache = dir.path().join("sec_company_tickers.json");
         std::fs::write(&cache, tickers_body()).unwrap();
         age_past_freshness(&cache);
-        // A mock that WOULD serve a fresh map — it must see no connection.
+        // A mock that would serve a fresh map; it must see no connection.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![],
@@ -2313,14 +2188,11 @@ mod tests {
             "the stale cache is served, not empty"
         );
         assert_eq!(server.attempts(), 0, "a set cancel flag skips the refresh fetch");
-        // With no cache the same bail lands on the empty floor.
         let resolver = load_cik_resolver(&dir.path().join("missing.json"), &sec);
         assert!(resolver.is_empty());
         assert_eq!(server.attempts(), 0);
     }
 
-    /// The lazy carrier: constructing it performs no I/O; the first `get` loads
-    /// (one request), the second serves the memoized map (no request).
     #[test]
     fn lazy_cik_resolver_fetches_on_first_use_only() {
         let dir = tempfile::tempdir().unwrap();
@@ -2337,10 +2209,8 @@ mod tests {
         assert_eq!(lazy.resolve(&sec, "MSFT"), Some("0000789019"));
         assert!(lazy.is_loaded());
         assert_eq!(server.attempts(), 1);
-        // Memoized: no second connection (the mock has no second reply anyway).
         assert_eq!(lazy.resolve(&sec, "AAPL"), Some("0000320193"));
         assert_eq!(server.attempts(), 1);
-        // A preloaded resolver never touches the source.
         let pre = LazyCikResolver::preloaded(CikResolver::from_json(tickers_body()).unwrap());
         assert!(pre.is_loaded());
         assert_eq!(pre.resolve(&sec, "XOM"), Some("0000034088"));

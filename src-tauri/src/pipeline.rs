@@ -1,9 +1,7 @@
-//! Application-layer orchestration for a single manual report run.
-//!
-//! This is the spine the whole system is built on: the app layer drives the
-//! agent stage (a pure function) and owns every side effect — the database
-//! write and the canonical Markdown file. It is written free of any Tauri
-//! runtime so it can be driven directly by an integration test against stubs.
+//! Application-layer orchestration for a single manual report run: the app layer
+//! drives the agent stage (a pure function) and owns every side effect — the database
+//! write and the canonical Markdown file. Written free of any Tauri runtime so an
+//! integration test can drive it directly against stubs.
 
 use std::path::PathBuf;
 
@@ -34,9 +32,8 @@ use crate::research_router::{ResearchPlan, ResearchRouter, RouterInput};
 use crate::storage::{self, ReportRecord};
 use crate::vector_memory::{self, MemoryKind};
 
-/// Filesystem locations a run reads and writes. Injected so tests can point at
-/// temporary directories; the Tauri command resolves these from the app data
-/// directory.
+/// Filesystem locations a run reads and writes, injected so tests can point at
+/// temporary directories.
 pub struct ReportPaths {
     pub db_path: PathBuf,
     pub reports_dir: PathBuf,
@@ -48,10 +45,8 @@ pub struct ReportPaths {
 }
 
 impl ReportPaths {
-    /// The canonical app-data layout under one base directory — the single
-    /// source for these names, shared by the manual command
-    /// (`lib.rs::report_paths`) and every test's temp dir, so the layouts can
-    /// never drift apart.
+    /// The canonical app-data layout, shared by the command (`lib.rs::report_paths`)
+    /// and every test's temp dir so the two can never drift.
     pub fn under(base: &std::path::Path) -> Self {
         Self {
             db_path: base.join("market_signal.db"),
@@ -62,14 +57,10 @@ impl ReportPaths {
     }
 }
 
-/// The research-half stages (Steps 7–11), injected into the pipeline as trait objects
-/// so the spine stays offline-stubbable (`ResearchStages::stub`) while the live command
-/// constructs the real adapters (`lib.rs`). Owned `Box`es rather than borrows so a caller
-/// hands over one value instead of threading several lifetimes; built once per run and
-/// dropped with it. The Step-9 `Clock` is deliberately *not* a member — the 30-minute
-/// research budget anchors at the research phase, so `assemble_research_packet` mints a
-/// fresh `WallClock` there rather than at bundle-construction time (which would let the
-/// baseline scan eat into the budget).
+/// The research-half stages (Steps 7–11), injected as trait objects so the spine stays
+/// offline-stubbable. The Step-9 clock is deliberately not a member: the research
+/// budget anchors at the research phase, so `assemble_research_packet` mints a fresh
+/// `WallClock` there rather than letting the baseline scan eat into the budget.
 pub struct ResearchStages {
     pub news: Box<dyn NewsSource>,
     pub filter: Box<dyn HeadlineFilter>,
@@ -78,9 +69,7 @@ pub struct ResearchStages {
 }
 
 impl ResearchStages {
-    /// The offline stub bundle: deterministic stand-ins for every research stage, so
-    /// `generate_report` runs end to end against fixtures with no live keys. Used by the
-    /// integration tests and any offline smoke.
+    /// Deterministic stand-ins so `generate_report` runs end to end with no live keys.
     pub fn stub() -> Self {
         Self {
             news: Box::new(crate::news::StubNewsSource),
@@ -90,16 +79,11 @@ impl ResearchStages {
         }
     }
 
-    /// The live stage bundle (Steps 7–11) for one run — the single construction shared
-    /// by the production command paths (`lib.rs`) and the live research smoke below, so
-    /// the wiring can't drift between what ships and what the smoke validates. Tavily +
-    /// GDELT + FMP Articles feed the news gather (one nested composite — Tavily first so
-    /// dedup keeps the primary source's framing, the best-effort supplements after); the
-    /// GPT-5-mini headline filter and the Sonnet research router are the fixed internal
-    /// stages; a *second* Tavily client is the Step-9 search backend, since the
-    /// composite owns the gather's Tavily by value. Every adapter carries `ctx` so each
-    /// call streams a per-request tracker row. Errors here are HTTP-client build
-    /// failures only.
+    /// The live bundle, the single construction shared by the command paths (`lib.rs`)
+    /// and the live research smoke so the wiring can't drift. Tavily comes first in the
+    /// news composite so dedup keeps the primary source's framing; a second Tavily
+    /// client is the Step-9 search backend, since the composite owns the gather's by
+    /// value. Errors here are HTTP-client build failures only.
     pub fn live(
         tavily_key: String,
         fmp_key: String,
@@ -130,11 +114,8 @@ impl ResearchStages {
     }
 }
 
-/// The three analyst stages (Steps 12–15), injected like [`ResearchStages`] so the spine
-/// stays offline-stubbable (`AnalystStages::stub`) while the live command constructs the
-/// real adapters (`AnalystStages::live`). Each is one [`Posture`] behind the
-/// [`AnalystAgent`] trait; the trio runs concurrently in [`run_analysts`]. The trait
-/// objects are `Send + Sync` so the scoped threads can borrow them.
+/// The three analyst stages (Steps 12–15), injected like [`ResearchStages`]. The trait
+/// objects are `Send + Sync` so [`run_analysts`]'s scoped threads can borrow them.
 pub struct AnalystStages {
     pub bull: Box<dyn AnalystAgent + Send + Sync>,
     pub bear: Box<dyn AnalystAgent + Send + Sync>,
@@ -142,9 +123,7 @@ pub struct AnalystStages {
 }
 
 impl AnalystStages {
-    /// The offline stub bundle: a deterministic stand-in for each posture, so
-    /// `generate_report` runs end to end against fixtures with no live keys. Used by the
-    /// integration tests and any offline smoke.
+    /// Deterministic stand-ins so `generate_report` runs end to end with no live keys.
     pub fn stub() -> Self {
         Self {
             bull: Box::new(StubAnalystAgent::new(Posture::Bull)),
@@ -153,11 +132,8 @@ impl AnalystStages {
         }
     }
 
-    /// The live analyst bundle for one run — the single construction shared by the
-    /// production command path (`lib.rs`), so the wiring can't drift. Each posture's
-    /// user-selected model + provider key arrives as a resolved `MainAgentConfig`
-    /// (`AppConfig::analyst_config`); every adapter carries `ctx` so each review call
-    /// streams a per-request tracker row. Errors here are HTTP-client build failures only.
+    /// The live bundle; each posture's resolved model + key comes from
+    /// `AppConfig::analyst_config`. Errors here are HTTP-client build failures only.
     pub fn live(
         bull: MainAgentConfig,
         bear: MainAgentConfig,
@@ -174,16 +150,11 @@ impl AnalystStages {
     }
 }
 
-/// Run the three analyst agents (Bull / Bear / Balanced) concurrently over the shared
-/// condensed packet (`docs/report-workflow.md §Step 12`). Concurrency uses scoped
-/// OS threads rather than `tokio`, keeping the agent half off the async runtime (the
-/// spine's blocking-call discipline — `tokio` lives only at app-layer seams). Each
-/// analyst makes one blocking streaming call, re-attempted once on a transient failure
-/// (`model_agent::retry_stream_once`), and emits its own per-request tracker row;
-/// reviews come back in Bull/Bear/Balanced order. **Not fail-soft:** any analyst error
-/// that survives its retry (or a panicked thread) propagates as a job failure
-/// (`§Step 12` — the analyst reviews are fixed single-pass stages, unlike the fail-soft
-/// research half).
+/// Run the three analyst agents concurrently over the shared condensed packet
+/// (`docs/report-workflow.md §Step 12`), on scoped OS threads rather than `tokio` to
+/// keep the agent half off the async runtime. Reviews come back in Bull/Bear/Balanced
+/// order. Not fail-soft: any analyst error that survives its retry, or a panicked
+/// thread, propagates as a job failure.
 fn run_analysts(
     analysts: &AnalystStages,
     packet: &ResearchPacket,
@@ -207,8 +178,8 @@ fn run_analysts(
     Ok(reviews)
 }
 
-/// The result of a report run, returned to the caller (the Tauri command or a
-/// test). Carries the Markdown so the frontend can render it immediately.
+/// The result of a report run; carries the Markdown so the frontend can render it
+/// immediately.
 #[derive(Debug, Serialize)]
 pub struct GeneratedReport {
     pub report_id: String,
@@ -217,38 +188,17 @@ pub struct GeneratedReport {
     pub summary: ReportSummary,
 }
 
-/// Run one manual report end to end: gather the baseline market-data scan (Step
-/// 6), enforce its coverage floor, run the research half (Steps 7–11) and condense
-/// it into the analyst packet, invoke the agent, write the canonical Markdown file,
-/// and persist the record to SQLite. The adapters degrade partial failures to a
-/// recorded gap manifest rather than aborting, so the scan itself rarely errs; the
-/// `enforce_coverage` gate below is the single place a too-thin baseline fails the
-/// run, which `jobs::run_job` records as a failed job (`docs/scheduling.md §Offline
-/// Behavior`). The research half is fully fail-soft and never gates a run (see
-/// `assemble_research_packet`).
+/// Run one manual report end to end. The baseline adapters degrade partial failures to
+/// a gap manifest, so `enforce_coverage` is the single place a too-thin baseline fails
+/// the run (`docs/scheduling.md §Offline Behavior`); the research half is fully
+/// fail-soft and never gates a run (`assemble_research_packet`).
 ///
-/// `research` is the bundle of research-half stages (`ResearchStages`) — the live
-/// command supplies the real news / filter / router / search adapters; tests and
-/// offline smokes pass `ResearchStages::stub()`, keeping this the same offline-driven
-/// spine the agent and data halves already are.
-///
-/// `embedder` is the vector-memory seam (`docs/report-workflow.md §§4, 10, 17`;
-/// see `vector_memory`): the research half runs the two fail-soft retrieval pulls
-/// against it (`assemble_research_packet`), and after the report record persists the
-/// summary is embedded and stored best-effort. The live command supplies
-/// `OpenAiEmbedder` (the fixed internal `text-embedding-3-large` stage); tests pass
-/// `embedding::StubEmbedder`.
-///
-/// `ctx` is the run's progress/cancel context (`progress::RunContext`). Each stage
-/// below brackets its work in a `step_started` / `step_finished` pair so an open
-/// window can render the run live; the real data adapters, the research adapters, and
-/// the streaming model adapter emit their own finer-grained per-request / token events
-/// *inside* the baseline, research, and agent steps. A cancel requested mid-run is
-/// observed at the boundaries between stages (`bail_if_cancelled`) — a
-/// `reqwest::blocking` call already in flight is not interrupted — and surfaces as a
-/// recognizable error that `jobs::run_job` maps to a Cancelled outcome. Tests and
-/// offline smokes pass `RunContext::noop()`, which reports nowhere and is never
-/// cancelled, so this stays the same pure spine.
+/// `embedder` is the vector-memory seam (`docs/report-workflow.md §§4, 10, 17`). `ctx`
+/// is the run's progress/cancel context: each stage brackets its work in a
+/// `step_started` / `step_finished` pair, and a cancel is observed at the boundaries
+/// between stages (`bail_if_cancelled`) — a `reqwest::blocking` call already in flight
+/// is not interrupted — surfacing as an error `jobs::run_job` maps to a Cancelled
+/// outcome. Tests pass the stub bundles and `RunContext::noop()`.
 pub fn generate_report(
     agent: &dyn MainAgent,
     data: &dyn MarketDataSource,
@@ -258,41 +208,28 @@ pub fn generate_report(
     paths: &ReportPaths,
     ctx: &RunContext,
 ) -> Result<GeneratedReport> {
-    // The app-minted "as of" time for this run's baseline: the anchor both for the
-    // persisted snapshot's `captured_at` and for the elapsed interval in the change view
-    // below. Deliberately distinct from the report's agent-minted `created_at` (they
-    // differ by the agent's runtime); the snapshot↔report join is by `report_id`, not time.
+    // The app-minted "as of" time for this run's baseline, the anchor for the snapshot's
+    // `captured_at` and the change view's elapsed interval. Deliberately distinct from
+    // the agent-minted `created_at`; the snapshot↔report join is by `report_id`, not time.
     let as_of = chrono::Utc::now();
 
-    // The run cadence — the elapsed interval since the previous report — is computed
-    // independently of `deltas` (from the prior snapshot's timestamp alone), so an existing
-    // user whose prior baseline won't decode still gets the true interval rather than
-    // first-report treatment. Computed up here because the baseline scan reads it to size its
-    // cadence-dependent lookback windows (the earnings / economic-release calendars), so a
-    // monthly run's calendars cover the whole gap rather than just the last week; it is also
-    // threaded to the news gather, the analysts, and the main agent below.
+    // Computed independently of `deltas` (from the prior snapshot's timestamp alone) so
+    // a prior baseline that won't decode still gets the true interval rather than
+    // first-report treatment, and computed up here because the baseline scan sizes its
+    // cadence-dependent lookback windows (the earnings and release calendars) from it.
     let cadence = compute_cadence(&paths.db_path, as_of);
 
-    // The time-of-day sibling of cadence: where `as_of` falls relative to US equity
-    // regular trading hours (open / pre-open / closed / weekend), in market (US/Eastern)
-    // time. Threaded into the main agent so it narrates the day in the right tense — a
-    // live intraday move while the session is open vs a completed session once closed —
-    // rather than reading a mid-session run as a finished day.
     let market_clock = MarketClock::from_utc(as_of);
 
-    // The run's current date in market (Eastern) time — the recency anchor handed to the
-    // news-selection stages so "current / prior day" is measured against a real date rather
-    // than guessed from publish dates. Derived from the same `market_clock`.
+    // The run's date in market (Eastern) time: the recency anchor for the news-selection
+    // stages, never guessed from publish dates.
     let report_date = market_clock.report_date();
 
-    // Step 3: baseline market data is gathered before agent reasoning and is not
-    // optional (`docs/report-workflow.md §Step 3`). Each adapter records what it
-    // couldn't resolve in `baseline.gaps` instead of failing; the coverage gate then
-    // decides whether what landed clears the run's mandatory floor. A gate failure
-    // propagates unwrapped — like the agent error below — so `jobs::run_job` persists
-    // the floor message as the failed-job detail. The gaps that *don't* trip the floor
-    // ride into `MainAgentInput` and on into the model prompt, so the agent reasons over
-    // what's known-absent rather than inferring it.
+    // Each adapter records what it couldn't resolve in `baseline.gaps` instead of
+    // failing (`docs/report-workflow.md §Step 3`); the coverage gate then decides
+    // whether what landed clears the floor, and a gate failure propagates unwrapped so
+    // `jobs::run_job` persists the floor message as the failed-job detail. Gaps that
+    // don't trip the floor ride into the model prompt.
     ctx.step_started("baseline", "Gathering baseline market data");
     let baseline = match data.baseline_scan(cadence) {
         Ok(baseline) => baseline,
@@ -312,29 +249,23 @@ pub fn generate_report(
     ctx.step_finished("coverage", "ok", None);
     bail_if_cancelled(ctx)?;
 
-    // Compute the change view against the previous report's snapshot, and serialize this
-    // run's baseline for persistence — both before `baseline` is moved into the agent
-    // input. Reads/compute are best-effort (`None` on a first report or any failure); the
-    // serialization is captured here because `baseline` is consumed by the agent below.
+    // Both reads are best-effort (`None` on a first report or any failure) and run before
+    // `baseline` moves into the agent input; the serialization is captured for the same
+    // reason.
     let deltas = compute_prior_deltas(&paths.db_path, &baseline, as_of);
-    // The bounded history of the same level-bearing series across the retained
-    // snapshots — its own best-effort read, so a corrupt latest snapshot costs the
-    // change view without costing the history's other points.
+    // Its own best-effort read, so a corrupt latest snapshot costs the change view
+    // without costing the history's other points.
     let history = compute_baseline_history(&paths.db_path, &baseline, as_of);
     let baseline_json = serde_json::to_string(&baseline).ok();
 
-    // The bounded recent-report context for research routing — Step 8's
-    // thesis-continuity input. Best-effort like the deltas read above: a first
-    // report or any DB failure degrades to empty and never gates the run.
+    // Best-effort: a first report or any DB failure degrades to empty and never gates
+    // the run.
     let recent_reports = load_recent_report_context(&paths.db_path);
 
-    // Step 6: parse the research inbox (`docs/report-workflow.md §Step 6`,
-    // `docs/research-documents.md`). Fully fail-soft — an unlistable folder or an
-    // unparseable file never gates the run; failures are recorded for the panel's
-    // error state and the file is left in the inbox for the next run. The parsed
-    // documents ride into routing and the condensed packet below; the archive
-    // move waits for the persist step, so a failed or cancelled run never
-    // consumes the user's documents. Local CPU only — no request rows.
+    // Fully fail-soft (`docs/report-workflow.md §Step 6`, `docs/research-documents.md`):
+    // failures are recorded for the panel and the file is left in the inbox for the next
+    // run. The archive move waits for the persist step, so a failed or cancelled run
+    // never consumes the user's documents.
     ctx.step_started("inbox", "Reading research documents");
     let inbox_docs = process_research_inbox(&paths.inbox_dir, &paths.db_path, ctx);
     let inbox_status = if ctx.is_cancelled() {
@@ -345,10 +276,7 @@ pub fn generate_report(
     ctx.step_finished("inbox", inbox_status, None);
     bail_if_cancelled(ctx)?;
 
-    // Steps 7–11: the research half — news → filter → route → execute → condensed packet,
-    // fully fail-soft (`assemble_research_packet`), bracketed as one step with the adapters'
-    // per-request rows streaming inside it. Computed here, before `baseline` and `deltas`
-    // move into the agent input below.
+    // Fully fail-soft: the research half never gates the run (`assemble_research_packet`).
     ctx.step_started("research", "Gathering and condensing research");
     let AssembledResearch {
         packet: research_packet,
@@ -373,19 +301,12 @@ pub fn generate_report(
     ctx.step_finished("research", research_status, None);
     bail_if_cancelled(ctx)?;
 
-    // Step 2: the bounded recent prior-report context — structured summaries plus
-    // (truncated) Markdown bodies — the main agent reasons over for thesis continuity and
-    // that the Retrospective Audit (`§Step 5`) evaluates. Best-effort like the router's
-    // recent-report load above; never gates the run. Read here (not at the top with the
-    // router's) so the freshest persisted reports are picked up after any upstream work.
+    // Best-effort; never gates the run. Read here rather than at the top so the freshest
+    // persisted reports are picked up after any upstream work.
     let recent_reports_for_audit = load_recent_reports_for_audit(&paths.db_path);
 
-    // Steps 12–15: the three analyst agents read the same condensed packet concurrently
-    // (`docs/report-workflow.md §Step 12`). Run before `research_packet` moves into
-    // the agent input below. Unlike the fail-soft research half, an analyst failure is a
-    // job failure (`run_analysts`, `§Step 12`): the error propagates exactly like the agent
-    // step's, so `jobs::run_job` records it as a failed (or, under a concurrent cancel,
-    // cancelled) run. Each analyst streams its own per-request row inside this step.
+    // Unlike the fail-soft research half, an analyst failure is a job failure
+    // (`run_analysts`).
     ctx.step_started("analysts", "Running the analyst agents");
     let analyst_reviews = match run_analysts(
         analysts,
@@ -411,18 +332,12 @@ pub fn generate_report(
     let output = match agent.generate(MainAgentInput {
         baseline,
         deltas,
-        // The bounded multi-report history of the level-bearing series.
         history,
-        // The run cadence (independent of `deltas`) — the main agent's posture steer.
         cadence,
-        // The market-session state at `as_of` — the tense steer (live intraday vs closed).
         market_clock,
         research: Some(research_packet),
-        // Step 4 → Step 5: the pre-research pull steers the main agent's audit.
         audit_memory,
-        // Step 2 → Step 5: the recent reports are the audit's auditable object and its gate.
         recent_reports: recent_reports_for_audit,
-        // Steps 12–15 → Step 16: the analyst reviews the main agent synthesizes over.
         analyst_reviews,
     }) {
         Ok(output) => output,
@@ -442,8 +357,7 @@ pub fn generate_report(
     ctx.step_finished("agent", "ok", None);
     bail_if_cancelled(ctx)?;
 
-    // Persist: write the canonical Markdown file and the SQLite record. The `?`
-    // ergonomics stay inside an immediately-invoked closure so any failure still
+    // The `?` ergonomics stay inside an immediately-invoked closure so any failure still
     // flips the persist step to `failed` with its reason.
     ctx.step_started("persist", "Saving the report");
     let report = (|| -> Result<GeneratedReport> {
@@ -471,11 +385,9 @@ pub fn generate_report(
         )
         .context("inserting report record")?;
 
-        // Best-effort: persist this run's baseline snapshot for the next report's change
-        // view, then prune to the retention cap. A snapshot or prune failure must never
-        // lose a report that already generated and persisted, so errors are logged to
-        // stderr and swallowed rather than propagated — a persistent schema/permission
-        // fault would otherwise silently disable baseline history with no diagnostic trail.
+        // Best-effort: a snapshot or prune failure must never lose a report that already
+        // persisted, so errors are logged to stderr and swallowed; the log keeps a
+        // persistent schema/permission fault from silently disabling baseline history.
         if let Some(json) = &baseline_json {
             if let Err(e) = storage::insert_baseline_snapshot(
                 &conn,
@@ -496,13 +408,9 @@ pub fn generate_report(
             }
         }
 
-        // Best-effort: append truncation telemetry for any inbox document the
-        // Step-6 parser had to head-truncate — the accumulating evidence base
-        // that gates the reserved GPT-5-mini extraction stage. Same pure-local,
-        // no-paid-call posture as the snapshot block above (so no cancellation
-        // poll), and the same swallow-and-log discipline: a write failure must
-        // never lose a report that already persisted. No row when nothing
-        // overflowed, so the common case touches no DB.
+        // Best-effort truncation telemetry for head-truncated inbox documents, under the
+        // same swallow-and-log discipline as the snapshot block; no row when nothing
+        // overflowed.
         let truncations =
             collect_document_truncations(&inbox_docs, &summary.report_id, &as_of.to_rfc3339());
         if !truncations.is_empty() {
@@ -514,12 +422,9 @@ pub fn generate_report(
             }
         }
 
-        // Best-effort: record the parsed-document count — the denominator that
-        // turns the truncation count into a share-of-documents rate. Written
-        // whenever the inbox pass parsed at least one document, independent of
-        // whether any truncated, so a zero-truncation run still contributes to
-        // the denominator. No row when nothing parsed, so an empty inbox (the
-        // common case) touches no DB. Same swallow-and-log posture as above.
+        // Best-effort: the denominator for the truncation rate, written whenever at
+        // least one document parsed so a zero-truncation run still counts; same
+        // swallow-and-log posture as above.
         if !inbox_docs.is_empty() {
             let total_original_chars: u64 =
                 inbox_docs.iter().map(|d| d.original_chars as u64).sum();
@@ -537,19 +442,11 @@ pub fn generate_report(
             }
         }
 
-        // Best-effort: embed the structured summary and store it in vector memory —
-        // Step 17's "report summary to vector memory" leg (SQLite-backed `vector_memory`).
-        // Same posture as the snapshot block above: a flaky embedding call or a store
-        // failure costs this report's memory row, never the report itself, and leaves a
-        // diagnostic trail on stderr (plus a `failed` tracker row from the embedder).
-        //
-        // Both memory legs (this one and the learnings below) poll cancellation
-        // before each paid embedding call — the contract is that a run stops within
-        // a request or two of a cancel (`docs/run-tracking.md §Cancellation`), so a
-        // cancel landing during persist cuts the memory spend short rather than
-        // riding out up to six more calls. The report persisted above and stays: a
-        // cancel this late is honored as a successful run (`jobs::run_job`); only
-        // the best-effort memory rows are skipped, an already-accepted state.
+        // Best-effort, same posture as the snapshot block: an embedding or store failure
+        // costs this report's memory row, never the report. Both memory legs poll
+        // cancellation before each paid embedding call (`docs/run-tracking.md
+        // §Cancellation`); the report persisted above stays, and a cancel this late is
+        // honored as a successful run (`jobs::run_job`) with only the memory rows skipped.
         if !ctx.is_cancelled() {
             let memory_text = vector_memory::summary_memory_text(&summary);
             match embedder.embed(&memory_text) {
@@ -575,11 +472,7 @@ pub fn generate_report(
             }
         }
 
-        // Best-effort: embed and store the run's durable learnings — Step 17's
-        // second memory leg ("durable learnings identified by the main agent",
-        // `docs/report-workflow.md §Step 17`). Trim / cap / near-duplicate
-        // drop and the per-learning best-effort writes all live in
-        // `persist_durable_learnings`.
+        // Best-effort (`docs/report-workflow.md §Step 17`).
         persist_durable_learnings(
             &conn,
             embedder,
@@ -589,17 +482,13 @@ pub fn generate_report(
             ctx,
         );
 
-        // Best-effort: the 30-report retention cascade, run after this run's
-        // insert so the new report counts toward the window. No paid calls, so
-        // no cancellation poll; a cascade failure never fails the run.
+        // Run after this run's insert so the new report counts toward the window; a
+        // cascade failure never fails the run.
         prune_old_reports(&conn);
 
-        // Best-effort: file the successfully parsed inbox documents into the
-        // archive (`docs/research-documents.md §Processing at Job Start`) — only
-        // now, with the report persisted, does the run count as having consumed
-        // them. A failed move logs and leaves the file; the next run's re-parse
-        // is idempotent. A cancel landing during persist doesn't skip this leg:
-        // the documents were used by the report that just persisted.
+        // Only now, with the report persisted, does the run count as having consumed the
+        // documents (`docs/research-documents.md §Processing at Job Start`). A cancel
+        // during persist doesn't skip this leg: the persisted report used them.
         document_parser::archive_processed(&paths.inbox_dir, &paths.archive_dir, &inbox_docs);
 
         Ok(GeneratedReport {
@@ -616,28 +505,16 @@ pub fn generate_report(
     report
 }
 
-/// The 30-report retention cascade (`docs/storage.md §SQLite`): every report
-/// beyond the newest [`storage::REPORT_RETENTION`] is deleted together with its
-/// artifacts — the canonical Markdown file, its vector-memory summary row, its
-/// baseline-snapshot rows, its truncation-telemetry and parse-run rows, and
-/// finally the report row itself. Durable learnings survive by `kind`, never
-/// touched whatever their `report_id`
-/// (`vector_memory::delete_report_summary`). There is no HTML leg — HTML is
-/// rendered on demand for display/PDF and never persisted (settled 2026-06-12),
-/// so the cascade has nothing to remove.
-///
-/// Per-evictee best-effort, never failing the run. The file leg goes first: a
-/// file that is already gone counts as removed, but any other removal failure
-/// skips that evictee's DB legs — the row keeps pointing at the still-existing
-/// file and the evictee is simply re-selected on the next run's cascade —
-/// rather than deleting the row and orphaning an untracked file. The four DB
-/// legs then commit or roll back as one transaction: re-selection reads the
-/// `reports` table, so deleting the row while an earlier leg failed would
-/// strand that leg's rows with no retry path — and neither the vector summary
-/// row nor the document-diagnostics rows have any other reaper, leaving stale
-/// memory retrievable forever and truncation/parse-run rows unbounded. A rolled-back
-/// evictee is re-selected next run, where its already-removed file reads as
-/// NotFound and the DB legs run again.
+/// The report retention cascade (`docs/storage.md §SQLite`): every report beyond the
+/// newest [`storage::REPORT_RETENTION`] is deleted with its artifacts; durable
+/// learnings survive by `kind`. Per-evictee best-effort, never failing the run. The
+/// file leg goes first: a file already gone counts as removed, but any other removal
+/// failure skips that evictee's DB legs (it is re-selected next run) rather than
+/// deleting the row and orphaning an untracked file. The DB legs commit or roll back
+/// as one transaction: re-selection reads the `reports` table, so deleting the row
+/// while another leg failed would strand that leg's rows with no retry path, and
+/// neither the vector summary row nor the document-diagnostics rows have another
+/// reaper.
 fn prune_old_reports(conn: &rusqlite::Connection) {
     let evictees = match storage::select_reports_beyond_retention(conn, storage::REPORT_RETENTION) {
         Ok(evictees) => evictees,
@@ -669,20 +546,13 @@ fn prune_old_reports(conn: &rusqlite::Connection) {
     }
 }
 
-/// One evictee's five SQLite legs — vector summary, baseline snapshots,
-/// truncation telemetry, parse-run counts, report row — committed together or
-/// not at all (`unchecked_transaction`: the helpers take `&Connection`, and
-/// `Transaction` derefs to it). The two document-diagnostics legs are
-/// load-bearing, not belt-and-braces like the snapshot leg: neither
-/// `document_truncations` (numerator) nor `document_parse_runs` (denominator)
-/// has a self-cap, so this report-id join is the only thing that bounds them —
-/// and they delete together so the truncation rate's window stays aligned.
-/// An independent self-cap (mirroring `baseline_snapshots`' 14-row prune, to let
-/// truncation history outlive the 30-report window) was *considered and
-/// deliberately rejected*: pruning the two tables on separate schedules would
-/// orphan a numerator from its denominator (the `unaligned_truncations` cohort
-/// gap the reader already guards), so cascade-only is the design here, not an
-/// oversight. Revisit only if a longer evidence window is genuinely wanted.
+/// One evictee's SQLite legs, committed together or not at all (`unchecked_transaction`:
+/// the helpers take `&Connection`). The two document-diagnostics legs are load-bearing:
+/// neither `document_truncations` (numerator) nor `document_parse_runs` (denominator)
+/// has a self-cap, so this report-id join is the only thing that bounds them, and they
+/// delete together so the truncation rate's window stays aligned. A separate self-cap
+/// for the two tables was deliberately rejected: pruning them on separate schedules
+/// would orphan a numerator from its denominator.
 fn delete_report_db_rows(conn: &rusqlite::Connection, report_id: &str) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     vector_memory::delete_report_summary(&tx, report_id)?;
@@ -694,55 +564,33 @@ fn delete_report_db_rows(conn: &rusqlite::Connection, report_id: &str) -> Result
     Ok(())
 }
 
-/// What [`assemble_research_packet`] hands back: the Step-11 condensed packet plus the
-/// Step-4 pre-research memory pull, surfaced separately so the main agent's retrospective
-/// audit can consume it. The two memory pulls stay on distinct channels — `packet.memory`
-/// is the Step-10 research-informed pull, `audit_memory` is the Step-4 pull — per the doc's
-/// replace-not-merge rule (`docs/report-workflow.md §Step 10`).
+/// The condensed packet plus the Step-4 pre-research pull on its own channel, distinct
+/// from `packet.memory` (the Step-10 pull; `docs/report-workflow.md §Step 10`).
 struct AssembledResearch {
     packet: ResearchPacket,
-    /// The Step-4 pre-research pull's prompt fragments (most relevant first); empty when
-    /// nothing was recalled or the pull was skipped (early run, retrieval failure, cancel).
+    /// Most relevant first; empty when nothing was recalled or the pull was skipped
+    /// (retrieval failure, cancel).
     audit_memory: Vec<String>,
 }
 
-/// Run the research half (Steps 7–11) and condense it into the packet the main agent
-/// reasons over (`docs/report-workflow.md §§7–11`). **Fully fail-soft** — the
-/// locked posture for this slice: a failure in any stage degrades that stage to empty and
-/// the phase continues, so a flaky news, headline-filter, or routing call yields a thinner
-/// report rather than failing the run. Only the baseline coverage floor gates a run; the
-/// research half never does. (This is a conscious deviation from
-/// `docs/report-workflow.md §250`, which treats a failing model call in any stage as
-/// a job failure — recorded as a flag for the session-end build-spec note.)
+/// Run the research half and condense it into the packet the main agent reasons over
+/// (`docs/report-workflow.md §§7–11`). Fully fail-soft: a failure in any stage degrades
+/// that stage to empty and the phase continues, so this always returns a packet, never
+/// an error; only the baseline coverage floor gates a run. Cancellation is polled at
+/// each stage boundary here and at each request boundary inside the executor, so a
+/// cancel mid-research skips the remaining model calls rather than spending them.
 ///
-/// The bounded executor is already fail-soft per query (`research_executor`) and
-/// `build_condensed_packet` is pure, so this always returns a packet — never an error.
-/// Per-call progress rows live inside the real adapters; cancellation is polled at each
-/// stage boundary here (before the filter call, the Step-4 pull, the router call, and
-/// the Step-10 pull) and at each request boundary inside the executor, so a cancel
-/// requested mid-research skips the remaining model calls rather than spending them
-/// before the run stops. The caller brackets this under one `research` step.
-/// `baseline`, `deltas`, and `recent_reports` are borrowed (the caller still owns
-/// them); the router input keeps its own clones.
-///
-/// Both vector-memory retrievals live here (`retrieve_memory`, fail-soft): the Step-4
-/// pre-research pull — queried from the recent report context, baseline, and change
-/// view — is the ephemeral pull that steers investigation; it feeds the router here and
-/// is also returned as [`AssembledResearch::audit_memory`] so the main agent's
-/// retrospective audit (`§Step 5`) consumes the same pull on its own channel (the doc's
-/// replace-not-merge rule keeps it *out* of the packet). The Step-10 post-research pull —
-/// queried from the executor's evidence — is the one the condensed packet carries to the
-/// main agent. `embedder` is the same fixed embedding stage the Step-17 persist write
-/// uses; `db_path` locates the store.
-#[allow(clippy::too_many_arguments)] // one parameter per Step-6/7/8/10 input, each documented above
+/// The Step-4 pre-research pull steers investigation: it feeds the router and is
+/// returned as [`AssembledResearch::audit_memory`] on its own channel, kept out of the
+/// packet. The Step-10 post-research pull is the one the packet carries.
+#[allow(clippy::too_many_arguments)] // one parameter per research-half input
 fn assemble_research_packet(
     research: &ResearchStages,
     baseline: &BaselineMarketData,
     deltas: Option<&BaselineDeltas>,
     cadence: cadence::ReportCadence,
-    // The run's current date (`YYYY-MM-DD`, market/Eastern), the recency anchor for the
-    // news-selection stages (filter + router) so "current / prior day" is measured against
-    // a real date. `None` only off the live path (no `as_of`); a live run always supplies it.
+    // `YYYY-MM-DD` in market (Eastern) time, the news stages' recency anchor; `None`
+    // only off the live path.
     report_date: Option<&str>,
     recent_reports: &[ReportSummary],
     inbox_docs: &[ParsedResearchDoc],
@@ -750,10 +598,8 @@ fn assemble_research_packet(
     db_path: &std::path::Path,
     ctx: &RunContext,
 ) -> AssembledResearch {
-    // Step 7: gather raw headlines (Tavily + GDELT + FMP Articles) and run the
-    // deterministic dedup pre-pass. The news adapters size their recency windows to
-    // the run cadence (the elapsed interval since the last report), so a daily run
-    // isn't fed a fixed week of news and a monthly run isn't starved of it.
+    // The news adapters size their recency windows to the cadence, so a daily run isn't
+    // fed a fixed week of news and a monthly run isn't starved of it.
     let headlines = match research.news.gather(cadence) {
         Ok(raw) => news::dedupe_headlines(raw),
         Err(e) => {
@@ -762,11 +608,8 @@ fn assemble_research_packet(
         }
     };
 
-    // Step 7 (filter): cluster the headlines into the ~10 important stories. An empty gather
-    // has nothing to cluster, so skip the model call entirely — and a cancel requested during
-    // the gather sweep short-circuits here too, so a stop never still spends the (up to ~120s)
-    // GPT-5-mini call. Cooperative cancellation is polled at this stage boundary, mirroring the
-    // pipeline's step boundaries; the executor below polls it at each request boundary.
+    // An empty gather skips the model call entirely, and a cancel during the gather
+    // short-circuits here so a stop never still spends the filter call.
     let clusters = if headlines.is_empty() || ctx.is_cancelled() {
         Vec::new()
     } else {
@@ -779,13 +622,7 @@ fn assemble_research_packet(
         }
     };
 
-    // Step 4: the pre-research memory pull — recalled against where the market
-    // actually is this period (recent context + baseline + change view) to steer
-    // investigation. Ephemeral: it feeds routing here and is returned as
-    // `audit_memory` for the main agent's retrospective audit (`§Step 5`), but the
-    // packet below carries the Step-10 pull instead (`§Step 10`, replace-not-merge).
-    // The cancel guard mirrors the filter's: a cancel must not spend the embedding
-    // call.
+    // A cancel must not spend the embedding call.
     let pre_memory = if ctx.is_cancelled() {
         Vec::new()
     } else {
@@ -797,10 +634,7 @@ fn assemble_research_packet(
         )
     };
 
-    // Step 8: route the baseline, change view, clusters, recent-report summaries, and
-    // recalled memory into a bounded research plan. Cancel checkpoint before the Sonnet
-    // call, mirroring the filter guard: a cancel that lands between stages must not
-    // still spend the routing call.
+    // A cancel between stages must not spend the routing call.
     let plan = if ctx.is_cancelled() {
         ResearchPlan::default()
     } else {
@@ -809,16 +643,14 @@ fn assemble_research_packet(
             deltas: deltas.cloned(),
             clusters: clusters.clone(),
             recent_reports: recent_reports.to_vec(),
-            // Clone: routing consumes the Step-4 pull here, and it is also returned
-            // below as `audit_memory` for the main agent's audit. A ~5-fragment Vec.
+            // Cloned because the pull is also returned below as `audit_memory`.
             memory: pre_memory.clone(),
-            // Routing picks topics, so it gets each document's head, not the
-            // full condensed text the packet carries below.
+            // Routing picks topics, so it gets each document's head, not the full
+            // condensed text the packet carries below.
             inbox_documents: inbox_docs
                 .iter()
                 .map(ParsedResearchDoc::router_excerpt)
                 .collect(),
-            // The same recency anchor the filter got, so routing weighs freshness too.
             report_date: report_date.map(str::to_string),
         }) {
             Ok(plan) => plan,
@@ -829,10 +661,8 @@ fn assemble_research_packet(
         }
     };
 
-    // Step 9: execute the plan under the three hard bounds (`research_executor`), with the
-    // change view's delta-rules driving any depth-2 follow-ups (`select_branch_policy`). The
-    // clock anchors here so the 30-minute budget covers the research phase, not the baseline
-    // scan that preceded it.
+    // The clock anchors here so the research budget covers the research phase, not the
+    // baseline scan that preceded it.
     let clock = WallClock::new();
     let policy = select_branch_policy(deltas);
     let evidence = execute_research(
@@ -843,9 +673,7 @@ fn assemble_research_packet(
         ctx,
     );
 
-    // Step 10: the post-research memory pull — recalled against what the research
-    // actually found, and the only memory the packet carries forward. Same cancel
-    // guard as the stages above.
+    // Recalled against what the research found; the only memory the packet carries.
     let memory = if ctx.is_cancelled() {
         Vec::new()
     } else {
@@ -857,8 +685,7 @@ fn assemble_research_packet(
         )
     };
 
-    // Step 11: condense everything into the token-bounded packet. The inbox
-    // blocks are already bounded by `document_parser`'s char budgets.
+    // The inbox blocks are already bounded by `document_parser`'s char budgets.
     let packet = build_condensed_packet(
         baseline.clone(),
         deltas.cloned(),
@@ -871,20 +698,15 @@ fn assemble_research_packet(
             .collect(),
     );
 
-    // The Step-4 pull rides back out alongside the packet so the main agent's audit
-    // gets it on its own channel, distinct from `packet.memory` (the Step-10 pull).
     AssembledResearch {
         packet,
         audit_memory: pre_memory,
     }
 }
 
-/// The Step-6 inbox stage: parse every supported document in the inbox
-/// (`document_parser::process_inbox`, fail-soft with per-file cancellation
-/// polling), log each failure, and record this pass's failure set for the
-/// Research Documents panel's error states. The failure write is best-effort
-/// (stderr on error, never a gate) and is skipped entirely on a cancelled pass —
-/// a partial pass must not clobber the recorded state of files it never reached.
+/// Parse the inbox (fail-soft) and record this pass's failure set for the Research
+/// Documents panel. The failure write is best-effort and skipped on a cancelled pass: a
+/// partial pass must not clobber the recorded state of files it never reached.
 fn process_research_inbox(
     inbox_dir: &std::path::Path,
     db_path: &std::path::Path,
@@ -905,9 +727,8 @@ fn process_research_inbox(
     outcome.docs
 }
 
-/// Replace the recorded parse-failure set with this pass's
-/// (`storage::replace_parse_failures` — the table holds "the failures of the
-/// most recent inbox pass", so a healed or deleted file self-clears).
+/// The table holds the failures of the most recent inbox pass, so a healed or deleted
+/// file self-clears.
 fn record_parse_failures(
     db_path: &std::path::Path,
     failures: &[crate::document_parser::ParseFailure],
@@ -928,12 +749,8 @@ fn record_parse_failures(
     storage::replace_parse_failures(&conn, &rows)
 }
 
-/// Build the truncation-telemetry rows for this run: one per inbox document the
-/// parser had to head-truncate (`ParsedResearchDoc::truncated`), stamped with
-/// the report it persisted under and the run's `captured_at` scan time. The pure
-/// derivation is split out as the unit-test seam (the persist-step call that
-/// writes these is best-effort and untestable in isolation). Whole documents
-/// produce no row, so an inbox that never overflows leaves the table untouched.
+/// One row per head-truncated inbox document; the pure derivation is split out as the
+/// unit-test seam. Whole documents produce no row.
 fn collect_document_truncations(
     inbox_docs: &[ParsedResearchDoc],
     report_id: &str,
@@ -953,11 +770,9 @@ fn collect_document_truncations(
         .collect()
 }
 
-/// Cancel checkpoint between pipeline stages. A cancel requested mid-run lands
-/// here: the run stops with a recognizable error that `jobs::run_job` reclassifies
-/// as a Cancelled outcome (keyed off the same shared cancel flag) rather than a
-/// Failed one. An in-flight HTTP request is never interrupted — the cancel takes
-/// effect at the next boundary.
+/// Cancel checkpoint between pipeline stages: the run stops with an error
+/// `jobs::run_job` reclassifies as Cancelled (off the shared flag) rather than Failed.
+/// An in-flight HTTP request is never interrupted.
 fn bail_if_cancelled(ctx: &RunContext) -> Result<()> {
     if ctx.is_cancelled() {
         bail!("run cancelled before completion");
@@ -965,17 +780,11 @@ fn bail_if_cancelled(ctx: &RunContext) -> Result<()> {
     Ok(())
 }
 
-/// The run's report cadence: the elapsed interval since the previous report,
-/// classified ([`cadence::ReportCadence`]). Deliberately computed from the latest
-/// baseline snapshot's `captured_at` *alone* — the baseline JSON is never decoded —
-/// so a prior report whose payload won't deserialize still yields the true interval.
-/// This is the one place cadence must *not* reuse [`compute_prior_deltas`]: that
-/// collapses "first report", a DB error, and an undecodable prior into the same
-/// `None`, which would mislabel an existing user's run as a first report (wrong news
-/// windows, "first report" prompt wording). Here only a genuine absence degrades to
-/// the first-report cadence: no prior snapshot, a DB read error, or a stored
-/// timestamp that won't parse. The change view (`compute_prior_deltas`) still
-/// degrades independently — a corrupt prior loses the diff but not the cadence.
+/// The run's report cadence, computed from the latest snapshot's `captured_at` alone —
+/// the baseline JSON is never decoded — so an undecodable prior still yields the true
+/// interval. Deliberately not built on [`compute_prior_deltas`], which collapses a
+/// first report, a DB error and an undecodable prior into the same `None` and would
+/// mislabel an existing user's run as a first report.
 fn compute_cadence(
     db_path: &std::path::Path,
     as_of: chrono::DateTime<chrono::Utc>,
@@ -1001,16 +810,11 @@ fn elapsed_days_since(
     ((as_of - prior_at).num_seconds() as f64 / 86_400.0).max(0.0)
 }
 
-/// Best-effort change view for this run: read the previous report's baseline snapshot and
-/// diff this run's scan against it (`baseline_delta::compute_deltas`), anchored on the
-/// elapsed interval `as_of − captured_at`. Returns `None` — and the run proceeds without
-/// deltas — for the first report (no prior snapshot), any DB error, or a prior blob that
-/// won't decode. The deltas are additive context, never a gate, so every failure degrades
-/// to `None`. Routed through the shared [`read_db_fail_soft`] shell (`Option::default()`
-/// is `None`), so a DB-level failure now leaves the same labeled stderr trace as the
-/// other fail-soft reads — only an absent prior snapshot is the silent, expected `None`.
-/// (Cadence is computed separately — see [`compute_cadence`] — precisely so an
-/// undecodable prior here still yields the true interval there.)
+/// Best-effort change view against the previous report's snapshot. `None` — the run
+/// proceeds without deltas — for a first report, any DB error, or a prior blob that
+/// won't decode; only the absent prior is the silent `None`, the rest leave a labeled
+/// stderr trace through [`read_db_fail_soft`]. Cadence is computed separately
+/// ([`compute_cadence`]) so an undecodable prior here still yields the true interval.
 fn compute_prior_deltas(
     db_path: &std::path::Path,
     current: &BaselineMarketData,
@@ -1025,14 +829,10 @@ fn compute_prior_deltas(
         let prior_at = chrono::DateTime::parse_from_rfc3339(&captured_at)
             .context("parsing prior snapshot captured_at")?
             .with_timezone(&chrono::Utc);
-        // Non-negative: the interval is prompt-facing (rendered into the
-        // cadence-posture block and carried on the serialized delta record), and a
-        // backwards clock step between runs would otherwise hand the agent a
-        // negative "days since the last report". The threshold normalization already
-        // floors a non-positive interval (`research_executor::cadence_scale`) and the
-        // cadence bands read zero as `Intraday`, which is the honest bucket for two
-        // runs at effectively the same instant — so clamping here costs nothing the
-        // downstream reads wanted.
+        // Non-negative: the interval is prompt-facing, and a backwards clock step between
+        // runs would otherwise hand the agent a negative "days since the last report";
+        // the cadence bands read zero as `Intraday`, the honest bucket for two runs at
+        // the same instant.
         let elapsed_days = elapsed_days_since(as_of, prior_at);
         Ok(Some(baseline_delta::compute_deltas(
             current,
@@ -1042,12 +842,9 @@ fn compute_prior_deltas(
     })
 }
 
-/// Best-effort baseline history for this run (`baseline_history::build_history`): every
-/// retained snapshot, newest first, joined with this run's scan. A snapshot whose blob
-/// won't decode or whose `captured_at` won't parse loses only its own point, with a
-/// labeled stderr line; a DB failure degrades the whole history to `None` through the
-/// shared [`read_db_fail_soft`] shell. Additive context like the change view — never a
-/// gate (`docs/storage.md §Baseline Snapshots`).
+/// Best-effort: a snapshot whose blob won't decode or whose `captured_at` won't parse
+/// loses only its own point, while a DB failure degrades the whole history to `None`.
+/// Never a gate (`docs/storage.md §Baseline Snapshots`).
 fn compute_baseline_history(
     db_path: &std::path::Path,
     current: &BaselineMarketData,
@@ -1087,32 +884,21 @@ fn decode_prior_baseline(row: &storage::StoredBaselineSnapshot) -> Result<PriorB
     })
 }
 
-/// Bounded count of recent report summaries handed to research routing — the
-/// "recent Markdown report context" input of `docs/report-workflow.md
-/// §Step 8`; §Step 2 requires only "a bounded set". Three reports ≈ three weeks
-/// of thesis arc at negligible prompt cost.
+/// Bounded count of recent report summaries handed to research routing
+/// (`docs/report-workflow.md §Step 8`); three ≈ three weeks of thesis arc at
+/// negligible prompt cost.
 const ROUTER_RECENT_REPORTS: u32 = 3;
 
-/// Best-effort recent-report context for this run: the most recent prior report
-/// summaries, newest first (`storage::list_recent_reports`). The structured
-/// summary carries the continuity signal routing needs — stance, key risks,
-/// unresolved questions, forward themes — without the full Markdown bodies (those
-/// belong to the Step-2 main-agent context, a later slice). Additive context like
-/// the change view above, never a gate: a first report or any DB failure degrades
-/// to empty rather than propagating.
+/// Best-effort, never a gate: a first report or any DB failure degrades to empty.
 fn load_recent_report_context(db_path: &std::path::Path) -> Vec<ReportSummary> {
     read_db_fail_soft(db_path, "research recent-report context", |conn| {
         storage::list_recent_reports(conn, ROUTER_RECENT_REPORTS)
     })
 }
 
-/// Run a best-effort `open + init_schema + read` against the report DB, degrading to
-/// `T::default()` with a `context`-prefixed stderr log on any failure. Owns the shared
-/// shape behind every fail-soft DB read in the pipeline — the recent-report context
-/// loaders, the vector-memory pulls, and the prior-delta change view — so each caller
-/// carries only its own query and post-read work, never the open/init/degrade shell.
-/// Never gates the run: `T::default()` is the empty `Vec`/`None`/zero the caller falls
-/// back to, and the labeled stderr line is the only trace a degraded read leaves.
+/// Best-effort `open + init_schema + read` against the report DB, degrading to
+/// `T::default()` with a `context`-prefixed stderr log on any failure: the shared shell
+/// behind every fail-soft DB read in the pipeline, never a gate.
 fn read_db_fail_soft<T: Default>(
     db_path: &std::path::Path,
     context: &str,
@@ -1129,28 +915,19 @@ fn read_db_fail_soft<T: Default>(
     })
 }
 
-/// Bounded count of recent prior reports handed to the main agent as Step-2
-/// context (`docs/report-workflow.md §Step 2`). Matches `ROUTER_RECENT_REPORTS`
-/// today and sits inside the audit's "usually 2–6 reports" window (`§Step 5`); a
-/// separate constant so the audit window can widen without moving routing's. Tunable
-/// alongside the other prompt-budget caps.
+/// Bounded count of recent prior reports handed to the main agent
+/// (`docs/report-workflow.md §Step 2`); a separate constant from
+/// `ROUTER_RECENT_REPORTS` so the audit window can widen without moving routing's.
 const MAIN_AGENT_RECENT_REPORTS: u32 = 3;
 
 /// Per-report ceiling on the Markdown body carried in the Step-2 context, in chars
-/// (~5k tokens). Sized to clear a typical full report whole, so only an unusually
-/// long one is head-truncated, visibly (a marker matching the inbox-doc convention
-/// the system prompt already explains). Applied per report, so the three-report
-/// Step-2 context can carry up to 3× this. Tunable alongside the packet caps.
+/// (~5k tokens), sized to clear a typical full report whole; applied per report, so
+/// the context can carry up to 3× this.
 const RECENT_REPORT_BODY_CAP: usize = 20_000;
 
-/// Best-effort Step-2 recent prior-report context for the main agent: the most recent
-/// reports' structured summaries paired with their (head-truncated) Markdown bodies,
-/// newest first (`storage::list_recent_reports_with_paths` plus one file read per
-/// report). The body is the auditable object the Retrospective Audit reasons over
-/// (`§Step 5`); the summary carries the thesis-continuity metadata. Additive and
-/// fail-soft like [`load_recent_report_context`]: a DB failure degrades the whole list
-/// to empty, an unreadable Markdown file drops that one report's body to empty (the
-/// summary still carries) — never gates the run.
+/// Best-effort like [`load_recent_report_context`]: a DB failure degrades the whole
+/// list to empty, and an unreadable Markdown file drops that one report's body to
+/// empty while its summary still carries.
 fn load_recent_reports_for_audit(db_path: &std::path::Path) -> Vec<RecentReport> {
     let rows = read_db_fail_soft(db_path, "main-agent recent-report context", |conn| {
         storage::list_recent_reports_with_paths(conn, MAIN_AGENT_RECENT_REPORTS)
@@ -1170,9 +947,8 @@ fn load_recent_reports_for_audit(db_path: &std::path::Path) -> Vec<RecentReport>
         .collect()
 }
 
-/// Head-truncate a report body to `cap` chars, appending a visible marker (matching the
-/// inbox-doc convention) when it is cut. Char-boundary safe — counts and slices by chars,
-/// never bytes.
+/// Head-truncate a report body to `cap` chars with a visible marker when cut; counts
+/// and slices by chars, never bytes.
 fn truncate_report_body(body: &str, cap: usize) -> String {
     let total = body.chars().count();
     if total <= cap {
@@ -1182,53 +958,29 @@ fn truncate_report_body(body: &str, cap: usize) -> String {
     format!("{head}\n[truncated — showing the first {cap} of {total} characters]")
 }
 
-/// Bounded count of fragments each vector-memory pull recalls (Steps 4 and 10).
-/// Selectivity comes from top-k over a small corpus (≤30 summaries plus
-/// learnings) — no similarity floor; threshold tuning is deferred alongside the
-/// brancher's ("Vector memory is used selectively",
-/// `docs/report-workflow.md §Step 4`).
+/// Fragments each vector-memory pull recalls. Selectivity comes from top-k over a small
+/// corpus; there is no similarity floor (`docs/report-workflow.md §Step 4`).
 const MEMORY_TOP_K: usize = 5;
 
-/// Per-report cap on durable-learning rows the Step-17 persist write accepts.
-/// An app-layer bound, like the executor's limits — the prompt asks the model to
-/// self-bound ("never more than five"), but the store's growth must not depend
-/// on the model honoring prose; learnings are never deleted, so overflow here is
-/// permanent. Not doc-pinned: tunable alongside `MEMORY_TOP_K` and the brancher
-/// thresholds. Overflow is truncated with a stderr note, never a failed report.
+/// Per-report cap on durable-learning rows the persist write accepts: the store's
+/// growth must not depend on the model honoring the prompt's self-bound, and learnings
+/// are never deleted, so overflow would be permanent. Overflow is truncated with a
+/// stderr note, never a failed report.
 const LEARNINGS_PER_REPORT_CAP: usize = 5;
 
-/// Cosine-similarity threshold at or above which a freshly embedded durable
-/// learning is treated as a near-restatement of one the store already holds and
-/// dropped before it spends a row. An app-layer policy like the cap above, not a
-/// model contract: the prompt can't be trusted to avoid paraphrasing a prior
-/// run's lesson, and learnings are never deleted, so unbounded restatement is
-/// permanent growth that dilutes retrieval. Calibrated to real
-/// `text-embedding-3-large` geometry by `tuning_dedup_threshold_calibration`:
-/// genuine restatements embed at ~0.72–0.81 cosine while distinct lessons cap at
-/// ~0.53, so 0.65 sits in that measured gap — catching real paraphrases without
-/// ever merging two distinct lessons. (The original 0.93 was a conservative guess
-/// that proved vacuously high: nothing real reached it, so dedup never fired.) Not
-/// doc-pinned, tunable alongside `MEMORY_TOP_K` and `LEARNINGS_PER_REPORT_CAP`. A
-/// dedup-scan failure fails *open* (the learning is kept), so the check can only
-/// ever drop a redundant row, never lose a real one.
+/// Cosine similarity at or above which a fresh durable learning is dropped as a
+/// near-restatement of one the store already holds; learnings are never deleted, so
+/// unbounded restatement is permanent growth that dilutes retrieval. Calibrated against
+/// `text-embedding-3-large` geometry by `tuning_dedup_threshold_calibration`: genuine
+/// restatements embed at ~0.72–0.81 cosine while distinct lessons cap at ~0.53, so 0.65
+/// sits in that measured gap. A dedup-scan failure fails open (the learning is kept).
 const LEARNING_DEDUP_THRESHOLD: f64 = 0.65;
 
-/// One best-effort vector-memory pull: embed the query text, search the store
-/// across both kinds, and return the hits in their shared prompt form, most
-/// relevant first. Additive context like the reads above, never a gate — any
-/// failure (an unopenable store, a flaky embedding call) degrades to empty with
-/// a stderr note (`label` names which pull), via the shared
-/// [`read_db_fail_soft`] shell. Two cheap guards keep early runs free: an empty
-/// query has nothing to recall against (checked here, before the DB is even
-/// opened), and an empty store can't return hits — both skip the paid embedding
-/// call entirely. An oversized query is truncated rather than rejected by the
-/// provider and lost — the cap now lives in the adapters
-/// ([`crate::embedding::EMBEDDING_INPUT_MAX_BYTES`]) so it holds for the two
-/// persistence paths too, which never capped their own input. The rationale it
-/// carried is single-homed there: the query builders bound line *counts*, not sizes
-/// (the stored summaries' optional arrays, topic rationales and web source titles are
-/// all length-unbounded), so a pathological query would draw a 400 and cost the whole
-/// pull, where truncating costs only the recall tail.
+/// One best-effort vector-memory pull, most relevant first; any failure degrades to
+/// empty with a stderr note (`label` names which pull). An empty query and an empty
+/// store both skip the paid embedding call. An oversized query is truncated in the
+/// adapters ([`crate::embedding::EMBEDDING_INPUT_MAX_BYTES`]) rather than rejected by
+/// the provider, which would cost the whole pull.
 fn retrieve_memory(
     db_path: &std::path::Path,
     embedder: &dyn Embedder,
@@ -1255,21 +1007,14 @@ fn retrieve_memory(
     )
 }
 
-/// Embed and store a run's durable learnings — Step 17's second memory leg
-/// (`docs/report-workflow.md §Step 17`). The app-layer bounds live here,
-/// not the model contract: entries are trimmed, empties dropped, the rest capped
-/// at [`LEARNINGS_PER_REPORT_CAP`], and each survivor checked against the store
-/// for a near-restatement before a row is spent. Each learning is its own atomic
-/// unit (one embedding per learning, `docs/storage.md §Embeddings`) and every
-/// write is independently best-effort — one failed embed, dedup scan, or insert
-/// costs that learning, never its siblings or the report. Dedup reuses the
-/// embedding just computed (no extra paid call) and scans the store *including*
-/// this run's own prior inserts, so two near-identical learnings in one run
-/// collapse to one; a scan error fails open and keeps the learning. Cancellation
-/// is polled before each embedding call, like the executor, so a cancel landing
-/// mid-persist stops spending rather than riding out the remaining learnings.
-/// `report_id` is provenance only: the `kind` column, not the id, is what makes
-/// learnings survive the retention cascade.
+/// Embed and store a run's durable learnings (`docs/report-workflow.md §Step 17`,
+/// `docs/storage.md §Embeddings`). The app-layer bounds live here, not in the model
+/// contract. Every write is independently best-effort: one failed embed, dedup scan
+/// or insert costs that learning, never its siblings or the report. Dedup reuses the
+/// embedding just computed and scans the store including this run's own prior
+/// inserts, so two near-identical learnings in one run collapse to one. `report_id` is
+/// provenance only: the `kind` column is what makes learnings survive the retention
+/// cascade.
 fn persist_durable_learnings(
     conn: &rusqlite::Connection,
     embedder: &dyn Embedder,
@@ -1303,9 +1048,8 @@ fn persist_durable_learnings(
                 continue;
             }
         };
-        // Drop a near-restatement of a learning the store already holds. Fails
-        // open: a scan error treats the learning as novel and keeps it, so dedup
-        // can only ever drop a redundant row, never lose a real one.
+        // Fails open: a scan error keeps the learning, so dedup can only ever drop a
+        // redundant row, never lose a real one.
         match vector_memory::nearest_learning_similarity(conn, &embedding) {
             Ok(Some(sim)) if sim >= LEARNING_DEDUP_THRESHOLD => {
                 eprintln!(
@@ -1331,18 +1075,15 @@ fn persist_durable_learnings(
     }
 }
 
-/// The minimum fraction of a Step-3 group's *expected* series that must resolve for the
-/// group to count as present for the coverage floor. "Expected" excludes permanently
-/// out-of-scope items (premium / discontinued series), so a series a deployment never had
-/// doesn't drag the ratio down — only this-run failures (`Unavailable` / `Rejected` /
-/// `Malformed` gaps) count against it. 0.6 ≈ three of four indices, or ~60% of a posture
-/// group.
+/// The minimum fraction of a group's expected series that must resolve for the coverage
+/// floor. "Expected" excludes permanently out-of-scope items, so only this-run failures
+/// (`Unavailable` / `Rejected` / `Malformed` gaps) count against it. 0.6 ≈ three of
+/// four indices.
 const COVERAGE_FLOOR: f64 = 0.6;
 
-/// One group's coverage: resolved series over expected (resolved + this-run gaps).
-/// Permanent (`OutOfScope`) gaps are excluded from the denominator. An expected count of
-/// zero reads as fully covered, but `clears_floor` additionally requires a non-empty
-/// group, so a vacuous 1.0 over zero series can't satisfy the floor.
+/// Resolved series over expected (resolved + this-run gaps). An expected count of zero
+/// reads as fully covered, but `clears_floor` additionally requires a non-empty group,
+/// so a vacuous 1.0 over zero series can't satisfy the floor.
 fn group_coverage(data: &BaselineMarketData, group: GroupKind) -> f64 {
     let present = group_present_count(data, group);
     let missing_this_run = data
@@ -1358,7 +1099,6 @@ fn group_coverage(data: &BaselineMarketData, group: GroupKind) -> f64 {
     }
 }
 
-/// How many series resolved in `group`.
 fn group_present_count(data: &BaselineMarketData, group: GroupKind) -> usize {
     match group {
         GroupKind::Indices => data.indices.len(),
@@ -1380,24 +1120,17 @@ fn group_present_count(data: &BaselineMarketData, group: GroupKind) -> usize {
     }
 }
 
-/// Whether `group` clears the coverage floor: at least one resolved series *and* a
-/// coverage ratio of at least `COVERAGE_FLOOR`. The non-empty requirement guards the
-/// vacuous "0 of 0 = 100%" case — a floor group always has a fixed expected set, so zero
-/// resolved is a failure regardless of the ratio.
+/// The non-empty requirement guards the vacuous "0 of 0 = 100%" case: a floor group
+/// always has a fixed expected set, so zero resolved is a failure whatever the ratio.
 fn clears_floor(data: &BaselineMarketData, group: GroupKind) -> bool {
     group_present_count(data, group) > 0 && group_coverage(data, group) >= COVERAGE_FLOOR
 }
 
-/// The Step-3 coverage gate — the single, centralized replacement for the per-adapter
-/// completeness floors. The adapters now degrade every failure to a recorded gap; this
-/// is the one place a too-thin merged baseline fails the run. The floor (resolved in
-/// planning): the report is structurally impossible without the Index Picture, and its
-/// risk-posture / market-cycle reads need at least one grounded macro/internals group —
-/// so `indices` must clear, AND at least one of {`internals`, `macro_levels`} must clear.
-/// Everything else (sectors, labor, calendar, index performance, and whichever of
-/// internals/macro didn't clear) degrades to a manifest gap the agent reasons over. A
-/// failure here propagates like any Step-3 error, which `jobs::run_job` records as a
-/// failed job.
+/// The Step-3 coverage gate, the one place a too-thin merged baseline fails the run:
+/// the report is structurally impossible without the Index Picture, and its
+/// risk-posture / market-cycle reads need at least one grounded macro/internals group,
+/// so `indices` must clear and at least one of {`internals`, `macro_levels`} must.
+/// Everything else degrades to a manifest gap the agent reasons over.
 pub fn enforce_coverage(data: &BaselineMarketData) -> Result<()> {
     if !clears_floor(data, GroupKind::Indices) {
         bail!(
@@ -1421,18 +1154,14 @@ pub fn enforce_coverage(data: &BaselineMarketData) -> Result<()> {
     Ok(())
 }
 
-/// List the most recent reports (newest first), capped at the retention display
-/// limit. The Tauri `list_reports` command is a thin wrapper over this.
 pub fn list_reports(paths: &ReportPaths) -> Result<Vec<ReportSummary>> {
     let conn = storage::open(&paths.db_path)?;
     storage::init_schema(&conn)?;
     storage::list_recent_reports(&conn, storage::RECENT_REPORTS_LIMIT)
 }
 
-/// Load one persisted report by id for display: its summary from SQLite and its
-/// canonical Markdown read back from disk. An unknown id, or a Markdown file
-/// removed out-of-band, surfaces as a typed error the UI renders rather than a
-/// panic.
+/// An unknown id, or a Markdown file removed out-of-band, surfaces as a typed error the
+/// UI renders.
 pub fn load_report(paths: &ReportPaths, report_id: &str) -> Result<GeneratedReport> {
     let conn = storage::open(&paths.db_path)?;
     storage::init_schema(&conn)?;
@@ -1448,16 +1177,9 @@ pub fn load_report(paths: &ReportPaths, report_id: &str) -> Result<GeneratedRepo
     })
 }
 
-/// Export one report's canonical Markdown to a user-chosen destination
-/// (`docs/export.md`). Tauri-free so it sits behind the thin `export_report_markdown`
-/// command the same way `list_reports`/`load_report` do, and is driveable from a
-/// test against temp dirs.
-///
-/// Reads from the stored artifacts only — the canonical `.md` on disk, located via
-/// the SQLite record — so an export never re-runs the workflow and never trusts an
-/// in-memory copy (`docs/export.md §Export Behavior`). An unknown id, a Markdown
-/// file removed out-of-band, or a write failure surfaces as a typed error rather
-/// than a panic, mirroring `load_report`.
+/// Export one report's canonical Markdown from the stored artifacts only
+/// (`docs/export.md §Export Behavior`), so an export never re-runs the workflow and
+/// never trusts an in-memory copy.
 pub fn export_markdown_to(
     paths: &ReportPaths,
     report_id: &str,
@@ -1474,24 +1196,11 @@ pub fn export_markdown_to(
     Ok(())
 }
 
-/// Build the canonical Markdown filename for a report:
-/// `YYYY-MM-DD-market-signal-report-<id8>.md`.
-///
-/// Split out as a pure, timezone-injectable function so the two decisions it
-/// encodes are unit-testable without the system clock or the filesystem:
-///
-/// - **Local date segment.** The report is a local-time artifact (generated and
-///   dated in the user's local time — see `docs/scheduling.md`), so the filename a
-///   user reads matches their wall clock, even though the `created_at` persisted
-///   in SQLite stays canonical UTC. `tz` names the zone whose calendar date
-///   labels the file; production passes `chrono::Local`, tests pass a fixed
-///   offset so the midnight-boundary behavior is deterministic.
-/// - **Unique per-run suffix.** The first 8 characters of the `report_id` UUID
-///   make every run's file distinct, so a same-date rerun no longer overwrites
-///   an earlier run's Markdown (the two-rows-one-file case from slice 1).
-///
-/// A non-RFC3339 `created_at` surfaces as a typed error here rather than
-/// panicking on a byte slice.
+/// The canonical Markdown filename, `YYYY-MM-DD-market-signal-report-<id8>.md`. The
+/// date is local (`docs/scheduling.md`: reports are local-time artifacts) even though
+/// the persisted `created_at` stays UTC; `tz` is injected so the midnight-boundary
+/// behavior is testable. The `report_id` prefix keeps a same-date rerun from
+/// overwriting an earlier run's file.
 fn canonical_report_filename<Tz: chrono::TimeZone>(
     created_at: &str,
     report_id: &str,
@@ -1505,13 +1214,10 @@ where
     Ok(format!("{local_date}-market-signal-report-{id8}.md"))
 }
 
-/// Build the export filename a user sees in the Save dialog
-/// (`docs/export.md §Export Naming`): `YYYY-MM-DD-market-signal-report.<ext>`.
-///
-/// Deliberately distinct from `canonical_report_filename`: the spec's export name
-/// carries **no `-<id8>` suffix** — same-name collisions are the user's own save
-/// dialog overwrite prompt, not ours. `ext` is the bare extension (`"md"`, `"pdf"`).
-/// Shares the local-date logic so an export's date matches the stored file's date.
+/// The export filename (`docs/export.md §Export Naming`),
+/// `YYYY-MM-DD-market-signal-report.<ext>`. Deliberately carries no `-<id8>` suffix:
+/// same-name collisions are the user's save-dialog overwrite prompt. `ext` is the bare
+/// extension (`"md"`, `"pdf"`).
 pub fn export_basename<Tz: chrono::TimeZone>(created_at: &str, ext: &str, tz: &Tz) -> Result<String>
 where
     Tz::Offset: std::fmt::Display,
@@ -1520,9 +1226,7 @@ where
     Ok(format!("{local_date}-market-signal-report.{ext}"))
 }
 
-/// The `YYYY-MM-DD` local-date segment shared by the canonical filename and the
-/// export basename: parse the canonical-UTC `created_at` and render it in `tz`'s
-/// calendar (`docs/scheduling.md` — reports are local-time artifacts). A
+/// The `YYYY-MM-DD` segment: the UTC `created_at` rendered in `tz`'s calendar. A
 /// non-RFC3339 stamp is a typed error, not a panic on a byte slice.
 fn local_date_segment<Tz: chrono::TimeZone>(created_at: &str, tz: &Tz) -> Result<String>
 where
@@ -1577,7 +1281,6 @@ mod tests {
 
     #[test]
     fn enforce_coverage_fails_without_the_index_picture() {
-        // Every index gapped (a rejected FMP key) -> the report can't be written.
         let data = BaselineMarketData {
             internals: covq(9),
             macro_levels: covq(17),
@@ -1590,8 +1293,6 @@ mod tests {
 
     #[test]
     fn enforce_coverage_fails_without_posture_grounding() {
-        // Indices present, but both internals and macro fully gone (a rejected FRED key)
-        // -> risk-posture / market-cycle would be ungrounded.
         let mut gaps = covgaps(GroupKind::Internals, GapReason::Rejected, 9);
         gaps.extend(covgaps(GroupKind::MacroLevels, GapReason::Rejected, 17));
         let data = BaselineMarketData {
@@ -1622,8 +1323,6 @@ mod tests {
 
     #[test]
     fn enforce_coverage_passes_on_macro_when_internals_is_gone() {
-        // Internals fully gapped but macro intact -> the posture-grounding clause is met
-        // by macro alone.
         let data = BaselineMarketData {
             indices: covq(4),
             macro_levels: covq(17),
@@ -1635,9 +1334,7 @@ mod tests {
 
     #[test]
     fn enforce_coverage_excludes_out_of_scope_from_the_floor() {
-        // Russell permanently premium: 3 resolved + 1 OutOfScope gap -> 3/3 = 100%, so a
-        // permanent absence never fails the floor (the whole reason OutOfScope is split
-        // from the this-run reasons).
+        // 3 resolved + 1 OutOfScope gap = 3/3: a permanent absence never fails the floor.
         let data = BaselineMarketData {
             indices: covq(3),
             internals: covq(9),
@@ -1650,10 +1347,6 @@ mod tests {
 
     #[test]
     fn enforce_coverage_ignores_additive_groups() {
-        // movers / earnings, the valuation + finer-rotation groups (sector-PE,
-        // industries, market-risk-premium) and the primary-market group are all additive,
-        // non-floor: empty groups and even this-run gaps in them never gate a run whose
-        // floor groups (indices + a posture group) are covered.
         let mut gaps = covgaps(GroupKind::Movers, GapReason::Unavailable, 3);
         gaps.extend(covgaps(GroupKind::Earnings, GapReason::Rejected, 1));
         gaps.extend(covgaps(GroupKind::SectorPe, GapReason::Unavailable, 1));
@@ -1667,8 +1360,6 @@ mod tests {
         let data = BaselineMarketData {
             indices: covq(4),
             internals: covq(9),
-            // movers / earnings / sector_pe / industries / market_risk_premium /
-            // primary_market left empty
             gaps,
             ..Default::default()
         };
@@ -1718,7 +1409,6 @@ mod tests {
 
     #[test]
     fn short_report_id_does_not_panic_on_the_eight_char_slice() {
-        // A test-style id shorter than 8 chars must not panic on `get(..8)`.
         let name =
             canonical_report_filename("2026-06-03T12:00:00Z", "rid", &minus_three()).unwrap();
         assert!(name.ends_with("-rid.md"), "got {name}");
@@ -1732,8 +1422,6 @@ mod tests {
 
     #[test]
     fn export_basename_has_no_id_suffix_and_carries_the_extension() {
-        // The spec's export name (docs/export.md §Export Naming) is suffix-free,
-        // distinct from the internal canonical filename's `-<id8>` segment.
         let md = export_basename("2026-06-03T12:00:00Z", "md", &minus_three()).unwrap();
         assert_eq!(md, "2026-06-03-market-signal-report.md");
         let pdf = export_basename("2026-06-03T12:00:00Z", "pdf", &minus_three()).unwrap();
@@ -1742,8 +1430,7 @@ mod tests {
 
     #[test]
     fn export_basename_uses_local_calendar_date_across_a_midnight_boundary() {
-        // Shares local_date_segment with the canonical filename: 01:30 UTC on the
-        // 3rd is 22:30 on the 2nd at UTC-3, so the export date is the local one.
+        // 01:30 UTC on the 3rd is 22:30 on the 2nd at UTC-3.
         let name = export_basename("2026-06-03T01:30:00Z", "md", &minus_three()).unwrap();
         assert_eq!(name, "2026-06-02-market-signal-report.md");
     }
@@ -1838,8 +1525,7 @@ mod tests {
 
     #[test]
     fn recent_report_context_degrades_to_empty_on_an_unopenable_db() {
-        // A db path whose parent directory doesn't exist can't be opened or created;
-        // the best-effort read must degrade to empty rather than erroring.
+        // A db path whose parent directory doesn't exist can't be opened or created.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing-subdir").join("market_signal.db");
         assert!(load_recent_report_context(&path).is_empty());
@@ -1847,9 +1533,6 @@ mod tests {
 
     #[test]
     fn compute_prior_deltas_degrades_to_none_on_an_unopenable_db() {
-        // Same fail-soft arm as the recent-report read, now that the change view shares
-        // the `read_db_fail_soft` shell: an unopenable db degrades to `None` (no deltas)
-        // rather than erroring — the deltas are additive context, never a gate.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing-subdir").join("market_signal.db");
         let as_of = chrono::DateTime::parse_from_rfc3339("2026-06-15T00:00:00Z")
@@ -1860,16 +1543,10 @@ mod tests {
 
     #[test]
     fn cadence_survives_a_corrupt_prior_snapshot_even_as_the_change_view_degrades() {
-        // The regression behind the "derive cadence from deltas" bug: an existing user
-        // whose prior baseline JSON won't decode must still get the *true* cadence (right
-        // news windows, no "first report" wording), even though the change view correctly
-        // degrades to no deltas. `compute_cadence` reads only `captured_at`; the diff
-        // (`compute_prior_deltas`) needs the decodable payload — so they part ways here.
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("market_signal.db");
         let conn = storage::open(&db).unwrap();
         storage::init_schema(&conn).unwrap();
-        // A snapshot with a valid timestamp but an undecodable baseline payload.
         storage::insert_baseline_snapshot(
             &conn,
             "corrupt-prior",
@@ -1882,7 +1559,6 @@ mod tests {
             .unwrap()
             .with_timezone(&chrono::Utc);
 
-        // Cadence is recovered from the timestamp alone: ~7 days → not a first report.
         let cadence = compute_cadence(&db, as_of);
         assert_eq!(
             cadence.bucket(),
@@ -1891,8 +1567,6 @@ mod tests {
         );
         assert!(cadence.elapsed_days().is_some(), "the elapsed interval is known");
 
-        // The change view, which needs the decodable payload, still degrades to none —
-        // the deliberate decoupling, not a flat-market signal.
         assert!(
             compute_prior_deltas(&db, &BaselineMarketData::default(), as_of).is_none(),
             "the corrupt payload drops the diff"
@@ -1911,9 +1585,6 @@ mod tests {
 
     #[test]
     fn a_corrupt_snapshot_costs_the_history_only_its_own_point() {
-        // Unlike the change view, which reads the latest snapshot alone, the history
-        // spans every retained one: a bad blob or timestamp drops that report's point and
-        // the rest still render.
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("market_signal.db");
         let conn = storage::open(&db).unwrap();
@@ -2146,11 +1817,8 @@ mod tests {
     #[test]
     fn retrieve_memory_passes_an_oversized_query_through_instead_of_losing_the_pull() {
         let (_dir, path) = seeded_store();
-        // An oversized query must still produce a pull. The byte cap that makes that
-        // true now lives in the adapters (`embedding::bounded_input`), so it applies
-        // to every call rather than only the ones whose caller remembered — the two
-        // persistence paths never did. This seam therefore hands the text through
-        // whole and the cap is pinned at its own home.
+        // The byte cap lives in the adapters (`embedding::bounded_input`), so this seam
+        // hands the text through whole.
         let oversized = format!("a{}", "é".repeat(crate::embedding::EMBEDDING_INPUT_MAX_BYTES));
         let recording = RecordingEmbedder(Mutex::new(None));
         let hits = retrieve_memory(&path, &recording, &oversized, "test");
@@ -2164,7 +1832,6 @@ mod tests {
 
     #[test]
     fn retrieve_memory_skips_the_paid_call_on_an_empty_store_or_empty_query() {
-        // Empty store: the count guard short-circuits before embedding.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("market_signal.db");
         let counting = CountingEmbedder::new();
@@ -2175,7 +1842,6 @@ mod tests {
             "no embedding call against an empty store"
         );
 
-        // Empty query: nothing to recall against, even with a populated store.
         let (_dir2, seeded) = seeded_store();
         let counting = CountingEmbedder::new();
         assert!(retrieve_memory(&seeded, &counting, "  \n", "test").is_empty());
@@ -2217,9 +1883,6 @@ mod tests {
         storage::init_schema(&conn).unwrap();
         let ctx = RunContext::noop();
 
-        // One run restates the same lesson twice under different wording (same tag →
-        // same embedding). The second collapses into the first: one row, not two —
-        // dedup scans this run's own prior insert.
         persist_durable_learnings(
             &conn,
             &BasisEmbedder,
@@ -2233,8 +1896,6 @@ mod tests {
         );
         assert_eq!(learning_count(&conn), 1, "within-run duplicate dropped");
 
-        // A later run restates the same lesson again: still deduped against the
-        // stored row, not just same-run siblings.
         persist_durable_learnings(
             &conn,
             &BasisEmbedder,
@@ -2245,8 +1906,6 @@ mod tests {
         );
         assert_eq!(learning_count(&conn), 1, "cross-run duplicate dropped");
 
-        // A genuinely different lesson (orthogonal embedding) is kept — dedup must
-        // not collapse distinct learnings.
         persist_durable_learnings(
             &conn,
             &BasisEmbedder,
@@ -2260,8 +1919,6 @@ mod tests {
 
     #[test]
     fn persist_durable_learnings_trims_blanks_and_caps_the_rest() {
-        // Regression guard for the trim + cap the extraction moved: blank entries are
-        // dropped before counting, and at most LEARNINGS_PER_REPORT_CAP rows land.
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         storage::init_schema(&conn).unwrap();
         let ctx = RunContext::noop();
@@ -2292,9 +1949,8 @@ mod tests {
         );
     }
 
-    /// One recent summary so `pre_research_query` renders a non-blank query (a default
-    /// baseline + no recent reports would short-circuit the pull). The text is irrelevant
-    /// to the assertion — only that the Step-4 query is non-empty so the pull can fire.
+    /// One recent summary so `pre_research_query` renders a non-blank query; a default
+    /// baseline with no recent reports would short-circuit the pull.
     fn one_recent_summary() -> ReportSummary {
         use crate::agent::{MarketCycle, RiskPosture, ThesisStance};
         ReportSummary {
@@ -2314,10 +1970,6 @@ mod tests {
 
     #[test]
     fn assemble_surfaces_the_step4_pull_as_audit_memory() {
-        // A seeded store plus a real (non-blank) Step-4 query: the pre-research pull
-        // fires and rides back out as `audit_memory` for the main agent's audit —
-        // separate from `packet.memory` (the Step-10 pull). This is the audit consumer
-        // the routing-only wiring previously dropped.
         let (_dir, db_path) = seeded_store();
         let recent = [one_recent_summary()];
         let assembled = assemble_research_packet(
@@ -2346,8 +1998,6 @@ mod tests {
 
     #[test]
     fn assemble_audit_memory_is_empty_on_an_empty_store() {
-        // No seeded rows: the empty-store guard skips the pull, so the audit gets nothing
-        // even with a non-blank query. (The cancel arm is covered by the cancellation test.)
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("market_signal.db");
         let recent = [one_recent_summary()];
@@ -2371,8 +2021,6 @@ mod tests {
 
     #[test]
     fn assemble_packet_degrades_to_empty_on_news_failure() {
-        // A failed gather degrades the whole news half to empty without erroring; the run
-        // still gets a (bare) packet rather than failing.
         let packet = assemble_with(ResearchStages {
             news: Box::new(FailingNews),
             filter: Box::new(StubHeadlineFilter),
@@ -2385,7 +2033,6 @@ mod tests {
 
     #[test]
     fn assemble_packet_skips_the_filter_when_no_headlines() {
-        // EmptyNews → no headlines → the filter must not be called (PanicFilter would blow).
         let packet = assemble_with(ResearchStages {
             news: Box::new(EmptyNews),
             filter: Box::new(PanicFilter),
@@ -2415,9 +2062,6 @@ mod tests {
 
     #[test]
     fn assemble_packet_keeps_news_when_only_the_router_fails() {
-        // The router failing must not discard the clusters already gathered — the packet
-        // still carries news for the agent even when deep research can't be planned. This is
-        // the partial-degradation guarantee the fully-fail-soft posture buys.
         let packet = assemble_with(ResearchStages {
             news: Box::new(StubNewsSource),
             filter: Box::new(StubHeadlineFilter),
@@ -2468,8 +2112,6 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         storage::init_schema(&conn).unwrap();
 
-        // One report over the cap; the evictee owns a vector summary row and a
-        // baseline-snapshot row.
         for i in 0..=storage::REPORT_RETENTION {
             let created_at = format!("2026-01-{:02}T00:00:00Z", i + 1);
             seed_retention_row(&conn, &format!("old-{i:02}"), &created_at);
@@ -2500,9 +2142,7 @@ mod tests {
         storage::record_document_parse_run(&conn, "old-00", "2026-01-01T00:00:00Z", 4, 80_000)
             .unwrap();
 
-        // Sabotage the *last* DB leg: the summary and snapshot deletes succeed
-        // inside the transaction, then the row delete aborts — proving the
-        // earlier legs roll back with it rather than committing piecemeal.
+        // Sabotage the last DB leg, so the earlier legs' rollback is observable.
         conn.execute_batch(
             "CREATE TRIGGER block_report_delete BEFORE DELETE ON reports
              BEGIN SELECT RAISE(ABORT, 'sabotaged'); END;",
@@ -2541,8 +2181,6 @@ mod tests {
             "the parse-run delete rolled back with the failed row delete"
         );
 
-        // Next run, sabotage gone: the same evictee is re-selected and fully
-        // evicted — the retry path the rollback preserves.
         conn.execute("DROP TRIGGER block_report_delete", [])
             .unwrap();
         prune_old_reports(&conn);
@@ -2578,8 +2216,6 @@ mod tests {
             text: text.into(),
             original_chars: original,
         };
-        // One head-cut doc (text shorter than the original) and one whole doc
-        // (text length == original) — only the first is telemetry.
         let docs = vec![
             doc("big.pdf", "kept head", 12_000),
             doc("note.md", "all of it", "all of it".chars().count()),
@@ -2613,10 +2249,9 @@ mod tests {
 
         use crate::progress::{NoopReporter, RunContext};
 
-        // A cancelled pass parses nothing, and — critically — must not replace
-        // the recorded failure set with its partial (empty) view. The skipped
-        // write is observable as the DB never being touched: `record_parse_failures`
-        // is the only DB access in this stage, and opening would create the file.
+        // The skipped write is observable as the DB never being touched:
+        // `record_parse_failures` is the only DB access in this stage, and opening would
+        // create the file.
         let dir = tempfile::tempdir().unwrap();
         let inbox = dir.path().join("research-inbox");
         std::fs::create_dir_all(&inbox).unwrap();
@@ -2632,8 +2267,7 @@ mod tests {
             "the failure write was skipped, not emptied"
         );
 
-        // The same pass uncancelled records the failure — pinning that the
-        // skip above came from the cancel, not from a quiet no-op.
+        // Uncancelled, the same pass records the failure, so the skip came from the cancel.
         let docs = process_research_inbox(&inbox, &db_path, &RunContext::noop());
         assert!(docs.is_empty());
         let conn = storage::open(&db_path).unwrap();
@@ -2653,13 +2287,10 @@ mod tests {
         use crate::agent::{MarketCycle, RiskPosture, ThesisStance};
         use crate::progress::{NoopReporter, RunContext};
 
-        // A cancel requested during the gather must skip the filter, the memory pulls,
-        // and the router model calls — PanicFilter / PanicEmbedder / PanicRouter would
-        // blow if reached — so a stop never still spends the model calls. StubNewsSource
-        // returns headlines regardless of the flag, so the filter guard is exercised on
-        // the cancellation, not on an empty gather; the seeded store plus a prior
-        // summary make the pre-research pull's query and store both non-empty, so only
-        // the cancel guard stands between the run and the panicking embedder.
+        // StubNewsSource returns headlines regardless of the flag, so the filter guard is
+        // exercised on the cancellation, not on an empty gather; the seeded store plus a
+        // prior summary make the pre-research pull's query and store both non-empty, so
+        // only the cancel guard stands between the run and the panicking embedder.
         let stages = ResearchStages {
             news: Box::new(StubNewsSource),
             filter: Box::new(PanicFilter),
@@ -2699,9 +2330,6 @@ mod tests {
         assert!(packet.news_clusters.is_empty());
         assert!(packet.research.items.is_empty());
         assert!(packet.memory.is_empty());
-        // The Step-4 audit pull obeys the same cancel guard: a pre-cancelled run skips
-        // it (the `PanicEmbedder` proves the embedding call never fires) and the audit
-        // gets nothing.
         assert!(
             audit_memory.is_empty(),
             "a cancelled run recalls no audit memory"
@@ -2710,20 +2338,12 @@ mod tests {
 
     // ---- live research-half smoke (news → filter → route → execute → packet) ----
 
-    /// Live end-to-end smoke for the research half exactly as `generate_report` runs it:
-    /// the production stage bundle (`ResearchStages::live` — the same constructor both
-    /// command paths call), the real Tavily+GDELT+FMP-Articles gather, the GPT-5-mini
-    /// filter, the Sonnet router, and the bounded executor against live Tavily,
-    /// condensed into the packet. Everything in this path is fail-soft — a dead key or a
-    /// down provider degrades to an *empty* packet rather than an error — so every
-    /// assertion below is anti-vacuous: it pins that each stage actually ran and
-    /// produced something, which a bare "returns a packet" check could never show.
-    ///
-    /// Spend per run: ~9 news calls (7 Tavily topics + 1 GDELT + 1 FMP articles page)
-    /// plus up to 20 executor searches on Tavily (5 topics × 4 queries; `deltas: None`
-    /// selects `NoBranch`, so no follow-ups), one OpenAI call, one Anthropic call — run
-    /// it deliberately, not repeatedly. A failed GDELT row is expected from a dev IP
-    /// (escalating 429 lockout) and is absorbed by the news group's other rows.
+    /// Live end-to-end smoke for the research half through `ResearchStages::live`.
+    /// Everything in this path is fail-soft (a dead key degrades to an empty packet), so
+    /// every assertion is anti-vacuous: it pins that each stage actually produced
+    /// something. Spend per run: ~9 news calls plus up to 20 executor searches on
+    /// Tavily, one OpenAI call, one Anthropic call — run it deliberately. A failed GDELT
+    /// row is expected from a dev IP (escalating 429 lockout).
     #[test]
     #[ignore = "hits live Tavily + GDELT + FMP + OpenAI + Anthropic; set TAVILY_API_KEY + FMP_API_KEY + OPENAI_API_KEY + ANTHROPIC_API_KEY"]
     fn live_research_packet_smoke() {
@@ -2733,8 +2353,7 @@ mod tests {
         use crate::config::AppConfig;
         use crate::progress::{ProgressEvent, RecordingReporter, RunContext};
 
-        // A recording context instead of `noop`, so the request rows the adapters emit
-        // can be asserted on — the tracker-attribution half of what this smoke proves.
+        // A recording context so the adapters' request rows can be asserted on.
         let rec = Arc::new(RecordingReporter::default());
         let ctx = RunContext::new(
             "research-smoke",
@@ -2742,9 +2361,8 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         );
 
-        // The production constructor, with the keys resolved from the same env vars the
-        // adapters' own from_env seams read — so a wiring regression in the bundle (a
-        // dropped with_context, a swapped backend) fails this smoke too.
+        // The production constructor, so a wiring regression in the bundle fails this
+        // smoke too.
         let cfg = AppConfig::from_env();
         let stages = ResearchStages::live(
             cfg.tavily_key().expect("TAVILY_API_KEY set"),
@@ -2756,9 +2374,8 @@ mod tests {
         .expect("building the live research stages");
 
         // A stub embedder against a fresh temp store: the empty-store guard means the
-        // retrieval pulls spend no embedding call here, keeping the smoke's live spend
-        // unchanged — the retrieval path itself is covered offline. The live embedding
-        // wire contract has its own smoke (`embedding::embedding_live_smoke`).
+        // pulls spend no embedding call here; the live embedding wire has its own smoke
+        // (`embedding::embedding_live_smoke`).
         let dir = tempfile::tempdir().expect("temp dir");
         let packet = assemble_research_packet(
             &stages,
@@ -2799,12 +2416,9 @@ mod tests {
             "at least one executor search returned sources"
         );
 
-        // Tracker attribution: every request row carries a research-half group, and each
-        // live stage emitted at least one row. The frontend buckets the four research
-        // groups under the research step (`App.vue`'s RESEARCH_REQUEST_GROUPS); "memory"
-        // rows (the retrieval pulls, when a populated store makes them fire) follow the
-        // currently-running step instead. None fire here — the temp store is empty —
-        // but the set admits them so a populated-store run stays green.
+        // "memory" rows follow the currently-running step rather than the research
+        // step; none fire here (the temp store is empty), but the set admits them so a
+        // populated-store run stays green.
         let msgs = rec.messages();
         let groups: Vec<&str> = msgs
             .iter()
@@ -2852,17 +2466,13 @@ mod tests {
 
     // ---- live tuning-constant calibration against real text-embedding-3-large ----
     //
-    // The synthetic separating embedders (`BasisEmbedder` here, `DistinctEmbedder` in
-    // tests/generate_report.rs) only ever emit cosine 1.0 or 0.0, so they validate the
-    // dedup/retrieval *mechanism* but say nothing about whether the *values*
-    // `LEARNING_DEDUP_THRESHOLD` (0.65) and `MEMORY_TOP_K` (5) are well-placed against
-    // the intermediate cosines real prose lands at. These two `#[ignore]`d probes
-    // close that gap by embedding a hand-authored corpus through the live model and
-    // checking where the constants fall. Spend is small (~27 cheap embedding calls,
-    // no daily cap), so unlike the FMP smokes they are freely re-runnable.
+    // The synthetic embedders only emit cosine 1.0 or 0.0, so they validate the
+    // mechanism but not whether `LEARNING_DEDUP_THRESHOLD` and `MEMORY_TOP_K` are
+    // well-placed against the intermediate cosines real prose lands at; these
+    // `#[ignore]`d probes embed a hand-authored corpus through the live model. Spend is
+    // ~27 cheap embedding calls, freely re-runnable.
 
-    /// Restatements of one lesson under two wordings — each pair should embed *close*
-    /// (a near-duplicate the Step-17 dedup pass is meant to catch).
+    /// Restatements of one lesson under two wordings; each pair should embed close.
     const PARAPHRASE_PAIRS: [(&str, &str); 4] = [
         (
             "Breadth divergences preceded the spring pullback; weight them earlier in the thesis.",
@@ -2882,9 +2492,8 @@ mod tests {
         ),
     ];
 
-    /// Genuinely distinct lessons, one per topic family — every cross-pair should embed
-    /// *apart* (the dedup pass must never merge two of these). The first four reuse the
-    /// canonical (`.0`) member of each `PARAPHRASE_PAIRS` entry; the last two add topics.
+    /// Genuinely distinct lessons, one per topic family; every cross-pair should embed
+    /// apart. The first four reuse the `.0` member of each `PARAPHRASE_PAIRS` entry.
     const DISTINCT_LESSONS: [&str; 6] = [
         "Breadth divergences preceded the spring pullback; weight them earlier in the thesis.",
         "Single-event volatility spikes faded within two reports; avoid pivoting the thesis on them.",
@@ -2894,16 +2503,10 @@ mod tests {
         "Inflation surprises moved the front end more than the long end; lean on breakevens for the regime read.",
     ];
 
-    /// Calibrates `LEARNING_DEDUP_THRESHOLD` against real geometry — the empirical basis
-    /// for the retune from a vacuously-high 0.93 (which no real restatement reached, so
-    /// dedup never fired) to 0.65. Asserts the threshold brackets the measured gap:
-    /// `distinct_ceiling < LEARNING_DEDUP_THRESHOLD <= paraphrase_floor` — it catches
-    /// *every* authored restatement (full recall over this corpus) while never reaching
-    /// a distinct-lesson pair (no false merge). The ordering invariant (restatements
-    /// out-cosine distinct lessons) guards the embedder/corpus premise independent of the
-    /// threshold value. A red means the threshold drifted out of the gap, or the corpus
-    /// no longer separates — retuning the constant is a separate decision, not this
-    /// probe's job.
+    /// Calibrates `LEARNING_DEDUP_THRESHOLD` against real geometry: the threshold must
+    /// bracket the measured gap, `distinct_ceiling < LEARNING_DEDUP_THRESHOLD <=
+    /// paraphrase_floor`. A red means the threshold drifted out of the gap or the corpus
+    /// no longer separates; retuning the constant is a separate decision.
     #[test]
     #[ignore = "hits the live OpenAI embeddings API; set OPENAI_API_KEY (~14 calls)"]
     fn tuning_dedup_threshold_calibration() {
@@ -2914,7 +2517,6 @@ mod tests {
             crate::vector_memory::cosine_similarity(&va, &vb)
         };
 
-        // Within-pair cosine for each restatement.
         let pair_cosines: Vec<f64> = PARAPHRASE_PAIRS
             .iter()
             .enumerate()
@@ -2930,7 +2532,6 @@ mod tests {
             .copied()
             .fold(f64::NEG_INFINITY, f64::max);
 
-        // Max cosine across every pair of genuinely distinct lessons.
         let distinct_vecs: Vec<Vec<f32>> = DISTINCT_LESSONS
             .iter()
             .map(|t| embedder.embed(t).expect("live embedding call"))
@@ -2954,19 +2555,14 @@ mod tests {
             PARAPHRASE_PAIRS.len()
         );
 
-        // Ordering invariant (embedder/corpus premise, threshold-independent): a
-        // restatement out-cosines any pair of distinct lessons.
         assert!(
             paraphrase_floor > distinct_ceiling,
             "restatements ({paraphrase_floor:.4}) did not separate from distinct lessons ({distinct_ceiling:.4})"
         );
-        // Safety: the threshold must sit above every distinct-lesson pair, or dedup would wrongly merge two real lessons.
         assert!(
             distinct_ceiling < LEARNING_DEDUP_THRESHOLD,
             "a distinct-lesson pair ({distinct_ceiling:.4}) reaches the dedup threshold {LEARNING_DEDUP_THRESHOLD} — it would be wrongly merged"
         );
-        // Recall: the threshold must sit at or below *every* restatement (full recall over
-        // this corpus), or a real paraphrase would wrongly survive.
         assert!(
             paraphrase_floor >= LEARNING_DEDUP_THRESHOLD,
             "a restatement ({paraphrase_floor:.4}) sits below the dedup threshold {LEARNING_DEDUP_THRESHOLD} — it would wrongly survive"
@@ -2995,10 +2591,9 @@ mod tests {
     ];
 
     /// Calibrates `MEMORY_TOP_K` against real geometry. Top-k's value judgment is
-    /// inherently observational — "is 5 right?" depends on the real corpus — so the hard
-    /// assertion is the robust invariant (every relevant fragment out-ranks every
-    /// off-topic one), and the printed ranking with the rank-5 cut marked lets a human
-    /// see whether 5 captures the relevant set without dragging in noise.
+    /// observational, so the hard assertion is the robust invariant (every relevant
+    /// fragment out-ranks every off-topic one) and the printed ranking with the top-k
+    /// cut marked lets a human judge the value.
     #[test]
     #[ignore = "hits the live OpenAI embeddings API; set OPENAI_API_KEY (~13 calls)"]
     fn tuning_topk_selectivity_probe() {
@@ -3043,7 +2638,6 @@ mod tests {
             TOPK_RELEVANT.len()
         );
 
-        // Clean separation: real geometry ranks every on-topic fragment above every off-topic one.
         assert!(
             worst_relevant > best_irrelevant,
             "relevant fragments ({worst_relevant:.4}) did not cleanly out-rank off-topic ones ({best_irrelevant:.4})"

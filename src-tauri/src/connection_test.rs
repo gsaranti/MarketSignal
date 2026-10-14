@@ -1,24 +1,9 @@
-//! "Test connection" — validate one configured provider credential with a single
-//! live authenticated request, without spending model tokens
-//! (`docs/configuration.md` Settings).
-//!
-//! Mirrors the BUILD.md spine: the provider HTTP call is an app-layer adapter
-//! detail. The blocking `reqwest::blocking` request is offloaded via
-//! `spawn_blocking` at the Tauri command seam (`lib.rs`), the same way
-//! `generate_report_manual` keeps `reqwest::blocking` off the async runtime
-//! thread. This is the first code that talks to FMP and Tavily; the model
-//! adapter (`model_agent`) already covers OpenAI/Anthropic, and the Anthropic
-//! version header is reused from there.
-//!
-//! Each provider's request function is split from a pure `interpret_*` so the
-//! pass/fail logic — notably FMP, which can report an error either in the status
-//! or in a 200 body — is unit-testable offline. (Verified live Jun 2026: an
-//! invalid/missing FMP key returns 401 with an `{"Error Message": ...}` body on
-//! both `/stable/` and legacy `/api/v3/`; the 200-with-error-body path is kept as
-//! defensive cover for FMP's other conditions, e.g. plan/rate-limit, that do.)
-//! The request validates the credential only; it never spends model tokens and
-//! does not change the execution gate (which checks credential *presence*, not
-//! validity — see `config::validate`).
+//! "Test connection": validate one configured provider credential with a single live
+//! authenticated request, without spending model tokens (`docs/configuration.md`
+//! Settings). The blocking request is offloaded via `spawn_blocking` at the Tauri
+//! command seam. Each provider's request is split from a pure `interpret_*` so the
+//! pass/fail logic is unit-testable offline. The test validates the credential only;
+//! the execution gate checks credential presence, not validity (`config::validate`).
 
 use std::time::Duration;
 
@@ -27,10 +12,9 @@ use reqwest::blocking::Client;
 use serde::Serialize;
 use serde_json::Value;
 
-/// A lightweight, no-/low-cost authenticated endpoint per provider — enough to
-/// confirm the key is accepted. OpenAI/Anthropic `/v1/models` and Tavily
-/// `/usage` are metadata endpoints (no token/credit spend); FMP `quote` is a
-/// free-tier call that counts against the daily request allowance.
+/// A no-/low-cost authenticated endpoint per provider. OpenAI/Anthropic `/v1/models`
+/// and Tavily `/usage` are metadata endpoints (no token/credit spend); FMP `quote`
+/// counts against the daily request allowance.
 const OPENAI_MODELS_URL: &str = "https://api.openai.com/v1/models";
 const ANTHROPIC_MODELS_URL: &str = "https://api.anthropic.com/v1/models";
 const FMP_QUOTE_URL: &str = "https://financialmodelingprep.com/stable/quote";
@@ -41,9 +25,8 @@ const TAVILY_USAGE_URL: &str = "https://api.tavily.com/usage";
 /// adapter's 120s ceiling.
 const TEST_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Which credential to test. Distinct from `model_agent::Provider` (which only
-/// models the two *model* providers): test-connection covers all four
-/// user-supplied credentials, including the two data providers.
+/// Distinct from `model_agent::Provider`, which only models the two model providers:
+/// test-connection covers every user-supplied credential, the data providers too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialProvider {
     OpenAi,
@@ -54,8 +37,8 @@ pub enum CredentialProvider {
 }
 
 impl CredentialProvider {
-    /// Parse the frontend-facing label (matches the `CredentialKey` union and the
-    /// `app_settings` credential keys).
+    /// The frontend-facing label (the `CredentialKey` union and the `app_settings`
+    /// credential keys).
     pub fn from_label(label: &str) -> Result<Self> {
         match label {
             "openai" => Ok(Self::OpenAi),
@@ -67,7 +50,6 @@ impl CredentialProvider {
         }
     }
 
-    /// Human-readable provider name for the result message.
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::OpenAi => "OpenAI",
@@ -79,10 +61,9 @@ impl CredentialProvider {
     }
 }
 
-/// The outcome of one test, surfaced per-credential in Settings. Never carries
-/// the secret — only whether the request was accepted and a short message.
-/// `camelCase` is explicit so the wire contract with the TS `ConnectionTestResult`
-/// holds even if a multi-word field is added later.
+/// Never carries the secret: only whether the request was accepted and a short
+/// message. `camelCase` is explicit so the wire contract with the TS
+/// `ConnectionTestResult` holds if a multi-word field is added.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionTestResult {
@@ -105,8 +86,7 @@ impl ConnectionTestResult {
         }
     }
 
-    /// No saved value to test — the command short-circuits before any network
-    /// call and returns this.
+    /// Returned by the command before any network call when there is no saved value.
     pub fn not_configured() -> Self {
         Self::fail("Not configured — save a value first, then test.")
     }
@@ -119,8 +99,8 @@ fn build_client() -> Result<Client> {
         .context("building the connection-test HTTP client")
 }
 
-/// Run the test for one provider against `api_key`. Builds its own blocking
-/// client, so the caller offloads this whole function through `spawn_blocking`.
+/// Builds its own blocking client, so the caller offloads this whole function
+/// through `spawn_blocking`.
 pub fn run_test(provider: CredentialProvider, api_key: &str) -> ConnectionTestResult {
     let http = match build_client() {
         Ok(c) => c,
@@ -149,9 +129,9 @@ pub fn run_test(provider: CredentialProvider, api_key: &str) -> ConnectionTestRe
             }
         }
         CredentialProvider::Fmp => {
-            // FMP takes the key as a query param (never an Authorization header).
-            // A wrong key returns 401 (verified live), but FMP can also carry an
-            // error in a 200 body, so the body is read and handed to the interpreter.
+            // FMP takes the key as a query param, never an Authorization header, and
+            // can carry an error in a 200 body, so the body is handed to the
+            // interpreter.
             let sent = http
                 .get(FMP_QUOTE_URL)
                 .query(&[("symbol", "AAPL"), ("apikey", api_key)])
@@ -166,10 +146,8 @@ pub fn run_test(provider: CredentialProvider, api_key: &str) -> ConnectionTestRe
             }
         }
         CredentialProvider::Fred => {
-            // FRED takes the key as the `api_key` query param; a bad key returns
-            // HTTP 400 with a JSON `error_message` that names api_key (read by
-            // interpret_fred). A known-good series keeps a 400 attributable to the
-            // key, not a bad series_id.
+            // A known-good series keeps a 400 attributable to the key, not a bad
+            // series_id.
             let sent = http
                 .get(FRED_OBSERVATIONS_URL)
                 .query(&[
@@ -192,11 +170,9 @@ pub fn run_test(provider: CredentialProvider, api_key: &str) -> ConnectionTestRe
 }
 
 fn network_failure(provider: CredentialProvider, err: reqwest::Error) -> ConnectionTestResult {
-    // Strip the URL before the error is formatted: FMP and FRED carry their API
-    // keys as query params, and a reqwest transport error's Display includes the
-    // full request URL — unstripped, the key would render verbatim in the
-    // user-facing Settings connection row (the same invariant `http_retry`
-    // holds on the run path).
+    // FMP and FRED carry their API keys as query params, and a reqwest transport
+    // error's Display includes the full request URL; unstripped, the key would
+    // render verbatim in the Settings connection row.
     let err = err.without_url();
     ConnectionTestResult::fail(format!("Couldn't reach {}: {err}", provider.display_name()))
 }
@@ -227,12 +203,9 @@ fn interpret_status_only(provider: CredentialProvider, status: u16) -> Connectio
     }
 }
 
-/// FMP needs dual detection. A rejected key surfaces as a non-2xx status — live,
-/// an invalid/missing key is a 401 (handled first, before the body is parsed) —
-/// but FMP can also report an error as a 200 whose JSON body is an
-/// `{"Error Message": ...}` object, so a 200 body is inspected too. A 200 array
-/// (including an empty `[]`, which FMP returns for "no data") means the key was
-/// accepted.
+/// FMP can report a rejected key as a non-2xx status or as a 200 whose JSON body is
+/// an `{"Error Message": ...}` object, so a 200 body is inspected too. A 200 array
+/// (including the empty `[]` FMP returns for "no data") means the key was accepted.
 fn interpret_fmp(status: u16, body: &str) -> ConnectionTestResult {
     if status == 401 || status == 403 {
         return ConnectionTestResult::fail(format!(
@@ -252,11 +225,9 @@ fn interpret_fmp(status: u16, body: &str) -> ConnectionTestResult {
     ConnectionTestResult::ok()
 }
 
-/// FRED's observations endpoint returns 200 for a valid key. A bad / missing key
-/// is an HTTP 400 whose JSON `error_message` names `api_key` — distinct from FMP's
-/// 401, and the reason this provider needs its own interpreter. A 400 whose message
-/// is not an api_key problem (e.g. a bad series_id, which the fixed known-good
-/// series should preclude) is reported as unexpected rather than a key rejection.
+/// A bad key is an HTTP 400 whose JSON `error_message` names `api_key`. A 400 whose
+/// message is not an api_key problem is reported as unexpected rather than a key
+/// rejection.
 fn interpret_fred(status: u16, body: &str) -> ConnectionTestResult {
     if (200..300).contains(&status) {
         return ConnectionTestResult::ok();
@@ -279,8 +250,7 @@ fn interpret_fred(status: u16, body: &str) -> ConnectionTestResult {
     ))
 }
 
-/// Tavily's `/usage` returns 200 for a valid key and 401 for a bad one. A 404 is
-/// distinct — the endpoint may be unavailable on the key's plan — so it is
+/// A 404 means the usage endpoint may be unavailable on the key's plan, so it is
 /// reported separately rather than as an auth failure.
 fn interpret_tavily(status: u16) -> ConnectionTestResult {
     if (200..300).contains(&status) {
@@ -318,12 +288,8 @@ mod tests {
 
     #[test]
     fn a_network_failure_never_carries_the_query_string() {
-        // FMP and FRED ride their API keys as query params, and a reqwest
-        // transport error's Display includes the request URL — the user-facing
-        // Settings string must strip it (the `http_retry` invariant, held on
-        // this producer too).
         let client = reqwest::blocking::Client::new();
-        // Unroutable port: connection refused, error carries the full URL.
+        // Unroutable port: connection refused, and the error carries the full URL.
         let err = client
             .get("http://127.0.0.1:1/quote?apikey=sekrit-value")
             .send()
@@ -349,7 +315,6 @@ mod tests {
         let other = interpret_status_only(p, 500);
         assert!(!other.ok);
         assert!(other.detail.contains("500"), "{}", other.detail);
-        // 403 is treated as a rejection too.
         assert!(!interpret_status_only(CredentialProvider::Anthropic, 403).ok);
     }
 
@@ -379,13 +344,12 @@ mod tests {
 
     #[test]
     fn fmp_empty_array_is_success() {
-        // FMP returns [] for "no data found", which is a valid key, not an error.
+        // FMP's "no data found", not an error.
         assert!(interpret_fmp(200, "[]").ok);
     }
 
     #[test]
     fn fmp_200_with_error_message_is_auth_failure() {
-        // The case a status-only check would miss: HTTP 200, error in the body.
         let body =
             r#"{"Error Message":"Invalid API KEY. Please retry or visit our documentation"}"#;
         let res = interpret_fmp(200, body);
@@ -402,9 +366,7 @@ mod tests {
 
     #[test]
     fn fmp_401_with_error_body_is_a_failure() {
-        // Verified live (Jun 2026): an invalid/missing key returns 401 *with* an
-        // `{"Error Message": ...}` body on /stable/ and /api/v3/. The status check
-        // must win and report the 401, short-circuiting before the body is parsed.
+        // The status check must win and report the 401, not the body's message.
         let body = r#"{"Error Message":"Invalid API KEY. Feel free to create a Free API Key..."}"#;
         let res = interpret_fmp(401, body);
         assert!(!res.ok);
@@ -424,7 +386,6 @@ mod tests {
 
     #[test]
     fn fred_400_with_api_key_message_is_a_rejection() {
-        // FRED's bad-key signal: HTTP 400 with an error_message that names api_key.
         let body = r#"{"error_code":400,"error_message":"Bad Request. The value for variable api_key is not registered, is not active, or is otherwise invalid."}"#;
         let res = interpret_fred(400, body);
         assert!(!res.ok);
@@ -433,8 +394,6 @@ mod tests {
 
     #[test]
     fn fred_other_400_and_5xx_are_unexpected_not_rejections() {
-        // A 400 without an api_key message (e.g. a bad series_id) is not a key
-        // rejection, and a 5xx is a provider-side problem — both report "unexpected".
         let other_400 = interpret_fred(400, r#"{"error_message":"Bad Request. Something else."}"#);
         assert!(!other_400.ok);
         assert!(

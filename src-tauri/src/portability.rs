@@ -1,23 +1,7 @@
-//! Whole-corpus data portability (`docs/data-portability.md`): export the
-//! durable analytical stores into one structured, versioned zip archive, and
-//! import such an archive back into a store. The load-bearing line is that
-//! durable analytical data moves while secrets and machine-local operational
-//! state stay behind: the twelve exported tables ([`TABLES`]) plus the
-//! report/research files are serialized row-by-row, and `app_settings`
-//! (every plaintext credential), the Keychain, `job_runs`, and the telemetry
-//! tables are never read — so nothing sensitive can enter the archive.
-//!
-//! The archive is deliberately **not** a DB-file copy: WAL sidecars would tear,
-//! a binary copy cannot strip secrets, and the schema has no version marker to
-//! validate against. Import instead runs the target's own idempotent
-//! `storage::init_schema` and re-inserts rows, re-deriving each report's
-//! machine-specific `markdown_path` from the exported basename. Optional
-//! passphrase encryption wraps the finished zip in an AES-256-GCM container
-//! keyed by Argon2id; a lost passphrase is unrecoverable by design.
-//!
-//! Everything here is pure over `(ReportPaths, Path, Option<passphrase>)` — no
-//! Tauri types — so the round-trip contract is offline-tested against temp
-//! dirs, matching the rest of the deterministic spine.
+//! Whole-corpus data portability (`docs/data-portability.md`): export the durable
+//! analytical stores into one versioned zip archive and import one back. Durable
+//! analytical data moves; `app_settings`, the Keychain, `job_runs` and the telemetry
+//! tables are never read, so nothing sensitive can enter the archive.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read, Write};
@@ -37,88 +21,12 @@ use crate::storage;
 
 /// The archive's own format version, stamped in the manifest. Import rejects an
 /// archive newer than it understands; the DB schema itself carries no version
-/// marker, which is exactly why the archive stamps one.
-/// v2 (quick-check slice): the `portfolio_quick_checks` store joined the archive —
-/// every new durable local-suite store joins as part of the slice that lands it
-/// (`docs/data-portability.md` §Build-order placement). A v1 archive — the
-/// shipped build's format — imports complete under its own five-entry set
-/// (`required_db_entries`).
-/// v3 (outcome-learning slice): the `portfolio_outcome_episodes` store (decision
-/// episodes outliving run retention) and the shared `price_bars` cache joined —
-/// the cache moves so imported pending episodes can mature offline.
-/// v4 (research-loop slice): the web tool's shared stores joined — the
-/// `web_documents` cache (so an imported corpus's research reuse serves repeat
-/// fetches offline) and the `web_source_state` learned extraction layer —
-/// plus Portfolio's `portfolio_research_seeds` per-topic distilled-findings
-/// layer (the research-reuse seeds, surviving run retention). The v2 and v3
-/// shapes were pre-release formats no shipped build wrote; import refuses them
-/// outright (`check_format_version`, ruled 2026-08-29).
-/// v5 (redirect-cache slice): `web_documents.url` became the requested-URL key
-/// and the post-redirect `final_url` joined separately; the bump made older
-/// builds reject v5 instead of silently misreading requested-URL provenance
-/// as final.
-/// v6 (attempt-5 telemetry slice): `web_source_state` gained the per-domain
-/// `failed_count` / `denied_count` fetch-attempt counters, so the v4 single-URL
-/// import rung retired with the refused shapes below it.
-/// v7 (the §3 interpretation slice): the priced verdict inside each
-/// `portfolio_runs.run_json` renamed `price_target_rationale` to
-/// `model_target_rationale` with its meaning (fix list 3.1, `checkpoint-v10`),
-/// so a v6 archive's runs would not decode under the current verdict shape.
-/// v8 (the rendered-ledger slice): every ledger condition inside
-/// `portfolio_runs.run_json` gained the model's `label` beside an app-rendered
-/// statement (`checkpoint-v12`), so a v7 archive's runs would not decode under
-/// the current condition shape.
-/// v9: complete physical-attempt telemetry in run data health (checkpoint-v13).
-/// Every pre-release shape below the current one — v2 through v23, none of which
-/// a shipped build wrote — is refused outright, as is a v0 stamp no build wrote
-/// (`check_format_version`, the 2026-08-29 no-compat ruling).
-/// v10: explicit dates in persisted research claims, including topic seeds.
-/// v11: calendar-quarter values in persisted claim fact periods.
-/// v12: the persisted leading indicator inside `portfolio_runs.run_json` loses
-/// the model-authored driver name (checkpoint-v16).
-/// v13: the priced verdict inside `portfolio_runs.run_json` carries the engine
-/// arm's three bands, its own rung and the band relation and no stand-in view,
-/// and the run carries no outcome records (checkpoint-v17).
-/// v14: the audit inside `portfolio_runs.run_json` carries the soft forensic
-/// flags beside the hard-forensic record, and the overlay's execution leg is a
-/// typed `unscorable` (checkpoint-v18).
-/// v15: the per-holding states inside `portfolio_quick_checks.state_json` carry
-/// no condition evaluation states and no news-seed family (quick-check-v5,
-/// checkpoint-v19).
-/// v16: the verdict inside `portfolio_runs.run_json` carries the thesis
-/// document and its typed appendix as the model arm, no ledger, no
-/// what-changed audit and no stand-in model view, and an abstention carries
-/// its retained prior document (checkpoint-v20).
-/// v17: the `portfolio_research_seeds` table leaves the archive with the seed
-/// store, and the audit inside `portfolio_runs.run_json` carries the research
-/// write-ups and the page roster in place of the combined findings, the seed
-/// layer and the typed channels (checkpoint-v21).
-/// v18: the audit inside `portfolio_runs.run_json` carries the holding's
-/// analysis record (its text, its date and its anchor bar) beside its
-/// research record, and the record carries the consolidation's distillation
-/// shape with its call count (checkpoint-v22).
-/// v19: the run's data health inside `portfolio_runs.run_json` counts the
-/// run-level M&A feed walk's gap beside the FINRA one (checkpoint-v23).
-/// v20: the episode store is the price record — `portfolio_episodes` and the
-/// checks written onto them, `portfolio_episode_checks`, both carried with
-/// their ids — and `portfolio_runs.run_json` carries the run's accuracy record
-/// and data health's accuracy-pass gap. A v12–v19 archive's
-/// `portfolio_outcome_episodes` file (the retired decision episodes) is
-/// verified and never read: its import starts the episode store fresh.
-/// v21: the audit inside `portfolio_runs.run_json` carries the self-review's
-/// review and the accuracy read-through mark, and the fund exposure basis
-/// carries the fund's NAV (checkpoint-v24).
-/// v22: the Portfolio format's final shape — the verdict inside
-/// `portfolio_runs.run_json` carries the basis read beside its position
-/// change, the audit's pre-profit overlay carries no observation history, and
-/// every `vector_memory` row is the report's; every earlier pre-release format
-/// is refused (checkpoint-v25).
-/// v23: a priced stock's audit inside `portfolio_runs.run_json` carries its
-/// factor composite and its verdict the grade basis; every earlier pre-release
-/// format is refused (checkpoint-v26).
-/// v24: the shared engine's factor-distribution store joins —
-/// `factor_observations`, one current observation per issuer per factor;
-/// every earlier pre-release format is refused.
+/// marker, which is why the archive stamps one. Bump it whenever a table joins the
+/// archive or a persisted row shape changes, so an older build refuses the archive
+/// instead of misreading it (`docs/data-portability.md` §Build-order placement).
+/// Every pre-release stamp below it is refused outright (`check_format_version`);
+/// a v1 archive, the shipped build's format, imports complete under its own
+/// five-entry set (`required_db_entries`).
 pub const FORMAT_VERSION: u32 = 24;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
@@ -160,13 +68,9 @@ const DB_ENTRY_NAMES: [&str; 12] = [
     "db/factor_observations.ndjson",
 ];
 
-/// The db entries an archive's own format version requires — the versioned
-/// closed set (`docs/data-portability.md` §Import flow): a v1 archive — the
-/// shipped build's format — predates the quick-check store, so it is complete
-/// at five entries; requiring the current format's entries of it would refuse
-/// it as truncated. The v2 through v23 shapes were pre-release dev formats no
-/// shipped build wrote and are refused at [`check_format_version`] with a v0
-/// stamp (ruled 2026-08-29 — no data compat pre-release).
+/// The db entries an archive's own format version requires (`docs/data-portability.md`
+/// §Import flow): a v1 archive, the shipped build's format, is complete at five
+/// entries, and requiring the current set of it would refuse it as truncated.
 fn required_db_entries(format_version: u32) -> &'static [&'static str] {
     if format_version >= FORMAT_VERSION {
         &DB_ENTRY_NAMES
@@ -184,21 +88,17 @@ fn required_db_entries(format_version: u32) -> &'static [&'static str] {
 pub struct Manifest {
     pub format_version: u32,
     pub app_version: String,
-    /// Canonical UTC RFC3339 (the frontend renders local time, per the
-    /// project-wide date convention).
+    /// UTC RFC3339; the frontend renders local time.
     pub created_at: String,
-    /// Row counts per exported table.
     pub row_counts: BTreeMap<String, u64>,
-    /// Durable-learning rows within `vector_memory` — surfaced separately
-    /// because the success copy reports learnings, not raw vector rows.
+    /// Durable-learning rows within `vector_memory`, surfaced separately because
+    /// the success copy reports learnings, not raw vector rows.
     pub learnings: u64,
-    /// The vector rows' embedder identity, keyed by their `report` namespace —
-    /// the report's fixed cloud model, identical on every machine, which is
-    /// what makes the vectors portable (`docs/data-portability.md §Vector
-    /// memory is embedder-bound`).
+    /// The vector rows' embedder identity by namespace — the report's fixed cloud
+    /// model, which is what makes the vectors portable
+    /// (`docs/data-portability.md §Vector memory is embedder-bound`).
     pub embedders: BTreeMap<String, String>,
-    /// Inventory of the file entries (report Markdown + research documents),
-    /// checksummed so import can verify against corruption.
+    /// Checksummed inventory of every entry, so import can verify against corruption.
     pub files: Vec<FileEntry>,
     pub encrypted: bool,
 }
@@ -211,10 +111,9 @@ pub struct FileEntry {
     pub sha256: String,
 }
 
-/// One `reports` row on the wire. The machine-specific absolute
-/// `markdown_path` is deliberately reduced to its basename here — the archive
-/// never carries a source-machine path, and import re-derives the target's own
-/// absolute path from this name.
+/// One `reports` row on the wire. The machine-specific `markdown_path` is reduced
+/// to its basename: the archive never carries a source-machine path, and import
+/// re-derives the target's own path from the name.
 #[derive(Debug, Serialize, Deserialize)]
 struct ReportRow {
     report_id: String,
@@ -262,19 +161,17 @@ struct HoldingsPullRow {
 }
 
 /// The single-row quick-check store on the wire (`docs/portfolio-analysis.md`
-/// §The quick check): the between-run attention flags, evidence events and
-/// per-family sweep states — durable analytical state (flags and events do not
-/// regenerate on the next sweep), so it moves with the corpus.
+/// §The quick check); its flags and events do not regenerate on the next sweep,
+/// so it moves with the corpus.
 #[derive(Debug, Serialize, Deserialize)]
 struct QuickCheckRow {
     checked_at: String,
     state_json: String,
 }
 
-/// One episode on the wire (`docs/portfolio-analysis.md` §Outcome learning):
-/// a price record that outlives run retention — an aged-out run cannot
-/// regenerate its episodes, so they move whole, under their ids (insertion
-/// order, and what the checks reference).
+/// One episode on the wire (`docs/portfolio-analysis.md` §Outcome learning), carried
+/// under its id: an aged-out run cannot regenerate its episodes, and the checks
+/// reference the id.
 #[derive(Debug, Serialize, Deserialize)]
 struct EpisodeRow {
     id: i64,
@@ -293,9 +190,8 @@ struct EpisodeCheckRow {
     check_json: String,
 }
 
-/// One shared price-bar cache row on the wire (`docs/storage.md §Local Analysis
-/// Suite Storage`): public price data, carried so imported pending episodes can
-/// mature offline rather than refetching a year of bars.
+/// One price-bar cache row on the wire (`docs/storage.md §Local Analysis Suite
+/// Storage`), carried so imported pending episodes can mature offline.
 #[derive(Debug, Serialize, Deserialize)]
 struct PriceBarRow {
     symbol: String,
@@ -304,9 +200,7 @@ struct PriceBarRow {
 }
 
 /// One web-research document-cache row on the wire (`docs/storage.md §Local
-/// Analysis Suite Storage`): a fetched, readability-extracted document under
-/// its normalized requested URL, with post-redirect provenance separate and
-/// its original retrieval timestamp the immutable vintage.
+/// Analysis Suite Storage`).
 #[derive(Debug, Serialize, Deserialize)]
 struct WebDocumentRow {
     /// Normalized requested-URL cache key.
@@ -321,9 +215,8 @@ struct WebDocumentRow {
     thin_stub: bool,
 }
 
-/// One web-research source-state row on the wire: a domain's learned
-/// extraction telemetry (full-vs-thin counts, the failed / denied attempt
-/// counts, resolved profile, render-first).
+/// One web-research source-state row on the wire: a domain's learned extraction
+/// telemetry.
 #[derive(Debug, Serialize, Deserialize)]
 struct WebSourceStateRow {
     host: String,
@@ -337,8 +230,7 @@ struct WebSourceStateRow {
 }
 
 /// One factor-distribution store row on the wire (`docs/storage.md §Local
-/// Analysis Suite Storage`): an issuer's current reading on one factor, its
-/// bucket and its date — `value` absent exactly when the reading is floored.
+/// Analysis Suite Storage`); `value` is absent exactly when the reading is floored.
 #[derive(Debug, Serialize, Deserialize)]
 struct FactorObservationRow {
     issuer: String,
@@ -358,8 +250,7 @@ struct FactorObservationRow {
 /// What an export wrote, for the Settings section's success line.
 #[derive(Debug, Clone, Serialize)]
 pub struct ExportSummary {
-    /// Where the archive landed — surfaced with the counts
-    /// (`docs/data-portability.md §Export flow`).
+    /// Surfaced with the counts (`docs/data-portability.md §Export flow`).
     pub path: String,
     pub reports: u64,
     pub learnings: u64,
@@ -370,9 +261,8 @@ pub struct ExportSummary {
     pub encrypted: bool,
 }
 
-/// What an import loaded. `skipped_reports` counts report rows whose Markdown
-/// body was missing from the archive — skipped with a log line rather than
-/// imported as dangling shells.
+/// What an import loaded. `skipped_reports` counts report rows whose Markdown body
+/// was missing from the archive, skipped rather than imported as dangling shells.
 #[derive(Debug, Clone, Serialize)]
 pub struct ImportSummary {
     pub reports: u64,
@@ -384,8 +274,7 @@ pub struct ImportSummary {
     pub skipped_reports: u64,
 }
 
-/// A pre-import read of an archive (and container), for the frontend's
-/// confirmation flow.
+/// A pre-import read of an archive, for the frontend's confirmation flow.
 #[derive(Debug, Clone, Serialize)]
 pub struct ArchiveInfo {
     pub encrypted: bool,
@@ -467,9 +356,8 @@ pub fn export_archive(
         crate::embedding::EMBEDDING_MODEL.to_string(),
     );
 
-    // The db/*.ndjson entries join the manifest's checksum inventory alongside
-    // the store files, so import can verify every entry — table rows included —
-    // before its destructive phase.
+    // The db/*.ndjson entries join the checksum inventory alongside the store files,
+    // so import can verify table rows too before its destructive phase.
     let db_payloads: [Vec<u8>; 12] = [
         ndjson(&reports)?,
         ndjson(&snapshots)?,
@@ -525,10 +413,8 @@ pub fn export_archive(
         Some(p) => encrypt_container(&plain, p)?,
         None => plain,
     };
-    // Write-then-rename, so a failed write (disk full, unplugged volume) can
-    // never leave a truncated archive at the chosen path — a partial zip would
-    // otherwise sit there looking like a backup until an import fails it with
-    // a checksum error instead of "the export never completed".
+    // Write-then-rename, so a failed write (disk full, unplugged volume) can never
+    // leave a truncated archive sitting at the chosen path looking like a backup.
     let tmp = match dest.file_name() {
         Some(name) => dest.with_file_name(format!("{}.partial", name.to_string_lossy())),
         None => bail!("export destination {dest:?} has no file name"),
@@ -538,8 +424,7 @@ pub fn export_archive(
         return Err(e).with_context(|| format!("writing archive {tmp:?}"));
     }
     if let Err(e) = std::fs::rename(&tmp, dest) {
-        // Same-directory rename on macOS should not fail after a successful
-        // write, but if it does, don't strand the `.partial` sibling.
+        // Don't strand the `.partial` sibling.
         let _ = std::fs::remove_file(&tmp);
         return Err(e)
             .with_context(|| format!("moving the finished archive into place at {dest:?}"));
@@ -561,9 +446,8 @@ pub fn export_archive(
 // Inspect
 // ---------------------------------------------------------------------------
 
-/// Read an archive's manifest without touching the store — the pre-import peek
-/// behind the frontend's confirmation flow. An encrypted container without a
-/// passphrase is a typed refusal telling the user to supply one.
+/// Read an archive's manifest without touching the store. An encrypted container
+/// without a passphrase is a refusal telling the user to supply one.
 pub fn inspect_archive(src: &Path, passphrase: Option<&str>) -> Result<ArchiveInfo> {
     let (plain, encrypted) = read_container(src, passphrase)?;
     let mut archive = ZipArchive::new(Cursor::new(plain)).context("reading archive")?;
@@ -579,8 +463,7 @@ pub fn inspect_archive(src: &Path, passphrase: Option<&str>) -> Result<ArchiveIn
         snapshots: count(&manifest, "baseline_snapshots"),
         portfolio_runs: count(&manifest, "portfolio_runs"),
         holdings_pulls: count(&manifest, "holdings_pulls"),
-        // Store files only — the db/*.ndjson checksum rows are plumbing, not
-        // user-facing corpus files.
+        // Store files only; the db/*.ndjson rows are plumbing, not corpus files.
         files: manifest
             .files
             .iter()
@@ -605,17 +488,11 @@ pub fn store_is_empty(conn: &Connection) -> Result<bool> {
 // Import
 // ---------------------------------------------------------------------------
 
-/// Load the archive at `src` into the store at `paths`.
-///
-/// Fresh-load or replace-all only (merge is deliberately deferred): a non-empty
-/// store without `replace` is a refusal, and `replace` clears the exported
-/// tables and the three file stores before loading. `app_settings` is never
-/// read or written. The archive is fully validated (format version; every
-/// consumed entry manifest-listed with size + checksum verified; every row
-/// parsed, its embedding decoded, its filename bare; the schema's uniqueness
-/// and cardinality pre-checked) before any destructive step; the row inserts
-/// run in one transaction, while the file writes are ordinary filesystem
-/// operations — a mid-import I/O failure can leave partial files but never a
+/// Load the archive at `src` into the store at `paths`. Fresh-load or replace-all
+/// only (merge is deliberately deferred): a non-empty store without `replace` is a
+/// refusal. The archive is fully validated before any destructive step; the row
+/// inserts run in one transaction while the file writes are ordinary filesystem
+/// operations, so a mid-import I/O failure can leave partial files but never a
 /// partially-inserted table.
 pub fn import_archive(
     paths: &ReportPaths,
@@ -629,11 +506,9 @@ pub fn import_archive(
     check_format_version(&manifest)?;
     let entries = read_entries(&mut archive)?;
 
-    // Verify every manifest-listed file against its size and checksum before
-    // touching anything on disk — and never consume bytes the manifest doesn't
-    // vouch for: a db/*.ndjson or store-file entry absent from the inventory
-    // was never checksummed, so reading it would break the corruption contract.
-    // (Unknown entries nothing consumes stay ignored, for additive tolerance.)
+    // Verify every manifest-listed entry before touching anything on disk, and never
+    // consume bytes the manifest doesn't vouch for: an unlisted entry was never
+    // checksummed. Unknown entries nothing consumes stay ignored.
     for entry in &manifest.files {
         let Some(bytes) = entries.get(&entry.path) else {
             bail!("archive is missing {} listed in its manifest", entry.path);
@@ -643,24 +518,18 @@ pub fn import_archive(
         }
     }
     let verified: BTreeSet<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
-    // Every table entry the archive's own format version requires must be
-    // present AND manifest-vouched. An export always writes its version's full
-    // set, so a missing one is truncation or tampering, not a sparse store —
-    // and without this check a dropped entry+listing pair would silently
-    // import that table as zero rows (`parse_ndjson` tolerates absence only
-    // for entries a later format added — how a v1 archive's absent quick-check
-    // entry reads as empty rather than refused). The manifest loop above
-    // already guarantees a *listed* entry exists and checksums, so membership
-    // in `verified` covers both legs.
+    // An export always writes its version's full entry set, so a missing required
+    // entry is truncation or tampering, not a sparse store; without this check a
+    // dropped entry+listing pair would import the table as zero rows (`parse_ndjson`
+    // tolerates absence, which is how a v1 archive's later entries read as empty).
     for name in required_db_entries(manifest.format_version) {
         if !verified.contains(name) {
             bail!("archive entry {name} is missing or not listed in the manifest — it cannot be verified");
         }
     }
-    // Every table entry present is manifest-vouched too, whatever the version
-    // requires: an older archive's version needs fewer entries, but a later
-    // format's entry riding it unlisted was never checksummed, so it is
-    // refused rather than parsed.
+    // Every table entry present must be manifest-vouched whatever the version
+    // requires: a later format's entry riding an older archive unlisted was never
+    // checksummed, so it is refused rather than parsed.
     for name in DB_ENTRY_NAMES {
         if entries.contains_key(name) && !verified.contains(name) {
             bail!("archive entry {name} is not listed in the manifest — it cannot be verified");
@@ -683,9 +552,8 @@ pub fn import_archive(
     let factor_observation_rows: Vec<FactorObservationRow> =
         parse_ndjson(&entries, "db/factor_observations.ndjson")?;
 
-    // Everything the load will need is decoded and checked HERE, before the
-    // destructive phase, so a malformed row can only ever abort an import while
-    // the target store is still untouched.
+    // Everything the load needs is decoded and checked here, before the destructive
+    // phase, so a malformed row can only abort while the target is untouched.
     // Every vector row is the report's (`docs/storage.md §Local Vector Memory`).
     if let Some(row) = vector_rows.iter().find(|r| r.namespace != "report") {
         bail!(
@@ -710,10 +578,9 @@ pub fn import_archive(
             );
         }
     }
-    // The uniqueness and cardinality the schema will enforce, pre-checked so a
-    // constraint violation can only ever abort while the store is untouched —
-    // the file mutations precede the row transaction, so an in-transaction
-    // failure would strand restored rows pointing at replaced files.
+    // The schema's uniqueness and cardinality, pre-checked: the file mutations
+    // precede the row transaction, so an in-transaction constraint failure would
+    // strand replaced files with no rows pointing at them.
     let mut seen_report_ids = BTreeSet::new();
     for row in &report_rows {
         if !seen_report_ids.insert(row.report_id.as_str()) {
@@ -738,10 +605,7 @@ pub fn import_archive(
             quick_rows.len()
         );
     }
-    // The episode store's schema constraints, mirrored pre-destructively: the
-    // episode and check id keys, a check's horizon held to one check per
-    // episode, and every check's episode present — plus the price-bar
-    // (symbol, date) primary key.
+    // The episode store's and price-bar cache's schema constraints, mirrored.
     let mut seen_episode_ids = BTreeSet::new();
     for row in &episode_rows {
         if !seen_episode_ids.insert(row.id) {
@@ -779,7 +643,7 @@ pub fn import_archive(
             );
         }
     }
-    // The web-research stores' primary keys, mirrored pre-destructively.
+    // The web-research stores' primary keys, mirrored.
     let mut seen_doc_urls = BTreeSet::new();
     for row in &web_document_rows {
         if !seen_doc_urls.insert(row.url.as_str()) {
@@ -792,8 +656,7 @@ pub fn import_archive(
             bail!("archive carries a duplicate source state for {:?}", row.host);
         }
     }
-    // The factor-distribution store's (issuer, factor) primary key and its
-    // value-or-floored check, mirrored pre-destructively.
+    // The factor store's (issuer, factor) key and its value-or-floored check, mirrored.
     let mut seen_observation_keys = BTreeSet::new();
     for row in &factor_observation_rows {
         if !seen_observation_keys.insert((row.issuer.as_str(), row.factor.as_str())) {
@@ -819,11 +682,9 @@ pub fn import_archive(
             }
         }
     }
-    // Report rows whose Markdown body is absent from the archive are skipped
-    // (never imported as dangling shells); their summary vector rows and
-    // baseline snapshots drop with them, mirroring the live store's per-report
-    // deletion cascade (`storage::delete_report_baseline_snapshots`). Learnings
-    // are kind-based and always survive.
+    // A report row whose Markdown body is absent is skipped, and its summary vector
+    // and baseline snapshot drop with it, mirroring the live store's per-report
+    // cascade (`storage::delete_report_baseline_snapshots`); learnings always survive.
     let archived_report_files: BTreeSet<&str> = entries
         .keys()
         .filter_map(|k| k.strip_prefix("reports/"))
@@ -839,7 +700,6 @@ pub fn import_archive(
             row.report_id.as_str()
         })
         .collect();
-    // The store-file write list, prefix-routed and name-checked up front.
     let mut planned_files: Vec<(&std::path::Path, &str, &[u8])> = Vec::new();
     for (name, bytes) in &entries {
         let Some((prefix, rest)) = name.split_once('/') else {
@@ -867,8 +727,7 @@ pub fn import_archive(
         bail!("the store is not empty — import replaces all analytical data and requires explicit confirmation");
     }
 
-    // Destructive phase begins. Files first (clear, then extract), then the
-    // rows in a single transaction.
+    // Destructive phase: files first, then the rows in a single transaction.
     for dir in [&paths.reports_dir, &paths.archive_dir, &paths.inbox_dir] {
         if !empty {
             clear_dir_files(dir)?;
@@ -892,8 +751,7 @@ pub fn import_archive(
         if skipped.contains(row.report_id.as_str()) {
             continue;
         }
-        // The one path the archive never carries verbatim: re-derived against
-        // the *target's* reports dir.
+        // Re-derived against the target's reports dir; the archive carries no path.
         let markdown_path = paths
             .reports_dir
             .join(&row.markdown_filename)
@@ -1310,19 +1168,16 @@ fn read_container(src: &Path, passphrase: Option<&str>) -> Result<(Vec<u8>, bool
     }
 }
 
-/// Ceiling on `manifest.json` itself. The manifest is read (and inflated)
-/// *before* `read_entries_bounded` can apply the archive-wide ceiling — both
-/// inspect and import read it first — so a bomb placed in the manifest would
-/// bypass that bound entirely. A real manifest is a few KB of inventory;
-/// 16 MiB is orders of magnitude of headroom.
+/// Ceiling on `manifest.json` itself: it is inflated before `read_entries_bounded`
+/// can apply the archive-wide ceiling, so a bomb in the manifest would bypass that
+/// bound. A real manifest is a few KB of inventory.
 const MAX_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 
 fn read_manifest(archive: &mut ZipArchive<Cursor<Vec<u8>>>) -> Result<Manifest> {
     read_manifest_bounded(archive, MAX_MANIFEST_BYTES)
 }
 
-/// `read_manifest` with the ceiling injectable, mirroring
-/// `read_entries_bounded`'s test seam.
+/// `read_manifest` with the ceiling injectable for tests.
 fn read_manifest_bounded(
     archive: &mut ZipArchive<Cursor<Vec<u8>>>,
     limit: u64,
@@ -1362,24 +1217,21 @@ fn count(manifest: &Manifest, table: &str) -> u64 {
     manifest.row_counts.get(table).copied().unwrap_or(0)
 }
 
-/// Ceiling on an archive's total unpacked size. The whole archive is held in
-/// memory by design (a real corpus is tens of MB), so a crafted zip must not
-/// be able to demand arbitrary memory — deflate inflates up to ~1032:1, and an
-/// entry's header can simply lie about its size. Generous by two orders of
-/// magnitude over any real corpus.
+/// Ceiling on an archive's total unpacked size. The whole archive is held in memory
+/// (a real corpus is tens of MB), so a crafted zip must not be able to demand
+/// arbitrary memory: deflate inflates up to ~1032:1, and an entry's header can lie
+/// about its size.
 const MAX_UNPACKED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
-/// All file entries as `name → bytes`, zip-slip-guarded: any entry whose path
-/// would escape the archive root is a hard error, never written.
+/// All file entries as `name → bytes`, zip-slip-guarded: an entry whose path would
+/// escape the archive root is a hard error.
 fn read_entries(archive: &mut ZipArchive<Cursor<Vec<u8>>>) -> Result<BTreeMap<String, Vec<u8>>> {
     read_entries_bounded(archive, MAX_UNPACKED_BYTES)
 }
 
-/// `read_entries` with the unpacked-size ceiling injectable, so a test can
-/// exercise the bound without a multi-GB fixture. Both guards distrust the
-/// entry header: preallocation is capped (a header may claim any size), and
-/// the ceiling is enforced on bytes *actually inflated*, via a `take` one past
-/// the remaining budget.
+/// `read_entries` with the ceiling injectable for tests. Both guards distrust the
+/// entry header: preallocation is capped, and the ceiling is enforced on bytes
+/// actually inflated, via a `take` one past the remaining budget.
 fn read_entries_bounded(
     archive: &mut ZipArchive<Cursor<Vec<u8>>>,
     limit: u64,
@@ -1479,8 +1331,7 @@ fn clear_dir_files(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A bare filename with no path components — the only shape a row's
-/// `markdown_filename` or a store file entry may take.
+/// The only shape a row's `markdown_filename` or a store file entry may take.
 fn is_bare_filename(name: &str) -> bool {
     !name.is_empty()
         && Path::new(name)
@@ -1500,14 +1351,12 @@ fn sha256_hex(bytes: &[u8]) -> String {
 // Passphrase encryption
 // ---------------------------------------------------------------------------
 
-/// The Argon2id cost parameters, FROZEN rather than defaulted: the container
-/// stores salt + nonce but no KDF parameters, so the derivation must be
-/// bit-stable forever — `Params::DEFAULT` is a crate-version artifact that has
-/// already changed once (argon2 0.4→0.5 moved m/t), and silently inheriting a
-/// future bump would make every existing encrypted archive fail as "wrong
-/// passphrase" on the one artifact whose spec promises no recovery path. These
-/// are argon2 0.5's Argon2id v19 defaults (the OWASP baseline): m = 19456 KiB,
-/// t = 2, p = 1. Raising them requires a new container version (`ENC_MAGIC`).
+/// The Argon2id cost parameters, FROZEN rather than defaulted: the container stores
+/// salt + nonce but no KDF parameters, so the derivation must be bit-stable forever.
+/// `Params::DEFAULT` is a crate-version artifact (argon2 0.4→0.5 moved m/t), and
+/// inheriting a bump would make every existing encrypted archive fail as "wrong
+/// passphrase" with no recovery path. These are argon2 0.5's Argon2id v19 defaults
+/// (m in KiB). Raising them requires a new container version (`ENC_MAGIC`).
 const ARGON2_M_COST: u32 = 19_456;
 const ARGON2_T_COST: u32 = 2;
 const ARGON2_P_COST: u32 = 1;
@@ -1575,8 +1424,7 @@ mod tests {
     use super::*;
     use crate::vector_memory::embedding_to_blob;
 
-    /// A provisioned empty store under a temp dir (guard returned to keep it
-    /// alive), mirroring `pipeline`'s tempdir-not-`:memory:` test pattern.
+    /// A provisioned empty store under a temp dir; the guard keeps it alive.
     fn temp_store() -> (tempfile::TempDir, ReportPaths) {
         let dir = tempfile::tempdir().unwrap();
         let paths = ReportPaths::under(dir.path());
@@ -1624,9 +1472,8 @@ mod tests {
             )
             .unwrap();
         }
-        // Every row typed and decodable: the runs carry every field the later
-        // formats added (the review and its mark, the fund basis's NAV, the
-        // overlay, the accuracy record, the basis read).
+        // The runs carry every field of the current run shape, so the round trip
+        // proves they decode whole.
         for (run_id, created_at) in [
             ("run-one", "2026-07-06T12:00:00Z"),
             ("run-two", "2026-07-06T14:00:00Z"),
@@ -1848,8 +1695,6 @@ mod tests {
         assert_eq!(research.write_ups.len(), 1);
         assert_eq!(research.roster[0].published.as_deref(), Some("2025-03-27"));
         assert_eq!(research.roster[0].retrieved_at, "2026-09-16T12:00:00Z");
-        // The consolidation record and the analysis ride the audit through
-        // the archive (format 18).
         assert_eq!(research.distillation.shape, crate::portfolio::distill::DistillationShape::Merged);
         assert_eq!(research.distillation.calls, 1);
         let analysis = restored.audit[0].analysis.as_ref().expect("the analysis record");
@@ -1939,9 +1784,8 @@ mod tests {
         assert_eq!(loaded.holdings_pulls, 1);
         assert_eq!(loaded.skipped_reports, 0);
 
-        // Full-row parity on every archived table: every column of every row,
-        // the re-derived `markdown_path` and the vector rows' local ids alone
-        // excepted (the episode store's ids travel with its rows).
+        // Full-row parity on every table; only the re-derived `markdown_path` and the
+        // vector rows' local ids are excepted (the episode store's ids travel).
         for table in TABLES {
             let except: &[&str] = match table {
                 "reports" => &["markdown_path"],
@@ -1952,7 +1796,6 @@ mod tests {
             assert!(!rows.is_empty(), "{table} is seeded");
             assert_eq!(rows, table_rows(&target, table, except), "{table}");
         }
-        // The restored runs decode whole, every later format's field with them.
         let conn = storage::open(&target.db_path).unwrap();
         let restored = crate::portfolio::store::run_by_id(&conn, "run-one")
             .unwrap()
@@ -1961,8 +1804,6 @@ mod tests {
             restored,
             crate::portfolio::store::archive_test_run("run-one", "2026-07-06T12:00:00Z")
         );
-        // markdown_path re-derived against the target's own reports dir, and
-        // the body readable through it.
         let markdown_path: String = conn
             .query_row(
                 "SELECT markdown_path FROM reports WHERE report_id = 'report-one'",
@@ -1972,7 +1813,6 @@ mod tests {
             .unwrap();
         assert!(markdown_path.starts_with(&target.reports_dir.to_string_lossy().into_owned()));
         assert_eq!(std::fs::read_to_string(&markdown_path).unwrap(), "# Issue one\n");
-        // Embedding bytes survive the base64 leg exactly.
         let blob: Vec<u8> = conn
             .query_row(
                 "SELECT embedding FROM vector_memory WHERE kind = 'summary'",
@@ -1981,7 +1821,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(blob, embedding_to_blob(&[0.1, 0.2, 0.3]));
-        // Research files land in the target's folders.
         assert_eq!(
             std::fs::read_to_string(target.archive_dir.join("filed-note.md")).unwrap(),
             "archived research\n"
@@ -1990,7 +1829,6 @@ mod tests {
             std::fs::read_to_string(target.inbox_dir.join("pending-note.txt")).unwrap(),
             "inbox research\n"
         );
-        // Import never touches app_settings — the target's stays empty.
         assert_eq!(table_count(&target, "app_settings"), 0);
     }
 
@@ -2027,8 +1865,7 @@ mod tests {
                 crate::embedding::EMBEDDING_MODEL.to_string()
             )])
         );
-        // The db/*.ndjson entries ride the checksum inventory too, so import
-        // verifies table rows before its destructive phase.
+        // The db/*.ndjson entries ride the checksum inventory too.
         for name in [
             "db/reports.ndjson",
             "db/vector_memory.ndjson",
@@ -2097,7 +1934,6 @@ mod tests {
     fn report_with_missing_markdown_is_skipped_with_its_summary_row() {
         let (_a, source) = temp_store();
         seed_store(&source);
-        // Remove one body out-of-band so its row exports without a file.
         std::fs::remove_file(
             source
                 .reports_dir
@@ -2112,8 +1948,7 @@ mod tests {
         assert_eq!(loaded.skipped_reports, 1);
         assert_eq!(loaded.reports, 1);
         let conn = storage::open(&target.db_path).unwrap();
-        // report-one's summary row dropped with it; both learnings survive, and
-        // report-two's snapshot is untouched by report-one's skip.
+        // report-one's summary row drops with it; report-two's snapshot is untouched.
         let summaries: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM vector_memory WHERE kind = 'summary'",
@@ -2130,9 +1965,8 @@ mod tests {
     fn a_skipped_report_cascades_its_baseline_snapshot() {
         let (_a, source) = temp_store();
         seed_store(&source);
-        // report-two carries the seeded snapshot; removing ITS body out-of-band
-        // exercises the snapshot leg of the skip cascade (mirroring the live
-        // store's delete_report_baseline_snapshots).
+        // report-two carries the seeded snapshot, so removing its body exercises the
+        // snapshot leg of the cascade.
         std::fs::remove_file(
             source
                 .reports_dir
@@ -2147,7 +1981,6 @@ mod tests {
         assert_eq!(loaded.skipped_reports, 1);
         assert_eq!(loaded.reports, 1);
         assert_eq!(loaded.snapshots, 0);
-        // report-one's summary survives — its report was imported fine.
         let conn = storage::open(&target.db_path).unwrap();
         let summaries: i64 = conn
             .query_row(
@@ -2167,9 +2000,8 @@ mod tests {
         let dest = source.db_path.parent().unwrap().join("export.zip");
         export_archive(&source, &dest, None).unwrap();
 
-        // Tamper one embedding into JSON-valid but undecodable base64, with a
-        // RE-STAMPED manifest listing — so only the pre-destructive decode
-        // pass can catch it, not the checksum verification.
+        // Re-stamped, so only the pre-destructive decode pass can catch it, not the
+        // checksum verification.
         let mut entries = read_archive_entries(&dest);
         let vectors_name = "db/vector_memory.ndjson";
         let tampered_rows: Vec<u8> = {
@@ -2194,7 +2026,6 @@ mod tests {
         seed_old_report(&target);
         let err = import_archive(&target, &tampered_path, None, true).unwrap_err();
         assert!(err.to_string().contains("embedding"), "{err}");
-        // Old row AND old Markdown body survive: nothing was cleared.
         assert_eq!(table_count(&target, "reports"), 1);
         assert!(target.reports_dir.join("old-report.md").exists());
     }
@@ -2206,8 +2037,6 @@ mod tests {
         let dest = source.db_path.parent().unwrap().join("export.zip");
         export_archive(&source, &dest, None).unwrap();
 
-        // Every vector row is the report's, so a row in another namespace is
-        // refused before the destructive phase.
         let mut entries = read_archive_entries(&dest);
         let vectors_name = "db/vector_memory.ndjson";
         let tampered_rows: Vec<u8> = {
@@ -2243,7 +2072,7 @@ mod tests {
         export_archive(&source, &dest, None).unwrap();
         let (_b, target) = temp_store();
 
-        // (a) An extra store file smuggled in without a manifest listing.
+        // (a) An unlisted store file.
         let mut entries = read_archive_entries(&dest);
         entries.insert("reports/rogue.md".to_string(), b"# Rogue\n".to_vec());
         let rogue_path = source.db_path.parent().unwrap().join("rogue.zip");
@@ -2253,8 +2082,7 @@ mod tests {
         assert_eq!(table_count(&target, "reports"), 0);
         assert!(!target.reports_dir.join("rogue.md").exists());
 
-        // (b) A db entry whose manifest listing was dropped — its bytes were
-        // never checksummed, so they must not be parsed.
+        // (b) A db entry whose manifest listing was dropped.
         let mut entries = read_archive_entries(&dest);
         let mut manifest: Manifest =
             serde_json::from_slice(&entries["manifest.json"]).unwrap();
@@ -2277,10 +2105,9 @@ mod tests {
         let dest = source.db_path.parent().unwrap().join("export.zip");
         export_archive(&source, &dest, None).unwrap();
 
-        // Duplicate the first report row, re-stamped so it survives checksum
-        // verification — only the uniqueness pre-check can catch it (the INSERT
-        // would otherwise violate the PRIMARY KEY mid-transaction, after the
-        // file mutations).
+        // Re-stamped so only the uniqueness pre-check can catch it, not the checksum
+        // verification; the INSERT would otherwise fail mid-transaction, after the
+        // file mutations.
         let mut entries = read_archive_entries(&dest);
         let text = String::from_utf8(entries["db/reports.ndjson"].clone()).unwrap();
         let first = text.lines().next().unwrap().to_string();
@@ -2330,7 +2157,6 @@ mod tests {
         let dest = source.db_path.parent().unwrap().join("export.zip");
         export_archive(&source, &dest, None).unwrap();
 
-        // Rebuild the zip with one report body tampered, manifest untouched.
         let mut entries = read_archive_entries(&dest);
         let name = entries
             .keys()
@@ -2344,7 +2170,6 @@ mod tests {
         let (_b, target) = temp_store();
         let err = import_archive(&target, &tampered_path, None, false).unwrap_err();
         assert!(err.to_string().contains("checksum"), "{err}");
-        // Validation happens before any destructive step: target untouched.
         assert_eq!(table_count(&target, "reports"), 0);
     }
 
@@ -2355,8 +2180,7 @@ mod tests {
         let dest = source.db_path.parent().unwrap().join("export.zip");
         export_archive(&source, &dest, None).unwrap();
 
-        // Stamp a future format version (the manifest itself carries no
-        // checksum, so a plain rewrite suffices).
+        // The manifest itself carries no checksum, so a plain rewrite suffices.
         let mut entries = read_archive_entries(&dest);
         let mut manifest: Manifest =
             serde_json::from_slice(&entries["manifest.json"]).unwrap();
@@ -2383,9 +2207,8 @@ mod tests {
         let dest = source.db_path.parent().unwrap().join("export.zip");
         export_archive(&source, &dest, None).unwrap();
 
-        // Drop BOTH the entry and its manifest listing — without the
-        // required-tables check this would import vector_memory as silently
-        // zero rows (an export always writes its version's full entry set).
+        // Both the entry and its listing dropped: without the required-entries check
+        // this would import vector_memory as zero rows.
         let mut entries = read_archive_entries(&dest);
         entries.remove("db/vector_memory.ndjson");
         let mut manifest: Manifest =
@@ -2411,8 +2234,8 @@ mod tests {
         let dest = source.db_path.parent().unwrap().join("export.zip");
         export_archive(&source, &dest, None).unwrap();
 
-        // A format-24 archive without the factor-distribution store's entry and
-        // its listing is truncated, never a store with no observations.
+        // A current-format archive without the entry is truncated, never a store
+        // with no observations.
         let mut entries = read_archive_entries(&dest);
         entries.remove("db/factor_observations.ndjson");
         let mut manifest: Manifest =
@@ -2454,8 +2277,7 @@ mod tests {
         let dest = source.db_path.parent().unwrap().join("export.zip");
         export_archive(&source, &dest, None).unwrap();
 
-        // Drop the v2-only quick-check entry and its listing. Under the
-        // archive's own (v2) version that is truncation and must refuse…
+        // Under the archive's own version a missing quick-check entry is truncation…
         let mut entries = read_archive_entries(&dest);
         entries.remove("db/portfolio_quick_checks.ndjson");
         let mut manifest: Manifest =
@@ -2474,9 +2296,8 @@ mod tests {
         let err = import_archive(&target, &truncated, None, false).unwrap_err();
         assert!(err.to_string().contains("missing or not listed"), "{err}");
 
-        // …while a v1 archive is complete at five entries — backward
-        // compatibility by version, never sparse tolerance
-        // (`docs/data-portability.md` §Import flow).
+        // …while a v1 archive is complete at five entries: compatibility by version,
+        // never sparse tolerance (`docs/data-portability.md` §Import flow).
         manifest.format_version = 1;
         entries.insert(
             "manifest.json".to_string(),
@@ -2497,10 +2318,8 @@ mod tests {
         let dest = source.db_path.parent().unwrap().join("export.zip");
         export_archive(&source, &dest, None).unwrap();
 
-        // A v1 archive needs only its five entries listed, but a later
-        // format's entry present without a listing was never checksummed: it
-        // is refused, never imported unverified — the factor store's entry and
-        // an older later entry alike.
+        // A later format's entry present without a listing was never checksummed, so
+        // it is refused rather than imported unverified.
         for unlisted in ["db/factor_observations.ndjson", "db/portfolio_quick_checks.ndjson"] {
             let mut entries = read_archive_entries(&dest);
             let mut manifest: Manifest =
@@ -2529,8 +2348,7 @@ mod tests {
         let dest = source.db_path.parent().unwrap().join("export.zip");
         export_archive(&source, &dest, None).unwrap();
 
-        // Drop the episode-store and price-bar entries and their listings.
-        // Under the archive's own version that is truncation and must refuse…
+        // Under the archive's own version the dropped entries are truncation…
         let mut entries = read_archive_entries(&dest);
         let dropped = [
             "db/portfolio_episodes.ndjson",
@@ -2555,8 +2373,7 @@ mod tests {
         let err = import_archive(&target, &truncated, None, false).unwrap_err();
         assert!(err.to_string().contains("missing or not listed"), "{err}");
 
-        // …and re-stamping it v2 does not rescue it: v2 was a pre-release
-        // format no shipped build wrote, refused outright (ruled 2026-08-29).
+        // …and re-stamping it v2 does not rescue it: a pre-release format is refused.
         manifest.format_version = 2;
         entries.insert(
             "manifest.json".to_string(),
@@ -2577,8 +2394,7 @@ mod tests {
         let dest = source.db_path.parent().unwrap().join("export.zip");
         export_archive(&source, &dest, None).unwrap();
 
-        // Drop the entries introduced in v4 and their listings. Under the
-        // archive's own current (v7) version that is truncation and must refuse…
+        // Under the archive's own version the dropped entries are truncation…
         let mut entries = read_archive_entries(&dest);
         for name in ["db/web_documents.ndjson", "db/web_source_state.ndjson"] {
             entries.remove(name);
@@ -2599,8 +2415,7 @@ mod tests {
         let err = import_archive(&target, &truncated, None, false).unwrap_err();
         assert!(err.to_string().contains("missing or not listed"), "{err}");
 
-        // …and re-stamping it v3 does not rescue it: v3 was a pre-release
-        // format no shipped build wrote, refused outright (ruled 2026-08-29).
+        // …and re-stamping it v3 does not rescue it: a pre-release format is refused.
         manifest.format_version = 3;
         entries.insert(
             "manifest.json".to_string(),
@@ -2616,10 +2431,8 @@ mod tests {
 
     #[test]
     fn every_pre_release_format_stamp_is_refused() {
-        // v2 through v23 were pre-release formats no shipped build wrote
-        // (ruled 2026-08-29), and no build wrote v0: a complete current export
-        // re-stamped any of these ways is refused outright, never read through
-        // a compat rung.
+        // A complete current export re-stamped v0 or any pre-release version is
+        // refused outright, never read through a compat rung.
         let (_a, source) = temp_store();
         seed_store(&source);
         let dest = source.db_path.parent().unwrap().join("export.zip");
@@ -2753,8 +2566,7 @@ mod tests {
         export_archive(&source, &dest, None).unwrap();
         let (_b, target) = temp_store();
 
-        // (a) A `..` component — the zip-slip guard rejects it at read time,
-        // before validation even begins.
+        // (a) A `..` component: the zip-slip guard rejects it at read time.
         let mut entries = read_archive_entries(&dest);
         add_entry_rechecksummed(&mut entries, "reports/../evil.md", b"# Evil\n".to_vec());
         let dotdot_path = source.db_path.parent().unwrap().join("dotdot.zip");
@@ -2762,9 +2574,8 @@ mod tests {
         let err = import_archive(&target, &dotdot_path, None, false).unwrap_err();
         assert!(err.to_string().contains("unsafe path"), "{err}");
 
-        // (b) A nested path — enclosed within the archive (so the zip-slip
-        // guard passes), but a store file must be a bare filename under its
-        // prefix; manifest-listed so only the bare-name check can catch it.
+        // (b) A nested path passes the zip-slip guard, so only the bare-name check
+        // can catch it; manifest-listed so the checksum pass doesn't either.
         let mut entries = read_archive_entries(&dest);
         add_entry_rechecksummed(&mut entries, "reports/sub/evil.md", b"# Evil\n".to_vec());
         let nested_path = source.db_path.parent().unwrap().join("nested.zip");
@@ -2773,8 +2584,7 @@ mod tests {
         assert!(err.to_string().contains("unsafe path"), "{err}");
         assert!(!target.reports_dir.join("evil.md").exists());
 
-        // (c) A report row whose markdown_filename escapes — re-checksummed so
-        // only the bare-filename row pre-check can catch it.
+        // (c) A report row whose markdown_filename escapes, re-checksummed.
         let mut entries = read_archive_entries(&dest);
         let text = String::from_utf8(entries["db/reports.ndjson"].clone()).unwrap();
         let mut out = Vec::new();
@@ -2792,15 +2602,12 @@ mod tests {
         let err = import_archive(&target, &escape_path, None, false).unwrap_err();
         assert!(err.to_string().contains("unsafe markdown filename"), "{err}");
 
-        // Nothing was written or inserted by any of the three.
         assert_eq!(table_count(&target, "reports"), 0);
     }
 
     #[test]
     fn an_archive_that_unpacks_past_the_ceiling_is_refused() {
-        // Exercises the unpacked-size bound through the injectable limit (a
-        // multi-GB fixture would be absurd): 4 KiB of entry against a 1 KiB
-        // ceiling refuses; the same entry under a roomy ceiling reads whole.
+        // Through the injectable limit; a multi-GB fixture would be absurd.
         let build = || {
             let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
             let opts =
@@ -2820,9 +2627,6 @@ mod tests {
 
     #[test]
     fn an_oversized_manifest_is_refused() {
-        // The manifest inflates BEFORE the archive-wide entries ceiling can
-        // apply (both inspect and import read it first), so it carries its own
-        // bound — a bomb in manifest.json must refuse, not exhaust memory.
         let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
         let opts =
             SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
@@ -2834,9 +2638,8 @@ mod tests {
         let err = read_manifest_bounded(&mut archive, 1024).unwrap_err();
         assert!(err.to_string().contains("ceiling"), "{err}");
 
-        // Under a roomy ceiling the same entry reads through to the JSON
-        // parser (whitespace is not a manifest — the point is the bound
-        // fires first, the parser second).
+        // Under a roomy ceiling the same entry reaches the JSON parser: the bound
+        // fires first, the parser second.
         let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
         let err = read_manifest_bounded(&mut archive, 8192).unwrap_err();
         assert!(err.to_string().contains("parsing manifest.json"), "{err}");
@@ -2844,13 +2647,9 @@ mod tests {
 
     #[test]
     fn key_derivation_parameters_are_frozen() {
-        // Pins the Argon2id derivation bit-for-bit: the encrypted container
-        // stores salt + nonce but no KDF parameters, so ANY drift — a
-        // dependency bump changing `Params::DEFAULT`, a refactor back to
-        // `Argon2::default()` — silently breaks decryption of every existing
-        // encrypted archive. If this test fails, do NOT update the expected
-        // value: old archives could no longer be opened. Keep this derivation
-        // for `MSDPENC1` and introduce a new container version instead.
+        // Pins the derivation bit-for-bit. If this test fails, do NOT update the
+        // expected value: existing encrypted archives could no longer be opened.
+        // Keep this derivation for `MSDPENC1` and introduce a new container version.
         let key = derive_key("hunter2", b"0123456789abcdef").unwrap();
         let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(

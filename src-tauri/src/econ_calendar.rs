@@ -1,19 +1,9 @@
 //! The economic-calendar consensus and surprise join (`docs/data-sources.md §Report
 //! enrichment`): FMP's paid `economic-calendar` layered onto FRED's release schedule.
-//!
-//! FRED stays the schedule backbone; this module is the pure half of the enrichment. The
-//! curated [`EVENT_MAP`] pairs each tracked FRED release (by its numeric `release_id`)
-//! with the FMP events it fans out to, each row carrying the event's unit, favorable
-//! polarity and in-line epsilon. [`surprises_for`] joins one FRED release date against the
-//! fetched rows — the FMP name with its trailing reference period stripped must match the
-//! map's event exactly, within a one-day date tolerance, the latest print winning — and
-//! classifies each matched print. [`fed_events`] picks the Fed / FOMC events FRED has no
-//! scheduled-date series for out of the same rows.
-//!
 //! The wire fetch lives in `fmp` behind [`EconomicCalendarSource`]; the join runs inside
-//! the FRED adapter's calendar loop, where each release's id is in scope. Fail-soft
-//! throughout: an unmapped release, a null estimate or an empty fetch leaves the release
-//! at names and dates — never a fabricated consensus.
+//! the FRED adapter's calendar loop. Fail-soft throughout: an unmapped release, a null
+//! estimate or an empty fetch leaves the release at names and dates — never a
+//! fabricated consensus.
 
 use anyhow::{anyhow, Result};
 use chrono::{Duration, NaiveDate};
@@ -33,9 +23,8 @@ pub enum Polarity {
     Neutral,
 }
 
-/// One release ↔ event pair of the curated map: the FRED release it belongs to, the FMP
-/// event name (reference period stripped), the unit the event's values are served in,
-/// its favorable polarity, and the in-line band in those units.
+/// One release ↔ event pair of the curated map; `event` is the FMP name with its
+/// reference period stripped and `epsilon` the in-line band in `unit`.
 #[derive(Debug, Clone, Copy)]
 pub struct EventMapRow {
     pub release_id: u32,
@@ -45,11 +34,9 @@ pub struct EventMapRow {
     pub epsilon: f64,
 }
 
-/// The release → event map, the canonical table in `docs/data-sources.md §Report
-/// enrichment`. A release's rows form its event set; the order is the order a
-/// release's `surprises` serialize in. The FMP event strings and raw scales are
-/// live-verified (NFP served in `K`, JOLTs in `M`); a wrong string fails soft to an
-/// unmapped event.
+/// The release → event map (`docs/data-sources.md §Report enrichment`). A release's rows
+/// form its event set, in the order its `surprises` serialize; a wrong FMP event string
+/// fails soft to an unmapped event.
 pub const EVENT_MAP: &[EventMapRow] = &[
     row(50, "Non Farm Payrolls", "thousands of jobs", Polarity::HigherFavorable, 25.0),
     row(50, "Unemployment Rate", "percent", Polarity::LowerFavorable, 0.1),
@@ -90,8 +77,8 @@ const fn row(
 }
 
 /// The Fed / FOMC events carried as their own calendar class, matched exactly on the
-/// period-stripped FMP name (live-verified). The feed's Fed-speaker rows and its bare
-/// `Press Conference` row on the decision date stay out.
+/// period-stripped FMP name. The feed's Fed-speaker rows and its bare `Press
+/// Conference` row on the decision date stay out.
 pub const FED_EVENTS: &[&str] = &[
     "Fed Interest Rate Decision",
     "FOMC Minutes",
@@ -109,9 +96,9 @@ pub const DATE_TOLERANCE_DAYS: i64 = 1;
 /// estimate (`4.2` vs `4.1` at `±0.1`) reads in-line despite binary rounding.
 const EPSILON_SLACK: f64 = 1e-9;
 
-/// One FMP economic-calendar row, read leniently: the event name as served (reference
-/// period included), the calendar date of the served datetime, the datetime itself for
-/// latest-print ordering, and the impact, estimate and actual where they are usable.
+/// One FMP economic-calendar row, read leniently: `event` as served (reference period
+/// included), `date` the calendar date of the served datetime, `datetime` kept for
+/// latest-print ordering.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CalendarRow {
     pub event: String,
@@ -415,7 +402,6 @@ mod tests {
 
     #[test]
     fn an_unmapped_release_carries_no_surprises() {
-        // A release id with no map rows stays at names and dates, whatever the feed holds.
         let rows = vec![print("Non Farm Payrolls (Sep)", "2026-10-02 12:30:00", Some(90.0), Some(29.0))];
         assert!(surprises_for(999, d("2026-10-02"), &rows).is_empty());
         // So does a mapped release with nothing on its date.

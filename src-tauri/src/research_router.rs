@@ -1,23 +1,7 @@
-//! The research-routing stage: a pure structured-in / structured-out boundary
-//! that turns this run's baseline, its change view, the Step-7 news clusters, and
-//! the recent prior-report summaries into a bounded research plan
-//! (`docs/report-workflow.md §Step 8`).
-//!
-//! This is Step 8. Step 7 narrows ~500 headlines to ~10 clusters
-//! (`headline_filter`); routing decides which at most ~5 of those topics — plus
-//! whatever the baseline moves and the change view surface — deserve the deep
-//! investigation that Step 9's bounded executor will carry out. The plan defines
-//! *what* to investigate; it does not loop or fetch (`docs/agents.md §Research
-//! Routing`).
-//!
-//! Mirrors the `headline_filter` spine: the trait method is synchronous and pure,
-//! a deterministic `StubResearchRouter` stands in offline, and the real
-//! `ModelResearchRouter` (its blocking Claude Sonnet HTTP call) replaces the stub
-//! behind the same trait. Routing uses the fixed mid-tier model (Claude Sonnet,
-//! `docs/agents.md §Research Routing`) — non-configurable, distinct from the
-//! user-selectable agent models. Like the Step-7 filter, this stage runs inside
-//! `pipeline::assemble_research_packet`; the plan's consumer is the Step-9
-//! executor.
+//! Step 8, research routing (`docs/report-workflow.md §Step 8`, `docs/agents.md
+//! §Research Routing`): a pure structured-in / structured-out stage that turns the
+//! baseline, its change view, the Step-7 clusters and the prior-report context into a
+//! bounded `ResearchPlan` for the Step-9 executor, on the fixed mid-tier model.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,23 +18,19 @@ use crate::model_agent::{extract_anthropic_tool_input, ANTHROPIC_VERSION};
 use crate::news::RawHeadline;
 use crate::progress::RunContext;
 
-/// The bounded ceiling on topics the plan carries — the "~5 deeply analyzed
-/// topics" Step 7's funnel hands to routing (`docs/report-workflow.md
-/// §Step 7`). Enforced in `plan_from_envelope` (the model is asked for at most
-/// this many, but the cap is applied deterministically rather than trusted).
+/// The ceiling on topics the plan carries — the "~5 deeply analyzed topics"
+/// (`docs/report-workflow.md §Step 7`). Applied deterministically in
+/// `plan_from_envelope` rather than trusted to the model.
 pub const MAX_RESEARCH_ITEMS: usize = 5;
 
-/// The per-topic ceiling on concrete research questions. A shape bound, not the
-/// hard request budget — the 50-request / depth-2 / 30-minute limits live in the
-/// Step-9 executor (`docs/report-workflow.md §Step 9`), not the plan — but
-/// keeping each topic to a handful of directions stops a lax model response from
-/// handing the executor an unbounded fan-out (5 topics × 4 × depth-2 stays inside
-/// the 50-request budget with headroom).
+/// The per-topic ceiling on research questions. A shape bound, not the request budget
+/// (that lives in the Step-9 executor): it stops a lax model response from handing the
+/// executor an unbounded fan-out — 5 topics × 4 × depth-2 stays inside the 50-request
+/// budget with headroom.
 const MAX_QUERIES_PER_ITEM: usize = 4;
 
-/// One topic the router flagged for deeper investigation: a label, a rationale
-/// tying it to the evidence, the model's 0.0–1.0 priority (used to rank and cap
-/// the set), and the concrete questions Step 9 should pursue.
+/// One topic flagged for deeper investigation; `priority` is 0.0–1.0 and ranks the set
+/// against the item cap.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResearchItem {
     pub topic: String,
@@ -59,67 +39,44 @@ pub struct ResearchItem {
     pub queries: Vec<String>,
 }
 
-/// The bounded research plan (`docs/report-workflow.md §Step 8`): the
-/// topics that deserve deeper investigation this report, ranked by priority and
-/// capped at `MAX_RESEARCH_ITEMS`.
+/// The bounded research plan (`docs/report-workflow.md §Step 8`), ranked by priority
+/// and capped at `MAX_RESEARCH_ITEMS`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ResearchPlan {
     pub items: Vec<ResearchItem>,
 }
 
-/// What the router reasons over. Carries the Step-8 inputs that exist today: the
-/// Step-3 baseline scan, its deterministic change view (`baseline_delta`), the
-/// Step-7 clusters, and the recent prior-report summaries — the thesis-continuity
-/// context through which the main agent shapes research indirectly
-/// (`docs/agents.md` names prior-report context and unresolved thesis questions as
-/// routing's continuity inputs). Upcoming known events already ride in on
-/// `baseline.calendar` (the economic-release schedule), so they carry no separate
-/// field. The doc's "recent Markdown report context" ships here in bounded
-/// summary form — whether the full Markdown bodies ever feed routing (rather than
-/// only the Step-2 main-agent context, a later slice) is that slice's call. With
-/// the inbox-parsing slice's `inbox_documents`, all seven doc-listed Step-8
-/// inputs now ride in.
+/// What the router reasons over (`docs/report-workflow.md §Step 8`). Upcoming known
+/// events ride in on `baseline.calendar`, so they carry no separate field.
 #[derive(Debug, Clone, Default)]
 pub struct RouterInput {
     pub baseline: BaselineMarketData,
     pub deltas: Option<BaselineDeltas>,
     pub clusters: Vec<HeadlineCluster>,
-    /// Summaries of the most recent prior reports, newest first, bounded at the
-    /// read site (`pipeline::load_recent_report_context`). Empty on a first
-    /// report or when the best-effort read degraded.
+    /// Newest first, bounded at the read site (`pipeline::load_recent_report_context`).
+    /// Empty on a first report or when the best-effort read degraded.
     pub recent_reports: Vec<ReportSummary>,
-    /// The Step-4 pre-research vector-memory pull (`docs/report-workflow.md
-    /// §Step 4`): recalled fragments, most relevant first, each in the
-    /// `MemoryHit::prompt_fragment` form. Ephemeral routing context only — the
-    /// packet carries the separate Step-10 pull, never this one. Empty on an
-    /// early run's bare store or when the fail-soft pull degraded.
+    /// The Step-4 pre-research pull (`docs/report-workflow.md §Step 4`), most relevant
+    /// first, each in `MemoryHit::prompt_fragment` form. Ephemeral routing context only:
+    /// the packet carries the separate Step-10 pull, never this one.
     pub memory: Vec<String>,
-    /// The Step-6 parsed research-inbox documents (`docs/report-workflow.md
-    /// §Step 8`'s "parsed research inbox documents"): one short excerpt block per
-    /// successfully parsed user-supplied document
-    /// (`document_parser::ParsedResearchDoc::router_excerpt`) — routing picks
-    /// topics, so it gets the head, not the full condensed text the packet
-    /// carries. Empty when the inbox was empty or every file failed.
+    /// One excerpt block per successfully parsed inbox document
+    /// (`document_parser::ParsedResearchDoc::router_excerpt`): routing picks topics, so
+    /// it gets the head, not the full condensed text the packet carries.
     pub inbox_documents: Vec<String>,
-    /// The run's current date (`YYYY-MM-DD`, market/Eastern time), when known — the recency
-    /// anchor so routing can weigh "current / prior day" freshness against a real date rather
-    /// than guessing from the clusters' publish dates. `None` off the live path (an empty
-    /// short-circuit run or a bare unit test); the prompt then omits the date line.
+    /// `YYYY-MM-DD`, Eastern: the recency anchor for weighing cluster freshness. `None`
+    /// off the live path; the prompt then omits the date line.
     pub report_date: Option<String>,
 }
 
-/// The research-routing stage. One method: turn the inputs into a bounded plan.
-/// Sync and pure, like the `HeadlineFilter` trait — the blocking model HTTP call
-/// inside the real adapter is offloaded via `spawn_blocking` at the Tauri command
-/// seam.
+/// Sync and pure, like `HeadlineFilter`: the real adapter's blocking HTTP call is
+/// offloaded via `spawn_blocking` at the Tauri command seam.
 pub trait ResearchRouter {
     fn route(&self, input: RouterInput) -> anyhow::Result<ResearchPlan>;
 }
 
-/// Deterministic offline stand-in for the real model router. Derives a bounded
-/// plan straight from the clusters: the top `MAX_RESEARCH_ITEMS` by relevance
-/// each become one topic with a single templated query, so the pipeline and its
-/// tests run without live keys. No clusters yields an empty plan.
+/// Deterministic offline stand-in: the top `MAX_RESEARCH_ITEMS` clusters by relevance
+/// each become one topic with a single templated query.
 #[derive(Debug, Default)]
 pub struct StubResearchRouter;
 
@@ -145,19 +102,17 @@ impl ResearchRouter for StubResearchRouter {
     }
 }
 
-/// Anthropic Messages endpoint — the fixed internal stages call the provider
-/// directly (the user-selectable agent models live behind `model_agent`).
+/// The fixed internal stages call the provider directly; the user-selectable agent
+/// models live behind `model_agent`.
 const ANTHROPIC_URL: &str = "https://api.anthropic.com/v1/messages";
 
-/// The fixed internal model for research routing (`docs/agents.md §Research
-/// Routing`) — non-configurable, distinct from the user-selectable agent models.
+/// The fixed internal routing model (`docs/agents.md §Research Routing`),
+/// non-configurable.
 const RESEARCH_ROUTER_MODEL: &str = "claude-sonnet-4-6";
 
-/// The single tool the router forces; its `input` is the plan envelope.
 const TOOL_NAME: &str = "emit_research_plan";
 
-/// The plan is small (≤5 topics, each a label + short rationale + a few
-/// questions), so a modest ceiling is ample and keeps the response inside the
+/// The plan is small (≤5 topics), so a modest ceiling keeps the response inside the
 /// HTTP timeout.
 const MAX_TOKENS: u32 = 4096;
 
@@ -197,10 +152,8 @@ summaries, recalled memory, or user-supplied documents; never invent data.";
 
 const USER_INSTRUCTION: &str = "Produce the bounded research plan for this report.";
 
-/// The model's structured return: a list of plan items. Mirrors the
-/// `headline_filter` envelope — the deterministic caps live in
-/// `plan_from_envelope`, not the schema, since strict mode does not honor
-/// array-length constraints.
+/// The model's structured return. The deterministic caps live in `plan_from_envelope`,
+/// not the schema, since strict mode does not honor array-length constraints.
 #[derive(Debug, Deserialize)]
 struct PlanEnvelope {
     #[serde(default)]
@@ -219,9 +172,9 @@ struct ItemRaw {
     queries: Vec<String>,
 }
 
-/// JSON Schema for the plan envelope, used as the Anthropic tool's strict
-/// `input_schema`. All fields required and `additionalProperties` false for strict
-/// mode; the ≤5-item / ≤4-query caps are enforced in `plan_from_envelope`.
+/// The Anthropic tool's strict `input_schema`: all fields required and
+/// `additionalProperties` false for strict mode; the item / query caps are enforced in
+/// `plan_from_envelope`.
 fn plan_schema() -> Value {
     json!({
         "type": "object",
@@ -246,16 +199,9 @@ fn plan_schema() -> Value {
     })
 }
 
-/// Resolve the model's envelope into a plan, enforcing the routing invariants
-/// deterministically rather than trusting the model:
-///
-/// - **Rank by priority first**, so the strongest topics win the item cap.
-/// - **Drop malformed topics** — a blank label or rationale is useless to Step 9.
-/// - **Clean each topic's queries** — drop blank ones and cap at
-///   `MAX_QUERIES_PER_ITEM`; a topic left with no research direction is dropped.
-/// - **Clamp priority** to 0.0–1.0 and **cap topics** at `MAX_RESEARCH_ITEMS`.
-///
-/// Pure, so these invariants are unit-testable without a live call.
+/// Enforce the routing invariants deterministically rather than trusting the model:
+/// rank by priority first so the strongest topics win the item cap; drop a topic with a
+/// blank label or rationale, or no usable query; clamp priority to 0.0–1.0.
 fn plan_from_envelope(env: PlanEnvelope) -> ResearchPlan {
     let mut ranked = env.items;
     ranked.sort_by(|a, b| {
@@ -292,15 +238,10 @@ fn plan_from_envelope(env: PlanEnvelope) -> ResearchPlan {
     ResearchPlan { items }
 }
 
-/// Render the clusters as a compact numbered list for the prompt: each topic with
-/// its relevance and summary, followed by an indented list of its member
-/// headlines. The headlines are the primary-source signal — Step 7 keeps a bounded
-/// set per cluster (`headline_filter::MAX_RETAINED_HEADLINES`) precisely so they
-/// ride into this packet — and routing needs them: the cluster `summary` is the
-/// weaker headline-filter model's compression, so Sonnet validates it and grounds
-/// its queries against the actual titles, sources, and snippets rather than the
-/// derived gloss alone. The count is already bounded by the funnel, so no extra cap
-/// is applied here.
+/// The clusters as a numbered list with their member headlines. The headlines ride in
+/// because the cluster `summary` is the weaker headline-filter model's compression, so
+/// Sonnet validates it and grounds its queries against the actual titles, sources and
+/// snippets. The count is already bounded by the funnel.
 fn format_clusters(clusters: &[HeadlineCluster]) -> String {
     clusters
         .iter()
@@ -316,10 +257,7 @@ fn format_clusters(clusters: &[HeadlineCluster]) -> String {
         .join("\n")
 }
 
-/// One member headline as a compact prompt line: the title and source, with the
-/// publish date and snippet appended when present. The `url` is dropped — it adds
-/// length without helping the router reason — while the title, source, date, and
-/// snippet are the grounding Sonnet checks the cluster summary against.
+/// The `url` is dropped: it adds length without helping the router reason.
 fn format_headline(h: &RawHeadline) -> String {
     let mut line = match &h.published {
         Some(date) => format!("{} ({}, {})", h.title, h.source, date),
@@ -331,11 +269,7 @@ fn format_headline(h: &RawHeadline) -> String {
     line
 }
 
-/// Build the user message: the standing instruction plus this run's evidence —
-/// the baseline scan and its change view serialized as JSON (so the router reasons
-/// over the live numbers, mirroring the main agent's prompt), and the news
-/// clusters. Each block is omitted when empty so the prompt never carries a blank
-/// section.
+/// Each block is omitted when empty so the prompt never carries a blank section.
 fn build_user_prompt(input: &RouterInput) -> String {
     let mut prompt = USER_INSTRUCTION.to_string();
 
@@ -368,8 +302,8 @@ fn build_user_prompt(input: &RouterInput) -> String {
         }
     }
 
-    // The Step-4 pre-research memory pull: fragments are blocks (each carries its
-    // own newlines), so they join on blank lines rather than posing as bullets.
+    // Fragments are blocks with their own newlines, so they join on blank lines rather
+    // than posing as bullets.
     if !input.memory.is_empty() {
         prompt.push_str(&format!(
             "\n\nRecalled long-term memory, most relevant first (prior report summaries and durable learnings):\n{}",
@@ -384,8 +318,7 @@ fn build_user_prompt(input: &RouterInput) -> String {
         ));
     }
 
-    // The Step-6 parsed inbox documents: like the memory fragments, each entry is
-    // its own block (header + excerpt), so they join on blank lines.
+    // Each entry is its own block (header + excerpt), so they join on blank lines.
     if !input.inbox_documents.is_empty() {
         prompt.push_str(&format!(
             "\n\nUser-supplied research documents (parsed excerpts from the research inbox):\n{}",
@@ -396,9 +329,8 @@ fn build_user_prompt(input: &RouterInput) -> String {
     prompt
 }
 
-/// Build the Sonnet request: a non-streaming forced-tool call whose `input_schema`
-/// is the plan envelope. Unlike the main agent's streaming call, the plan is small
-/// and internal, so a single non-streaming response is returned and parsed whole.
+/// A non-streaming forced-tool call: the plan is small and internal, so the response is
+/// parsed whole.
 fn build_request(input: &RouterInput) -> Value {
     json!({
         "model": RESEARCH_ROUTER_MODEL,
@@ -424,8 +356,7 @@ fn build_request(input: &RouterInput) -> Value {
 pub struct ModelResearchRouter {
     api_key: String,
     http: reqwest::blocking::Client,
-    /// Run context for the single tracker row the routing call emits. Defaults to a
-    /// no-op (tests / offline smokes); the live command attaches the real one via
+    /// Defaults to a no-op; the live command attaches the real one via
     /// [`ModelResearchRouter::with_context`].
     progress: Arc<RunContext>,
 }
@@ -443,16 +374,12 @@ impl ModelResearchRouter {
         })
     }
 
-    /// Attach a live run context so the routing call streams a request row to the tracker.
-    /// Without it the adapter keeps its no-op context.
     pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
         self.progress = ctx;
         self
     }
 
-    /// Resolve the adapter from the environment, for the live smoke and any caller
-    /// that bypasses the gate. Uses the Anthropic key — research routing is a fixed
-    /// internal Anthropic stage (`config::anthropic_key`).
+    /// For the live smoke and any caller that bypasses the gate.
     pub fn from_env() -> Result<Self> {
         Self::new(crate::config::AppConfig::from_env().anthropic_key()?)
     }
@@ -477,10 +404,7 @@ impl ModelResearchRouter {
     }
 }
 
-/// Nothing to route: no baseline data, no change view, no clusters, no
-/// prior-report context, no recalled memory, and no inbox documents means the
-/// prompt would carry only the bare instruction. Pure so the conjunction stays
-/// unit-testable as inputs join it slice by slice.
+/// Nothing to route: the prompt would carry only the bare instruction.
 fn input_is_empty(input: &RouterInput) -> bool {
     input.baseline == BaselineMarketData::default()
         && input.deltas.is_none()
@@ -496,7 +420,6 @@ impl ResearchRouter for ModelResearchRouter {
         if input_is_empty(&input) {
             return Ok(ResearchPlan::default());
         }
-        // One tracker row for the Sonnet routing call.
         self.progress.request_started(
             "Anthropic",
             "routing",
@@ -599,7 +522,6 @@ is rising or falling, is a routable signal"));
             })
             .unwrap();
         assert_eq!(plan.items.len(), MAX_RESEARCH_ITEMS);
-        // Sorted by relevance desc, so the strongest survives and the weakest is cut.
         assert!(plan.items[0].priority > plan.items[MAX_RESEARCH_ITEMS - 1].priority);
         assert!(plan
             .items
@@ -630,7 +552,6 @@ is rising or falling, is a routable signal"));
             MAX_RESEARCH_ITEMS,
             "capped at the item ceiling"
         );
-        // The 1.5 priority sorts first and is clamped to 1.0.
         assert!(
             (plan.items[0].priority - 1.0).abs() < 1e-9,
             "priority clamped to 1.0"
@@ -641,21 +562,18 @@ is rising or falling, is a routable signal"));
     #[test]
     fn plan_from_envelope_drops_blank_topic_or_rationale() {
         let items = vec![
-            // Highest priority but a blank topic -> dropped.
             ItemRaw {
                 topic: "   ".into(),
                 rationale: "r".into(),
                 priority: 0.99,
                 queries: vec!["q".into()],
             },
-            // Blank rationale -> dropped too.
             ItemRaw {
                 topic: "t".into(),
                 rationale: String::new(),
                 priority: 0.9,
                 queries: vec!["q".into()],
             },
-            // Well-formed -> survives.
             ItemRaw {
                 topic: "good".into(),
                 rationale: "real".into(),
@@ -671,7 +589,8 @@ is rising or falling, is a routable signal"));
     #[test]
     fn plan_from_envelope_cleans_queries_and_drops_queryless_items() {
         let items = vec![
-            // Five queries, one blank -> blank dropped, rest capped at the per-item ceiling.
+            // Six queries, one blank: the blank drops and the rest cap at the per-item
+            // ceiling.
             ItemRaw {
                 topic: "t".into(),
                 rationale: "r".into(),
@@ -685,7 +604,6 @@ is rising or falling, is a routable signal"));
                     "q5".into(),
                 ],
             },
-            // No usable query -> the whole item is dropped.
             ItemRaw {
                 topic: "empty".into(),
                 rationale: "r".into(),
@@ -738,9 +656,6 @@ is rising or falling, is a routable signal"));
         assert_eq!(body["tool_choice"]["name"], TOOL_NAME);
         assert_eq!(body["tools"][0]["name"], TOOL_NAME);
         assert_eq!(body["tools"][0]["strict"], true);
-        // The user message carries the cluster line and, critically, its member
-        // headline's primary-source detail (title + source) — not just the
-        // model-derived summary.
         let user = body["messages"][0]["content"].as_str().unwrap();
         assert!(user.contains("[0] (0.92) AI / semiconductors"), "{user}");
         assert!(
@@ -751,9 +666,6 @@ is rising or falling, is a routable signal"));
 
     #[test]
     fn build_request_carries_recent_report_context_and_omits_it_when_absent() {
-        // With prior summaries: the prompt carries the block, the continuity signal
-        // (unresolved questions / key risks), and the canonical kebab regime labels —
-        // the same serialized form the rest of the system speaks.
         let input = RouterInput {
             recent_reports: vec![prior_summary("prior-1")],
             ..Default::default()
@@ -765,7 +677,6 @@ is rising or falling, is a routable signal"));
         assert!(user.contains("A refinancing wall into Q3"), "{user}");
         assert!(user.contains("risk-off"), "{user}");
 
-        // Without them: the block is omitted entirely, never rendered blank.
         let bare = build_user_prompt(&RouterInput {
             clusters: vec![cluster("t", 0.5)],
             ..Default::default()
@@ -789,8 +700,6 @@ is rising or falling, is a routable signal"));
 
     #[test]
     fn build_request_carries_recalled_memory_and_omits_it_when_absent() {
-        // With recalled fragments: the prompt carries the block, with the fragments
-        // joined as blocks (blank-line separated), most relevant first.
         let input = RouterInput {
             memory: vec![
                 "[summary · 2026-05-28T13:00:00Z] Risk posture: risk-off.".into(),
@@ -807,7 +716,6 @@ is rising or falling, is a routable signal"));
             "fragments join on blank lines: {user}"
         );
 
-        // Without them: the block is omitted entirely, never rendered blank.
         let bare = build_user_prompt(&RouterInput {
             clusters: vec![cluster("t", 0.5)],
             ..Default::default()
@@ -817,8 +725,6 @@ is rising or falling, is a routable signal"));
 
     #[test]
     fn memory_alone_clears_the_empty_input_short_circuit() {
-        // A memory-only input is a real routing input (it can steer investigation on
-        // its own), so it must not read as empty and short-circuit to an empty plan.
         assert!(input_is_empty(&RouterInput::default()));
         assert!(!input_is_empty(&RouterInput {
             memory: vec!["[summary · t] Risk posture: mixed.".into()],
@@ -828,8 +734,6 @@ is rising or falling, is a routable signal"));
 
     #[test]
     fn build_request_carries_inbox_documents_and_omits_them_when_absent() {
-        // With parsed inbox documents: the prompt carries the block, blocks joined on
-        // blank lines like the memory fragments.
         let input = RouterInput {
             inbox_documents: vec![
                 "### Research document: notes.md (MD)\n\nRates likely hold.".into(),
@@ -845,21 +749,18 @@ is rising or falling, is a routable signal"));
             "blocks join on blank lines: {user}"
         );
 
-        // Without them: the block is omitted entirely, never rendered blank.
         let bare = build_user_prompt(&RouterInput {
             clusters: vec![cluster("t", 0.5)],
             ..Default::default()
         });
         assert!(!bare.contains("User-supplied research documents"), "{bare}");
 
-        // And inbox documents alone are a real routing input — no empty short-circuit.
+        // Inbox documents alone clear the empty-input short-circuit.
         assert!(!input_is_empty(&input));
     }
 
     #[test]
     fn build_request_carries_report_date_anchor_and_omits_it_when_absent() {
-        // With a report date, routing sees "today" and can weigh freshness against a real
-        // anchor (the P1 fix); without one, the line is omitted, never rendered blank.
         let with = build_user_prompt(&RouterInput {
             clusters: vec![cluster("t", 0.5)],
             report_date: Some("2026-06-23".into()),

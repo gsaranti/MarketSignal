@@ -9,25 +9,17 @@ use serde::Serialize;
 
 use crate::agent::ReportSummary;
 
-/// One report row to persist: the structured summary, the path to the canonical
-/// Markdown file, and the full summary JSON blob.
 pub struct ReportRecord<'a> {
     pub summary: &'a ReportSummary,
     pub markdown_path: &'a str,
     pub summary_json: &'a str,
 }
 
-/// Open (creating if absent) the SQLite database at `db_path`.
-///
-/// Sets two concurrency-hygiene pragmas. The on-demand run path opens its own
-/// connection, and a concurrency-*skipped* attempt writes its `job_runs` row from
-/// a second connection while the winning run is mid-flight. With SQLite's default
-/// (no busy timeout), a write that hits the other connection's lock returns
-/// `SQLITE_BUSY` *immediately* — surfacing as a generic DB error instead of the
-/// clean "Skipped" outcome. `busy_timeout` makes a brief write-write overlap wait
-/// (up to the bound) rather than fail; WAL lets a reader and a writer coexist so
-/// the live run's reads don't block the skip-path write either. Both are
-/// idempotent to set on every open.
+/// Sets `busy_timeout` and WAL on every open: a concurrency-skipped attempt
+/// writes its `job_runs` row from a second connection while the winning run is
+/// mid-flight, and without a busy timeout that write would return `SQLITE_BUSY`
+/// immediately — a generic DB error instead of the clean "Skipped" outcome. WAL
+/// lets the live run's reads and the skip-path write coexist.
 pub fn open(db_path: &std::path::Path) -> Result<Connection> {
     let conn = Connection::open(db_path)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -37,22 +29,15 @@ pub fn open(db_path: &std::path::Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// Create the application tables if they do not exist: `reports` (one row per
-/// generated report) and `job_runs` (one row per job lifecycle outcome, owned by
-/// the orchestration layer — see `jobs`). Warning-state tables remain
-/// out of scope for now; HTML is never persisted (rendered on demand for
-/// display/PDF, settled 2026-06-12), so it gets no table. Idempotent, so any run
-/// path can call it.
+/// Idempotent, so any run path can call it. HTML is never persisted (rendered
+/// on demand), so it gets no table.
 ///
-/// **Constraint coupling with data portability:** any UNIQUE / PRIMARY KEY /
-/// CHECK constraint on an *exported* table (`portability::TABLES`) must be
-/// mirrored by a matching pre-destructive validation in
-/// `portability::import_archive` — the import's file mutations precede its row
-/// transaction, so an unmirrored constraint firing mid-transaction would
-/// strand rolled-back rows pointing at already-replaced files. Today's mirror:
-/// `reports.report_id` PK, the `ux_vector_memory_summary` partial index below,
-/// `portfolio_runs`/`holdings_pulls` in `portfolio::store`, and
-/// `factor_observations` in `portfolio::factor_store`.
+/// Constraint coupling with data portability: any UNIQUE / PRIMARY KEY / CHECK
+/// constraint on an exported table (`portability::TABLES`) must be mirrored by
+/// a pre-destructive validation in `portability::import_archive` — the import's
+/// file mutations precede its row transaction, so an unmirrored constraint
+/// firing mid-transaction would strand rolled-back rows pointing at
+/// already-replaced files.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS reports (
@@ -79,11 +64,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // Persistent user/application state: the Settings store — agent models, API
-    // tokens, provider credentials, written by `settings::save` and read by
-    // `config::AppConfig::load` — plus the dismissed-warning markers. A small
-    // key/value table rather than typed columns; values that survive restarts but
-    // are not part of a report record.
+    // The Settings store plus the dismissed-warning markers, as key/value.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS app_settings (
             key   TEXT PRIMARY KEY,
@@ -91,11 +72,8 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // Per-report baseline snapshots: the full Step-3 scan serialized as JSON, one row
-    // per generated report, so the next run can diff this run's levels against the prior
-    // report's (`baseline_delta`). `captured_at` is the app-minted scan time (the Δt
-    // anchor); `schema_version` records the baseline shape for future migration tooling.
-    // Capped to the newest `BASELINE_SNAPSHOT_RETENTION` rows by `prune_baseline_snapshots`.
+    // `captured_at` is the app-minted scan time (the Δt anchor); `schema_version`
+    // records the baseline shape for migration tooling.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS baseline_snapshots (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,12 +84,10 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // Long-term semantic memory (`docs/storage.md §Vector Memory`), shipped on
-    // SQLite as BLOB-stored embeddings with exact in-Rust cosine search — a conscious
-    // deviation from the doc's LanceDB engine; rationale and the engine-swap seam live
-    // in `vector_memory`'s module header. `kind` ∈ {summary, learning}: a report's
-    // summary row cascades with its report (joined by `report_id`), durable learnings
-    // survive report deletion. `embedding` is little-endian f32 bytes.
+    // Semantic memory (`docs/storage.md §Vector Memory`; the engine choice is in
+    // `vector_memory`'s module header). `kind` ∈ {summary, learning}: a summary row
+    // cascades with its report, a learning survives report deletion. `embedding`
+    // is little-endian f32 bytes.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS vector_memory (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,35 +100,26 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // Additive migration for DBs created before the `namespace` column
-    // (`docs/storage.md §Local Vector Memory`): `CREATE TABLE IF NOT EXISTS` above
-    // is a no-op on an existing table, so the column is added here. The NOT NULL
-    // DEFAULT 'report' backfills every existing row to the report's namespace in one
-    // statement — exactly where those rows belong, since every row is the report's.
-    // Same `PRAGMA table_info` idempotency guard as
-    // `document_parse_runs.total_original_chars` below (a duplicate `ALTER` errors).
+    // `CREATE TABLE IF NOT EXISTS` is a no-op on an existing table, so the column
+    // is added here; the `PRAGMA table_info` guard keeps a re-run from erroring on
+    // a duplicate `ALTER`.
     if !column_exists(conn, "vector_memory", "namespace")? {
         conn.execute(
             "ALTER TABLE vector_memory ADD COLUMN namespace TEXT NOT NULL DEFAULT 'report'",
             [],
         )?;
     }
-    // Encodes the doc's "one embedding per report summary" in the schema rather than
-    // trusting the flow (the persist step runs once per report_id today, but the
-    // invariant is what the retrieval slice will lean on). Partial: learnings are
-    // unconstrained — many may share a report_id, or carry none. Mirrored by a
-    // data-portability import pre-check (see `init_schema`'s coupling note).
+    // Encodes "one embedding per report summary" in the schema rather than
+    // trusting the flow. Partial: learnings are unconstrained. Mirrored by a
+    // data-portability import pre-check.
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_vector_memory_summary
          ON vector_memory(report_id) WHERE kind = 'summary'",
         [],
     )?;
-    // The research-inbox parse failures from the most recent job pass
-    // (`docs/research-documents.md §Parse Failures`): one row per file that could
-    // not be parsed, identified by its listing identity (name + size + mtime) so
-    // the Research Documents panel can show the error state against the file on
-    // disk — and so an edited file stops matching its stale row. Replaced
-    // wholesale each run by `replace_parse_failures`.
+    // The most recent pass's parse failures (`docs/research-documents.md §Parse
+    // Failures`), identified by name + size + mtime so an edited file stops
+    // matching its stale row. Replaced wholesale each run.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS research_parse_failures (
             name       TEXT PRIMARY KEY,
@@ -163,15 +130,10 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // Truncation telemetry: one row per inbox document the Step-6 parser had to
-    // head-truncate, persisted per report so overflow frequency can be judged
-    // before ever building the reserved GPT-5-mini extraction stage
-    // (`docs/agents.md §Data Extraction`). On the `baseline_snapshots` model
-    // (per-report, joined by `report_id`), but deliberately *accumulating* —
-    // `record_document_truncations` appends, it never clears the table the way
-    // `replace_parse_failures` does, so prior runs' evidence survives. Bounded
-    // by the report-retention cascade (`delete_report_truncations`), not a
-    // self-cap, so history rides along with the reports it describes.
+    // Truncation telemetry (`docs/agents.md §Data Extraction`): one row per
+    // head-truncated inbox document, per report. Accumulating — never cleared the
+    // way `replace_parse_failures` does — and bounded by the report-retention
+    // cascade, not a self-cap.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS document_truncations (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -184,19 +146,12 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // The denominator for the truncation *rate*: one row per report whose Step-6
-    // inbox pass parsed at least one document, recording how many docs it parsed
-    // (truncated or not). `document_truncations` is the numerator (truncated docs
-    // only); on its own it answers "how many truncations" but not "what share of
-    // documents truncated". Same per-report, accumulating, cascade-bounded model
-    // as `document_truncations` (`delete_report_parse_runs`), so numerator and
-    // denominator always span the same retained-report window and the rate stays
-    // honest. `total_original_chars` is the chars-ratio denominator (Σ original
-    // chars across all parsed docs, truncated or not) — *nullable*, because a row
-    // recorded before this column existed has no value to backfill, and NULL marks
-    // that pre-migration cohort distinctly from a genuine `0` (an all-empty-docs
-    // run). The chars ratio is withheld while any NULL row remains; see
-    // `TruncationStats::parse_runs_missing_original_chars`.
+    // The truncation rate's denominator: one row per report whose inbox pass
+    // parsed at least one document, accumulating and cascade-bounded like
+    // `document_truncations`. `total_original_chars` is nullable because a row
+    // recorded before the column existed has no value to backfill; NULL marks that
+    // cohort distinctly from a genuine `0`, and the chars ratio is withheld while
+    // any NULL row remains (`TruncationStats::parse_runs_missing_original_chars`).
     conn.execute(
         "CREATE TABLE IF NOT EXISTS document_parse_runs (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -207,37 +162,24 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // Additive migration for DBs created before `total_original_chars` shipped:
-    // `CREATE TABLE IF NOT EXISTS` above is a no-op on an existing table, so the
-    // column is added here. SQLite has no `ADD COLUMN IF NOT EXISTS`, so the
-    // `PRAGMA table_info` guard keeps it idempotent (a duplicate `ALTER` errors).
-    // A single additive nullable column is the one schema change SQLite makes
-    // without a table rebuild; there is no `user_version` migration framework to
-    // lean on, so this is the migration.
+    // SQLite has no `ADD COLUMN IF NOT EXISTS`, so the `PRAGMA table_info` guard
+    // keeps the additive migration idempotent.
     if !column_exists(conn, "document_parse_runs", "total_original_chars")? {
         conn.execute(
             "ALTER TABLE document_parse_runs ADD COLUMN total_original_chars INTEGER",
             [],
         )?;
     }
-    // The local analysis suite's own run tables (`docs/storage.md §Local Analysis
-    // Suite Storage`), kept beside the local-suite code rather than inline here so
-    // the portfolio schema travels with the module that owns it. Idempotent like the
-    // rest of `init_schema`, so any run path can call it.
+    // The local-suite schemas (`docs/storage.md §Local Analysis Suite Storage`)
+    // live beside the modules that own them.
     crate::portfolio::store::init_schema(conn)?;
-    // The web tool's shared stores (document cache + source state), likewise
-    // kept beside the module that owns them (`docs/storage.md §Local Analysis
-    // Suite Storage`).
     crate::web_research::store::init_schema(conn)?;
-    // The shared engine's factor-distribution store, likewise kept beside the
-    // module that owns it (`docs/storage.md §Local Analysis Suite Storage`).
     crate::portfolio::factor_store::init_schema(conn)?;
     Ok(())
 }
 
-/// Whether `table` has a column named `column`, via `PRAGMA table_info`. Used to
-/// keep additive `ALTER TABLE ADD COLUMN` migrations idempotent in the absence of
-/// a `user_version` framework.
+/// Keeps additive `ALTER TABLE ADD COLUMN` migrations idempotent in the absence
+/// of a `user_version` framework.
 pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let found = stmt
@@ -248,8 +190,7 @@ pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Res
     Ok(found)
 }
 
-/// One recorded research-inbox parse failure, as the panel join reads it. The
-/// identity triple (`name`, `size_bytes`, `modified`) mirrors
+/// The identity triple (`name`, `size_bytes`, `modified`) mirrors
 /// `research::ResearchDocument`, so a listing row matches its failure only while
 /// the file on disk is byte-for-byte the one that failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,10 +203,9 @@ pub struct ParseFailureRow {
     pub failed_at: String,
 }
 
-/// Replace the recorded parse failures with this run's set — the table holds
-/// "the failures of the most recent inbox pass", so a file that parsed (or was
-/// deleted) self-heals out of it. One transaction: the panel never reads a
-/// half-replaced state.
+/// The table holds the failures of the most recent inbox pass, so a file that
+/// parsed (or was deleted) self-heals out of it. One transaction: the panel
+/// never reads a half-replaced state.
 pub fn replace_parse_failures(conn: &Connection, rows: &[ParseFailureRow]) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM research_parse_failures", [])?;
@@ -286,7 +226,6 @@ pub fn replace_parse_failures(conn: &Connection, rows: &[ParseFailureRow]) -> Re
     Ok(())
 }
 
-/// All recorded parse failures, for the inbox listing's error-state join.
 pub fn list_parse_failures(conn: &Connection) -> Result<Vec<ParseFailureRow>> {
     let mut stmt = conn.prepare(
         "SELECT name, size_bytes, modified, reason, failed_at FROM research_parse_failures",
@@ -305,10 +244,8 @@ pub fn list_parse_failures(conn: &Connection) -> Result<Vec<ParseFailureRow>> {
     Ok(rows)
 }
 
-/// One head-truncation event: the report it was captured under, the app-minted
-/// scan time, and the document's identity (`name`/`format`) with its full vs.
-/// kept char counts. Append-only telemetry (`document_truncations`) — distinct
-/// from the replace-wholesale [`ParseFailureRow`].
+/// One head-truncation event. Append-only telemetry, distinct from the
+/// replace-wholesale [`ParseFailureRow`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentTruncationRow {
     pub report_id: String,
@@ -319,10 +256,9 @@ pub struct DocumentTruncationRow {
     pub kept_chars: u64,
 }
 
-/// Append this run's truncation rows to `document_truncations`. Unlike
-/// [`replace_parse_failures`], there is no leading `DELETE` — the table
-/// accumulates across runs so overflow frequency can be judged over time. One
-/// transaction so a reader never sees a half-written run.
+/// Unlike [`replace_parse_failures`] there is no leading `DELETE`: the table
+/// accumulates across runs. One transaction so a reader never sees a
+/// half-written run.
 pub fn record_document_truncations(
     conn: &Connection,
     rows: &[DocumentTruncationRow],
@@ -347,13 +283,10 @@ pub fn record_document_truncations(
     Ok(())
 }
 
-/// Append this run's parsed-document count to `document_parse_runs` — the
-/// denominator that turns the truncation numerator into a rate. One row per
-/// report whose inbox pass parsed at least one document; like
-/// [`record_document_truncations`] it appends rather than replaces, so the
-/// per-report history accumulates. `total_original_chars` is the Σ of every
-/// parsed doc's original (pre-truncation) char count — the denominator for the
-/// chars-dropped *ratio*, distinct from the doc-count denominator above.
+/// The denominator that turns the truncation numerator into a rate: one row
+/// per report whose inbox pass parsed at least one document, appended like
+/// [`record_document_truncations`]. `total_original_chars` is the Σ of every
+/// parsed doc's pre-truncation char count — the chars-ratio denominator.
 pub fn record_document_parse_run(
     conn: &Connection,
     report_id: &str,
@@ -374,65 +307,47 @@ pub fn record_document_parse_run(
     Ok(())
 }
 
-/// Aggregate view over `document_truncations` for the Settings diagnostics
-/// section (`docs/agents.md §Data Extraction` — the accumulating evidence that
-/// gates the reserved GPT-5-mini extraction stage). `total_truncations` is the
-/// numerator and `total_docs_parsed` (from the companion `document_parse_runs`
-/// table) the denominator, so a true share-of-documents truncation rate is
-/// derivable. Both span the same retained-report window (both cascade by
-/// `report_id`), so for any report whose run recorded both, the rate stays
-/// honest. The one cohort gap is historical: truncation rows recorded before
-/// `document_parse_runs` existed have no denominator counterpart, which
-/// `unaligned_truncations` flags so the consumer can suppress a mixed-cohort
-/// rate until those rows age out of the retention window.
+/// The Settings diagnostics' aggregate (`docs/agents.md §Data Extraction`).
+/// `total_truncations` is the numerator and `total_docs_parsed` the
+/// denominator; both cascade by `report_id`, so they span the same retained
+/// window. `unaligned_truncations` flags the cohort gap so the consumer can
+/// suppress a mixed-cohort rate.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct TruncationStats {
-    /// Total truncation events recorded (rows in the table).
     pub total_truncations: u64,
-    /// Total documents parsed across all recorded runs (Σ of `docs_parsed` in
-    /// `document_parse_runs`) — the rate denominator. `0` when no run with a
-    /// parsed document has been recorded yet.
+    /// Σ of `docs_parsed` — the rate denominator; `0` when no run with a parsed
+    /// document has been recorded.
     pub total_docs_parsed: u64,
-    /// Truncation events whose report has no `document_parse_runs` row — i.e. a
-    /// numerator cohort the denominator does not cover (typically rows recorded
-    /// before the denominator table existed). Non-zero means the rate would mix
-    /// cohorts; the Settings consumer withholds the rate while it is. `0` once
-    /// every truncation report also has a parse-run row.
+    /// Truncation events whose report has no `document_parse_runs` row.
+    /// Non-zero means the rate would mix cohorts, and the Settings consumer
+    /// withholds it.
     pub unaligned_truncations: u64,
-    /// Total original (pre-truncation) characters across all parse runs (Σ of
-    /// `total_original_chars` in `document_parse_runs`) — the chars-ratio
-    /// denominator. `0` when no run with a non-NULL char count has been recorded.
+    /// Σ of `total_original_chars` — the chars-ratio denominator; `0` when no
+    /// run with a non-NULL char count has been recorded.
     pub total_original_chars: u64,
-    /// Parse-run rows with a NULL `total_original_chars` — the pre-migration
-    /// cohort whose original-char count was never recorded. The chars *ratio*
-    /// denominator (`total_original_chars`) silently omits these (SQL `SUM`
-    /// skips NULL) while the numerator (`total_chars_dropped`) may still count
-    /// their truncations, so a non-zero value means the ratio would understate
-    /// its denominator; the Settings consumer withholds the chars ratio while it
-    /// is. `0` once every parse-run row carries a char count. Distinct from
-    /// `unaligned_truncations` (a *missing* parse-run row, not a NULL column).
+    /// Parse-run rows with a NULL `total_original_chars`. SQL `SUM` skips NULL,
+    /// so a non-zero value means the chars ratio would understate its
+    /// denominator, and the Settings consumer withholds it. Distinct from
+    /// `unaligned_truncations` (a missing row, not a NULL column).
     pub parse_runs_missing_original_chars: u64,
     /// Distinct reports that recorded at least one truncation.
     pub reports_affected: u64,
-    /// Total characters cut across all events (Σ of `original − kept`).
+    /// Σ of `original − kept`.
     pub total_chars_dropped: u64,
-    /// Per-format event counts, ordered by descending count then format name.
+    /// Ordered by descending count then format name.
     pub by_format: Vec<FormatCount>,
-    /// Most recent capture timestamp, or `None` when the table is empty.
+    /// `None` when the table is empty.
     pub latest_captured_at: Option<String>,
 }
 
-/// One row of the per-format truncation breakdown in [`TruncationStats`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct FormatCount {
     pub format: String,
     pub count: u64,
 }
 
-/// Aggregate `document_truncations` for the Settings diagnostics read: the
-/// scalar headline numbers in one pass plus the per-format breakdown in a
-/// grouped pass. An empty table yields the `Default` (all-zero counts, empty
-/// breakdown, `None` timestamp) — itself the signal that overflow is not common.
+/// An empty table yields the `Default` — itself the signal that overflow is not
+/// common.
 pub fn truncation_stats(conn: &Connection) -> Result<TruncationStats> {
     let (total_truncations, reports_affected, total_chars_dropped, latest_captured_at) = conn
         .query_row(
@@ -484,10 +399,9 @@ pub fn truncation_stats(conn: &Connection) -> Result<TruncationStats> {
             },
         )?;
 
-    // Truncations whose report never recorded a parse-run denominator — the
-    // historical cohort gap. With an empty `document_parse_runs`, `NOT IN ()`
-    // holds for every row, so a legacy-only table reports all its truncations as
-    // unaligned (and the rate stays suppressed), which is the intended signal.
+    // With an empty `document_parse_runs`, `NOT IN ()` holds for every row, so a
+    // legacy-only table reports all its truncations as unaligned and the rate
+    // stays suppressed — the intended signal.
     let unaligned_truncations = conn.query_row(
         "SELECT COUNT(*) FROM document_truncations
          WHERE report_id NOT IN (SELECT report_id FROM document_parse_runs)",
@@ -508,7 +422,7 @@ pub fn truncation_stats(conn: &Connection) -> Result<TruncationStats> {
     })
 }
 
-/// Read a value from `app_settings`, or `None` when the key has never been set.
+/// `None` when the key has never been set.
 pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
     let value = conn
         .query_row(
@@ -520,7 +434,6 @@ pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
     Ok(value)
 }
 
-/// Insert or update a single `app_settings` row.
 pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
@@ -530,18 +443,12 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// How many of the most recent reports the sidebar lists (`docs/storage.md` —
-/// only the most recent 30 Market Signal reports are retained). This bounds the
-/// *display* query; the retention cascade that enforces the same number on disk
-/// is bounded by [`REPORT_RETENTION`] below.
+/// Bounds the sidebar's display query (`docs/storage.md`); the on-disk cascade
+/// is bounded by [`REPORT_RETENTION`].
 pub const RECENT_REPORTS_LIMIT: u32 = 30;
 
-/// List the most recent reports, newest first, capped at `limit`. The stored
-/// `summary_json` blob is the whole `ReportSummary`, so it round-trips back into
-/// the struct; the `rowid` tiebreak keeps same-timestamp ordering stable
-/// (insertion order) rather than arbitrary. A thin projection over
-/// [`list_recent_reports_with_paths`] (it owns the query) — the Markdown path is
-/// dropped for callers that only need the summary.
+/// A summary-only projection over [`list_recent_reports_with_paths`], which
+/// owns the query.
 pub fn list_recent_reports(conn: &Connection, limit: u32) -> Result<Vec<ReportSummary>> {
     Ok(list_recent_reports_with_paths(conn, limit)?
         .into_iter()
@@ -549,14 +456,9 @@ pub fn list_recent_reports(conn: &Connection, limit: u32) -> Result<Vec<ReportSu
         .collect())
 }
 
-/// List the most recent reports as `(summary, markdown_path)`, newest first,
-/// capped at `limit`. The stored `summary_json` blob is the whole `ReportSummary`,
-/// so it round-trips back into the struct; the `rowid` tiebreak keeps
-/// same-timestamp ordering stable (insertion order) rather than arbitrary. Returns
-/// the canonical Markdown path alongside so the application layer
-/// (`pipeline::load_recent_reports_for_audit`) can read each report's body for the
-/// main agent's Step-2 prior-report context; [`list_recent_reports`] is the
-/// summary-only projection over this query.
+/// Newest first, capped at `limit`; the `rowid` tiebreak keeps same-timestamp
+/// ordering stable. The Markdown path rides along so
+/// `pipeline::load_recent_reports_for_audit` can read each report's body.
 pub fn list_recent_reports_with_paths(
     conn: &Connection,
     limit: u32,
@@ -577,9 +479,7 @@ pub fn list_recent_reports_with_paths(
     Ok(out)
 }
 
-/// Look up one report's canonical Markdown path and summary by id, or `None`
-/// when no such report exists. The application layer (`pipeline::load_report`)
-/// reads the Markdown file the path points at.
+/// `None` when no such report exists.
 pub fn get_report_record(
     conn: &Connection,
     report_id: &str,
@@ -597,8 +497,7 @@ pub fn get_report_record(
     }
 }
 
-/// Insert a report record. The regime columns store the canonical kebab labels;
-/// the full summary lives in `summary_json` for retrieval.
+/// The regime columns store the canonical kebab labels.
 pub fn insert_report(conn: &Connection, record: &ReportRecord) -> Result<()> {
     let s = record.summary;
     conn.execute(
@@ -620,25 +519,14 @@ pub fn insert_report(conn: &Connection, record: &ReportRecord) -> Result<()> {
     Ok(())
 }
 
-/// One-time, idempotent migration of pre-pivot report identifiers
-/// (`docs/storage.md §Legacy Naming Migration`), run once at launch: rewrite the
-/// `report_type` slug `weekly_market` → `market_signal`, and rename
-/// `…-market-signal-weekly-report…` Markdown files → `…-market-signal-report…`,
-/// updating each row's stored path to match.
-///
-/// Drives off each row's *stored* `markdown_path` (a substring replace), so the
-/// real `-<id8>` suffix on the canonical filename is preserved — the doc's
-/// simplified `…-weekly-report.md` example omits it. The `report_type` column and
-/// the `summary_json` blob are rewritten together, from the deserialized summary,
-/// so the two can never disagree afterward. No report content changes; vector
-/// memory carries neither the slug nor the filename, so it is untouched (no
-/// re-embedding).
-///
-/// Idempotent: a row already on the new slug and path is skipped, so a re-run — or
-/// a launch after a prior partial run — is a no-op. Per-row fail-soft: an
-/// undecodable summary is logged and skipped, and a file-rename failure is logged
-/// and leaves the stored path at the file's actual on-disk location (never updated
-/// to a path that does not exist), so the next launch retries it.
+/// Idempotent launch-time migration (`docs/storage.md §Legacy Naming
+/// Migration`). Drives off each row's stored `markdown_path` (a substring
+/// replace), so the real `-<id8>` suffix on the canonical filename is
+/// preserved. The `report_type` column and the `summary_json` blob are
+/// rewritten together, from the deserialized summary, so the two can never
+/// disagree. Per-row fail-soft: an undecodable summary is logged and skipped,
+/// and a failed rename leaves the stored path at the file's actual location so
+/// the next launch retries it.
 pub fn migrate_legacy_naming(conn: &Connection) -> Result<()> {
     const LEGACY_SLUG: &str = "weekly_market";
     const NEW_SLUG: &str = "market_signal";
@@ -675,19 +563,17 @@ pub fn migrate_legacy_naming(conn: &Connection) -> Result<()> {
         let path_stale = new_path != markdown_path;
 
         if !slug_stale && !path_stale {
-            continue; // already on the new identifiers — idempotent no-op
+            continue;
         }
 
         if slug_stale {
             summary.report_type = NEW_SLUG.to_string();
         }
 
-        // Rename the file before recording the new path, so the persisted path
-        // always points at where the file actually is. If the old file is gone but
-        // the new one is present, a prior run renamed it — adopt the new path. If
-        // neither exists (a pre-existing orphan), still adopt the new path so the
-        // stored convention is consistent; the read path already errors on a
-        // missing file.
+        // Rename before recording the new path, so the persisted path always
+        // points at where the file is. Old gone and new present: a prior run
+        // renamed it. Neither: an orphan; adopt the new path anyway so the stored
+        // convention is consistent (the read path errors on a missing file).
         let stored_path = if path_stale {
             let old = std::path::Path::new(&markdown_path);
             let new = std::path::Path::new(&new_path);
@@ -718,19 +604,10 @@ pub fn migrate_legacy_naming(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// One-time, idempotent migration of the pre-pivot `job_runs.job_type` slug
-/// `weekly_market` → `market_signal`, run once at launch beside
-/// [`migrate_legacy_naming`]. Sibling concern, separate column: the legacy-naming
-/// migration (`docs/storage.md §Legacy Naming Migration`) covers `report_type` +
-/// filenames; this carries the job-slug rename the manual-only pivot left behind.
-///
-/// A single column rewrite — `job_type` is a write-only label today (no read query
-/// filters on it), so this is historical-data hygiene that keeps old rows on the
-/// same slug the going-forward producer ([`crate::jobs`]) now mints, not a
-/// correctness fix. Idempotent for free: the `WHERE` matches only legacy rows, so a
-/// re-run — or a launch after the table is already clean — changes nothing. The new
-/// slug is duplicated here deliberately rather than shared with `jobs`: this freezes
-/// the historical legacy→new mapping, independent of the producer's current value.
+/// The launch-time sibling of [`migrate_legacy_naming`] for `job_runs.job_type`;
+/// idempotent because the `WHERE` matches only legacy rows. The new slug is
+/// deliberately duplicated here rather than shared with `jobs`: this freezes the
+/// historical mapping, independent of the producer's current value.
 pub fn migrate_legacy_job_type(conn: &Connection) -> Result<()> {
     const LEGACY_SLUG: &str = "weekly_market";
     const NEW_SLUG: &str = "market_signal";
@@ -742,46 +619,27 @@ pub fn migrate_legacy_job_type(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// How many reports the retention cascade keeps (`docs/storage.md` — only the
-/// 30 most recently generated Market Signal reports are retained; older reports are
-/// deleted automatically). Deliberately a separate constant from
-/// [`RECENT_REPORTS_LIMIT`], which bounds the sidebar's display query.
-///
-/// The two windows are sized alike but **no longer keyed alike**: the sidebar reads
-/// `created_at DESC, rowid DESC` because a report is a dated document, while
-/// [`select_reports_beyond_retention`] keys the keep window on insertion order so a
-/// backwards clock step cannot evict the report a run just wrote.
-///
-/// They therefore disagree about *which* 30, never about how many: a clock-stepped
-/// report is preserved by evicting the oldest **insertion** instead, so the store still
-/// holds exactly 30 rows and the sidebar then lists all of them — placing the stepped
-/// report last, since it is the oldest by date. Nothing is retained "extra".
-/// See [`select_reports_beyond_retention`] for why only the eviction decision moved.
+/// How many reports the retention cascade keeps (`docs/storage.md`). A separate
+/// constant from [`RECENT_REPORTS_LIMIT`], which bounds the sidebar's display
+/// query: the two windows are sized alike but keyed differently — the sidebar by
+/// `created_at`, the eviction by insertion order — so they can disagree about
+/// which 30, never about how many (see [`select_reports_beyond_retention`]).
 pub const REPORT_RETENTION: u32 = 30;
 
-/// One report selected for eviction by the retention cascade: the id joins the
-/// SQLite legs (report row, vector summary, baseline snapshots); the stored
-/// markdown path locates the file leg.
+/// The id joins the SQLite legs of the cascade; the stored markdown path
+/// locates the file leg.
 pub struct ReportEvictee {
     pub report_id: String,
     pub markdown_path: String,
 }
 
-/// The reports outside the newest-`keep` window, oldest first — selection only;
-/// the caller owns the per-evictee cascade. Empty at or under the cap.
-///
-/// The keep window is **insertion order** (`rowid`), not `created_at`. This selection
-/// deletes a report's Markdown file, its row, its vector summary and its baseline
-/// snapshots, and the pipeline inserts a report and then prunes — so keyed on the wall
-/// clock, a backwards step (an NTP correction, a manual change) sorted the
-/// just-written report below the window and **evicted the report the run had only just
-/// produced**. Insertion order cannot invert.
-///
-/// This deliberately diverges from [`list_recent_reports`], which stays
-/// `created_at`-ordered: a report is a *dated document*, so the sidebar and the house
-/// view are right to read it by date. Only the eviction decision is identity-like, so
-/// only it moves — the two can disagree about a clock-stepped report, and keeping the
-/// extra report is the safe side of that disagreement.
+/// Selection only; the caller owns the per-evictee cascade. Empty at or under
+/// the cap. The keep window is insertion order (`rowid`), not `created_at`: the
+/// pipeline inserts and then prunes, so keyed on the wall clock a backwards step
+/// would evict the report the run had only just produced.
+/// [`list_recent_reports`] deliberately stays `created_at`-ordered — a report is
+/// a dated document — so only the eviction decision, which is identity-like,
+/// moves.
 pub fn select_reports_beyond_retention(conn: &Connection, keep: u32) -> Result<Vec<ReportEvictee>> {
     let mut stmt = conn.prepare(
         "SELECT report_id, markdown_path FROM reports
@@ -805,19 +663,16 @@ pub fn select_reports_beyond_retention(conn: &Connection, keep: u32) -> Result<V
     Ok(evictees)
 }
 
-/// Delete one report's row — the final SQLite leg of the retention cascade,
-/// called after the file and vector legs so a partially-failed cascade leaves
-/// the row (and the next run's selection) behind rather than an untracked
-/// orphan file.
+/// The final leg of the retention cascade, called after the file and vector
+/// legs so a partially-failed cascade leaves the row behind rather than an
+/// untracked orphan file.
 pub fn delete_report_row(conn: &Connection, report_id: &str) -> Result<()> {
     conn.execute("DELETE FROM reports WHERE report_id = ?1", [report_id])?;
     Ok(())
 }
 
-/// Delete one report's baseline-snapshot rows (the join `report_id` was stored
-/// for). The 14-snapshot cap prunes these long before the 30-report window
-/// reaches them, so this leg is belt-and-braces against orphans, not the
-/// primary bound.
+/// The 14-snapshot cap prunes these long before the 30-report window reaches
+/// them, so this leg is belt-and-braces against orphans, not the primary bound.
 pub fn delete_report_baseline_snapshots(conn: &Connection, report_id: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM baseline_snapshots WHERE report_id = ?1",
@@ -826,11 +681,8 @@ pub fn delete_report_baseline_snapshots(conn: &Connection, report_id: &str) -> R
     Ok(())
 }
 
-/// Delete one report's truncation-telemetry rows — the cascade leg that bounds
-/// the accumulating `document_truncations` table. Unlike the baseline-snapshot
-/// table there is no independent self-cap, so this report-id join is the *only*
-/// thing that reaps these rows: a row lives exactly as long as the report it
-/// describes.
+/// `document_truncations` has no self-cap, so this report-id join is the only
+/// thing that reaps its rows.
 pub fn delete_report_truncations(conn: &Connection, report_id: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM document_truncations WHERE report_id = ?1",
@@ -839,11 +691,8 @@ pub fn delete_report_truncations(conn: &Connection, report_id: &str) -> Result<(
     Ok(())
 }
 
-/// Delete one report's parsed-document-count row — the cascade leg that bounds
-/// the accumulating `document_parse_runs` denominator table. Mirrors
-/// [`delete_report_truncations`]: like the truncation numerator it has no
-/// independent self-cap, so this report-id join is the only thing that reaps
-/// these rows, and the two delete together so the rate's window stays aligned.
+/// Mirrors [`delete_report_truncations`]: no self-cap, and the two delete
+/// together so the rate's window stays aligned.
 pub fn delete_report_parse_runs(conn: &Connection, report_id: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM document_parse_runs WHERE report_id = ?1",
@@ -852,16 +701,12 @@ pub fn delete_report_parse_runs(conn: &Connection, report_id: &str) -> Result<()
     Ok(())
 }
 
-/// How many of the most recent baseline snapshots to retain (`baseline_snapshots`).
-/// Report-indexed, not calendar-indexed: 14 *reports*, whatever their cadence. The change
-/// view reads only the immediately-prior snapshot; the baseline history
-/// (`baseline_history`) reads every retained one, so this cap is also the history's
-/// depth. Decoupled from the report retention window ([`REPORT_RETENTION`]); `report_id`
-/// is stored so the report cascade can join ([`delete_report_baseline_snapshots`]).
+/// Report-indexed, not calendar-indexed: 14 reports, whatever their cadence.
+/// The change view reads only the immediately-prior snapshot; the baseline
+/// history reads every retained one, so this cap is also the history's depth.
+/// Decoupled from [`REPORT_RETENTION`].
 pub const BASELINE_SNAPSHOT_RETENTION: u32 = 14;
 
-/// One stored baseline snapshot as the history read returns it: the report it backs,
-/// its app-minted `captured_at` scan time, and the serialized scan.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredBaselineSnapshot {
     pub report_id: String,
@@ -869,9 +714,8 @@ pub struct StoredBaselineSnapshot {
     pub baseline_json: String,
 }
 
-/// Persist one run's baseline snapshot: the serialized `BaselineMarketData`, the report
-/// it backs, the app-minted `captured_at` scan time, and the baseline `schema_version`.
-/// Serialization is the caller's concern — storage stays agnostic of the baseline shape.
+/// Serialization is the caller's concern — storage stays agnostic of the
+/// baseline shape.
 pub fn insert_baseline_snapshot(
     conn: &Connection,
     report_id: &str,
@@ -888,16 +732,11 @@ pub fn insert_baseline_snapshot(
     Ok(())
 }
 
-/// The most recent baseline snapshot's `(captured_at, baseline_json)`, or `None` before
-/// any snapshot exists (the first report).
-///
-/// Newest by **insertion order** (`id`), not `captured_at` — the same rule as run
-/// identity across the suite. Under a wall clock a backwards step (an NTP
-/// correction, a manual clock change) makes an older snapshot answer as "latest",
-/// and this snapshot is the next report's delta baseline: the whole change view
-/// would anchor on the wrong report and its elapsed interval would be wrong with it.
-/// `captured_at` remains the snapshot's dated capture instant, which the interval
-/// reads; it is not its identity.
+/// `(captured_at, baseline_json)`, or `None` before any snapshot exists. Newest
+/// by insertion order (`id`), not `captured_at`: under a backwards clock step an
+/// older snapshot would answer as "latest", and this snapshot is the next
+/// report's delta baseline. `captured_at` is the capture instant the interval
+/// reads, not the identity.
 pub fn latest_baseline_snapshot(conn: &Connection) -> Result<Option<(String, String)>> {
     let row = conn
         .query_row(
@@ -911,10 +750,8 @@ pub fn latest_baseline_snapshot(conn: &Connection) -> Result<Option<(String, Str
     Ok(row)
 }
 
-/// The newest `limit` baseline snapshots, newest first — the baseline history's read.
-/// Newest by insertion order (`id`), the [`latest_baseline_snapshot`] rule, so a
-/// backwards clock step can't reorder the history's points. Empty before any snapshot
-/// exists.
+/// Newest first by insertion order, the [`latest_baseline_snapshot`] rule, so a
+/// backwards clock step can't reorder the history's points.
 pub fn recent_baseline_snapshots(
     conn: &Connection,
     limit: u32,
@@ -936,13 +773,10 @@ pub fn recent_baseline_snapshots(
     Ok(rows)
 }
 
-/// Delete all but the newest `keep` baseline snapshots (same insertion-order rule as
-/// [`latest_baseline_snapshot`]). Idempotent; a no-op when at or under the cap.
-///
-/// The ordering matters more here than for a read: the pipeline inserts then prunes,
-/// so under `captured_at` a backwards clock step could sort the just-inserted
-/// snapshot below the keep window and **delete the row it had only just written**,
-/// leaving the next report to diff against an older one.
+/// The same insertion-order rule as [`latest_baseline_snapshot`], and it matters
+/// more here: the pipeline inserts then prunes, so under `captured_at` a
+/// backwards clock step could delete the row it had only just written.
+/// Idempotent.
 pub fn prune_baseline_snapshots(conn: &Connection, keep: u32) -> Result<()> {
     conn.execute(
         "DELETE FROM baseline_snapshots
@@ -1020,9 +854,8 @@ mod tests {
         let conn = mem();
         let tmp = tempfile::tempdir().unwrap();
 
-        // A pre-pivot report: the legacy slug in both the column and the JSON blob,
-        // and a real Markdown file at the legacy `…-weekly-report…` name (carrying
-        // the real `-<id8>` suffix the doc's simplified example omits).
+        // The legacy name carries the real `-<id8>` suffix the doc's simplified
+        // example omits.
         let legacy_path = tmp
             .path()
             .join("2026-06-03-market-signal-weekly-report-aaaaaaaa.md");
@@ -1043,14 +876,12 @@ mod tests {
 
         migrate_legacy_naming(&conn).unwrap();
 
-        // File renamed on disk to the new convention; the legacy name is gone.
         let new_path = tmp
             .path()
             .join("2026-06-03-market-signal-report-aaaaaaaa.md");
         assert!(new_path.exists(), "renamed to the new convention");
         assert!(!legacy_path.exists(), "legacy file removed");
 
-        // The stored path, the JSON slug, and the report_type column all migrated.
         let (stored_path, migrated) = get_report_record(&conn, "rid-legacy").unwrap().unwrap();
         assert_eq!(stored_path, new_path.to_string_lossy());
         assert_eq!(
@@ -1066,7 +897,6 @@ mod tests {
             .unwrap();
         assert_eq!(col, "market_signal", "report_type column rewritten");
 
-        // Idempotent: a second pass finds nothing stale and changes nothing.
         migrate_legacy_naming(&conn).unwrap();
         let (stored_path_again, _) = get_report_record(&conn, "rid-legacy").unwrap().unwrap();
         assert_eq!(stored_path_again, stored_path, "second pass is a no-op");
@@ -1102,7 +932,6 @@ mod tests {
     #[test]
     fn migrate_legacy_job_type_rewrites_slug_idempotently() {
         let conn = mem();
-        // A pre-pivot job_runs row carrying the legacy slug.
         conn.execute(
             "INSERT INTO job_runs (job_type, state, started_at, finished_at)
              VALUES ('weekly_market', 'successful', '2026-06-03T12:00:00Z', '2026-06-03T12:05:00Z')",
@@ -1117,7 +946,6 @@ mod tests {
             .unwrap();
         assert_eq!(slug, "market_signal", "legacy job slug rewritten");
 
-        // Idempotent: a second pass matches no legacy rows and changes nothing.
         migrate_legacy_job_type(&conn).unwrap();
         let slug_again: String = conn
             .query_row("SELECT job_type FROM job_runs", [], |r| r.get(0))
@@ -1128,8 +956,7 @@ mod tests {
     #[test]
     fn migrate_legacy_job_type_leaves_non_legacy_rows_untouched() {
         let conn = mem();
-        // An already-current row plus a hypothetical future job type: the
-        // slug-scoped WHERE must rewrite neither.
+        // An already-current row plus a hypothetical future job type.
         conn.execute(
             "INSERT INTO job_runs (job_type, state, started_at, finished_at)
              VALUES ('market_signal', 'successful', '2026-06-03T12:00:00Z', '2026-06-03T12:05:00Z')",
@@ -1165,7 +992,6 @@ mod tests {
         }
         let recent = list_recent_reports(&conn, 30).unwrap();
         assert_eq!(recent.len(), 30, "capped at the limit");
-        // Newest (id-31) first; the two oldest (id-00, id-01) fall off the window.
         assert_eq!(recent[0].report_id, "id-31");
         assert_eq!(recent[29].report_id, "id-02");
     }
@@ -1179,7 +1005,6 @@ mod tests {
         }
         let recent = list_recent_reports_with_paths(&conn, 3).unwrap();
         assert_eq!(recent.len(), 3, "capped at the limit");
-        // Newest first, each paired with its canonical Markdown path.
         assert_eq!(recent[0].0.report_id, "id-04");
         assert_eq!(recent[0].1, "/tmp/id-04.md");
         assert_eq!(recent[2].0.report_id, "id-02");
@@ -1230,14 +1055,8 @@ mod tests {
     #[test]
     fn a_backwards_clock_step_does_not_evict_the_report_the_run_just_wrote() {
         let conn = mem();
-        // A full store, then one more report whose timestamp is EARLIER than every row
-        // already in it — an NTP correction or a manual clock change between runs.
-        //
-        // Keyed on `created_at`, that fresh report sorted below the keep window and was
-        // returned as an evictee, so the cascade deleted the Markdown, row, vector
-        // summary and baseline snapshots of the report the run had only just produced.
-        // The existing tests could not catch it: one covers strictly ascending
-        // timestamps and the other a tie, and neither is a newly inserted OLDER one.
+        // A full store, then one more report dated earlier than every row in it —
+        // an NTP correction or a manual clock change between runs.
         for i in 0..REPORT_RETENTION {
             insert_sample(
                 &conn,
@@ -1258,13 +1077,8 @@ mod tests {
             "the report this run just wrote must survive its own prune"
         );
 
-        // Model production, which prunes as part of the same run
-        // (`pipeline::prune_old_reports`, called after the insert): once the evictee is
-        // gone the store holds exactly 30 rows again.
-        //
-        // Asserting the sidebar against the un-pruned 31-row store would describe a
-        // state production never renders — and would read as "the sidebar excludes the
-        // stepped report", which is true of 31 rows and false of the 30 that remain.
+        // Production prunes in the same run, so the sidebar is asserted against
+        // the 30 rows that remain, not the un-pruned 31 it never renders.
         delete_report_row(&conn, &evictees[0].report_id).unwrap();
         let listed = list_recent_reports(&conn, REPORT_RETENTION).unwrap();
         assert_eq!(listed.len(), REPORT_RETENTION as usize, "still exactly 30 rows");
@@ -1282,8 +1096,7 @@ mod tests {
     #[test]
     fn select_reports_beyond_retention_breaks_created_at_ties_by_insertion_order() {
         let conn = mem();
-        // Three reports sharing one timestamp: rowid decides, exactly as it does
-        // in list_recent_reports, so the earliest insertion is the one evicted.
+        // Three reports sharing one timestamp: rowid decides.
         for id in ["first", "second", "third"] {
             insert_sample(&conn, id, "2026-03-01T00:00:00Z");
         }
@@ -1336,7 +1149,6 @@ mod tests {
             get_setting(&conn, "demo_key").unwrap().as_deref(),
             Some("first")
         );
-        // Second write to the same key updates rather than erroring on the PK.
         set_setting(&conn, "demo_key", "second").unwrap();
         assert_eq!(
             get_setting(&conn, "demo_key").unwrap().as_deref(),
@@ -1351,13 +1163,8 @@ mod tests {
 
     #[test]
     fn a_backwards_clock_step_neither_hides_nor_deletes_the_newest_snapshot() {
-        // The snapshot the pipeline just wrote is the next report's delta baseline, so
-        // "latest" and "keep" must both be insertion order. Under `captured_at` a
-        // backwards clock step (an NTP correction, a manual change) sorted the fresh
-        // row below the older ones: the next report would diff against the WRONG
-        // report and compute its elapsed interval from that one — and because the
-        // pipeline inserts then prunes, at the cap the prune deleted the row it had
-        // only just written.
+        // The snapshot the pipeline just wrote is the next report's delta
+        // baseline, so "latest" and "keep" must both be insertion order.
         let conn = mem();
         for i in 0..BASELINE_SNAPSHOT_RETENTION {
             insert_baseline_snapshot(
@@ -1416,12 +1223,10 @@ mod tests {
             .unwrap();
         }
 
-        // Latest is the newest captured_at (the 16th insert).
         let (captured_at, json) = latest_baseline_snapshot(&conn).unwrap().unwrap();
         assert_eq!(captured_at, "2026-01-16T00:00:00Z");
         assert_eq!(json, "{\"marker\":15}");
 
-        // Prune keeps only the newest 14; the two oldest fall off, the latest survives.
         prune_baseline_snapshots(&conn, BASELINE_SNAPSHOT_RETENTION).unwrap();
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM baseline_snapshots", [], |r| r.get(0))
@@ -1464,8 +1269,7 @@ mod tests {
             )
             .unwrap();
         }
-        // The newest insert, dated BEFORE both rows already stored: the history's point
-        // order is insertion order, like the change view's "latest".
+        // The newest insert, dated BEFORE both rows already stored.
         insert_baseline_snapshot(
             &conn,
             "rep-stepped",
@@ -1512,14 +1316,12 @@ mod tests {
         assert_eq!(listed[0].size_bytes, 42);
         assert_eq!(listed[0].reason, "broken");
 
-        // The next pass's set replaces the previous one — a healed file's row is gone.
         replace_parse_failures(&conn, &[row("b.json", "still not json")]).unwrap();
         let listed = list_parse_failures(&conn).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "b.json");
         assert_eq!(listed[0].reason, "still not json");
 
-        // An empty pass clears the table.
         replace_parse_failures(&conn, &[]).unwrap();
         assert!(list_parse_failures(&conn).unwrap().is_empty());
     }
@@ -1537,13 +1339,10 @@ mod tests {
         };
         let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
 
-        // Two runs, each appending one row — the second must NOT clear the first
-        // (the divergence from the replace-wholesale parse-failures table).
         record_document_truncations(&conn, &[row("rep-1", "big.pdf")]).unwrap();
         record_document_truncations(&conn, &[row("rep-2", "huge.pdf")]).unwrap();
         assert_eq!(count("SELECT COUNT(*) FROM document_truncations"), 2);
 
-        // Field round-trip on the first row.
         let (name, original, kept): (String, i64, i64) = conn
             .query_row(
                 "SELECT name, original_chars, kept_chars FROM document_truncations
@@ -1556,7 +1355,6 @@ mod tests {
         assert_eq!(original, 30_000);
         assert_eq!(kept, 12_000);
 
-        // The cascade leg reaps only the named report's rows.
         delete_report_truncations(&conn, "rep-1").unwrap();
         assert_eq!(count("SELECT COUNT(*) FROM document_truncations"), 1);
         assert_eq!(
@@ -1569,8 +1367,6 @@ mod tests {
     fn truncation_stats_aggregates_counts_formats_and_chars() {
         let conn = mem();
 
-        // Empty table → all-zero default, no timestamp (the "overflow is rare"
-        // signal the Settings section renders as its empty state).
         let empty = truncation_stats(&conn).unwrap();
         assert_eq!(empty, TruncationStats::default());
         assert_eq!(empty.latest_captured_at, None);
@@ -1587,7 +1383,6 @@ mod tests {
                 }
             };
 
-        // Two reports, three events across two formats.
         record_document_truncations(
             &conn,
             &[
@@ -1623,25 +1418,20 @@ mod tests {
         )
         .unwrap();
 
-        // Denominator: rep-1 parsed 7 docs (3 truncated) totalling 100k original
-        // chars, rep-2 parsed 4 (1 truncated) totalling 50k → 11 docs / 150k chars
-        // parsed against 3 truncations / 29k chars dropped, the two rates' halves.
+        // rep-1 parsed 7 docs totalling 100k original chars, rep-2 parsed 4
+        // totalling 50k: 11 docs / 150k chars against 3 truncations / 29k dropped.
         record_document_parse_run(&conn, "rep-1", "2026-06-01T09:00:00+00:00", 7, 100_000).unwrap();
         record_document_parse_run(&conn, "rep-2", "2026-06-08T09:00:00+00:00", 4, 50_000).unwrap();
 
         let stats = truncation_stats(&conn).unwrap();
         assert_eq!(stats.total_truncations, 3);
         assert_eq!(stats.total_docs_parsed, 11);
-        // Both truncation reports recorded a parse-run, so the cohorts align.
         assert_eq!(stats.unaligned_truncations, 0);
-        // Chars-ratio denominator: 100k + 50k, with every parse-run carrying a
-        // count (no NULL cohort), so the chars ratio is safe to render.
         assert_eq!(stats.total_original_chars, 150_000);
         assert_eq!(stats.parse_runs_missing_original_chars, 0);
         assert_eq!(stats.reports_affected, 2);
         // (30k−12k) + (20k−12k) + (15k−12k) = 18k + 8k + 3k.
         assert_eq!(stats.total_chars_dropped, 29_000);
-        // pdf (2 events) ordered before html (1) by descending count.
         assert_eq!(
             stats.by_format,
             vec![
@@ -1655,7 +1445,6 @@ mod tests {
                 },
             ]
         );
-        // Newest capture across both runs.
         assert_eq!(
             stats.latest_captured_at.as_deref(),
             Some("2026-06-08T09:00:00+00:00")
@@ -1667,19 +1456,13 @@ mod tests {
         let conn = mem();
         let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
 
-        // Two runs append rather than replace (the denominator accumulates the
-        // way the numerator does), including a zero-truncation run that still
-        // contributes its parsed-doc count.
         record_document_parse_run(&conn, "rep-1", "2026-06-01T09:00:00+00:00", 5, 40_000).unwrap();
         record_document_parse_run(&conn, "rep-2", "2026-06-08T09:00:00+00:00", 3, 20_000).unwrap();
         assert_eq!(count("SELECT COUNT(*) FROM document_parse_runs"), 2);
         let stats = truncation_stats(&conn).unwrap();
         assert_eq!(stats.total_docs_parsed, 8);
-        // Both denominators (doc count and original chars) accumulate together.
         assert_eq!(stats.total_original_chars, 60_000);
 
-        // The cascade leg reaps only the named report's row, keeping the
-        // denominator aligned with the truncation numerator's window.
         delete_report_parse_runs(&conn, "rep-1").unwrap();
         assert_eq!(count("SELECT COUNT(*) FROM document_parse_runs"), 1);
         let stats = truncation_stats(&conn).unwrap();
@@ -1699,9 +1482,7 @@ mod tests {
             kept_chars: 12_000,
         };
 
-        // rep-1's run recorded both legs (aligned); rep-2 is a legacy truncation
-        // with no parse-run row — the cohort gap a pre-`document_parse_runs` build
-        // would leave behind.
+        // rep-2 has no parse-run row: the cohort gap.
         record_document_truncations(&conn, &[trow("rep-1", "a.pdf"), trow("rep-2", "b.pdf")])
             .unwrap();
         record_document_parse_run(&conn, "rep-1", "2026-06-15T09:00:00+00:00", 5, 40_000).unwrap();
@@ -1709,20 +1490,16 @@ mod tests {
         let stats = truncation_stats(&conn).unwrap();
         assert_eq!(stats.total_truncations, 2);
         assert_eq!(stats.total_docs_parsed, 5);
-        // Exactly rep-2's truncation lacks a denominator, so the rate is unsafe.
         assert_eq!(stats.unaligned_truncations, 1);
 
-        // Once rep-2 records its own parse-run, the cohorts realign.
         record_document_parse_run(&conn, "rep-2", "2026-06-15T09:00:00+00:00", 4, 30_000).unwrap();
         assert_eq!(truncation_stats(&conn).unwrap().unaligned_truncations, 0);
     }
 
     #[test]
     fn truncation_stats_flags_a_parse_run_with_no_original_char_count() {
-        // A row recorded before `total_original_chars` shipped reads NULL — the
-        // chars-ratio cohort gap. Simulate it with a raw insert that omits the
-        // column (the production writer always supplies it), then assert the guard
-        // counts it and the chars denominator silently skips it.
+        // A raw insert omitting the column (the production writer always supplies
+        // it) simulates the NULL cohort.
         let conn = mem();
         conn.execute(
             "INSERT INTO document_parse_runs (report_id, captured_at, docs_parsed)
@@ -1733,14 +1510,10 @@ mod tests {
         record_document_parse_run(&conn, "rep-2", "2026-06-08T09:00:00+00:00", 4, 50_000).unwrap();
 
         let stats = truncation_stats(&conn).unwrap();
-        // Both rows count toward the doc denominator…
         assert_eq!(stats.total_docs_parsed, 10);
-        // …but only the row carrying a char count contributes to the chars one,
-        // and the NULL row is flagged so the consumer withholds the chars ratio.
         assert_eq!(stats.total_original_chars, 50_000);
         assert_eq!(stats.parse_runs_missing_original_chars, 1);
 
-        // Backfilling the legacy row clears the gap.
         conn.execute(
             "UPDATE document_parse_runs SET total_original_chars = 30000 WHERE report_id = 'legacy'",
             [],
@@ -1753,7 +1526,7 @@ mod tests {
 
     #[test]
     fn init_schema_adds_total_original_chars_to_a_preexisting_parse_runs_table() {
-        // A DB created before the column shipped: the old table shape, with a row.
+        // The old table shape, with a row.
         let conn = Connection::open_in_memory().unwrap();
         conn.execute(
             "CREATE TABLE document_parse_runs (
@@ -1772,7 +1545,6 @@ mod tests {
         )
         .unwrap();
 
-        // init_schema migrates: the column is added and the old row reads NULL.
         assert!(!column_exists(&conn, "document_parse_runs", "total_original_chars").unwrap());
         init_schema(&conn).unwrap();
         assert!(column_exists(&conn, "document_parse_runs", "total_original_chars").unwrap());
@@ -1785,7 +1557,7 @@ mod tests {
             .unwrap();
         assert_eq!(legacy, None);
 
-        // Idempotent: a second init_schema must not error on the duplicate column.
+        // A second init_schema must not error on the duplicate column.
         init_schema(&conn).unwrap();
     }
 }

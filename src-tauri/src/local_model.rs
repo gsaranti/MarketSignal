@@ -1,30 +1,7 @@
-//! The flexible local-model adapter: the substrate the local analysis suite
-//! ([`crate::config`] §Local Analysis Suite, `docs/local-models.md`) builds on.
-//!
-//! The cloud agents pick a model from a closed enum with hard-coded provider
-//! endpoints ([`crate::model_agent::AgentModel`]). The local suite uses *this*
-//! flexible adapter instead: a call is parameterized by `{ endpoint, model_id,
-//! messages, tools, format_schema, options }`, so a whole roster of models behind
-//! one Ollama daemon is addressed by id without enumerating each as a compile-time
-//! variant. The `AgentModel` enum stays untouched and the roster changes through
-//! configuration.
-//!
-//! Like the cloud adapters, the HTTP call is synchronous (`reqwest::blocking`) so
-//! the per-stage boundary stays sync; the blocking work is offloaded via
-//! `spawn_blocking` at the Tauri-command seam (the `test_local_daemon` command in
-//! `lib.rs`, mirroring `connection_test`). All calls use Ollama's native surface
-//! (`/api/chat`, `/api/tags`) —
-//! the daemon's OpenAI-compatible `/v1/` layer is deliberately unused, since
-//! schema-constrained output needs the native `format` parameter (the `/v1/` path
-//! advertises only JSON mode). Token + reasoning streaming rides the existing `progress` seam,
-//! so a local job streams into the run tracker exactly as a report run does; the
-//! native `/api/chat` stream is newline-delimited JSON (not SSE), so it carries its
-//! own decoder rather than reusing the cloud SSE one.
-//!
-//! This module is a *primitive* — a provider client plus daemon supervision and the
-//! local-suite gate. It deliberately does not implement the report's `MainAgent` /
-//! `AnalystAgent` traits (those carry report-specific I/O); the per-feature stages
-//! wrap this client and hold the pure-stage boundary themselves.
+//! The local-model adapter: an Ollama client addressed by model id per call,
+//! daemon supervision, and the local-suite gate (`docs/local-models.md`). The
+//! HTTP call is synchronous (`reqwest::blocking`) so the per-stage boundary stays
+//! sync; callers offload it with `spawn_blocking` at the Tauri-command seam.
 
 use std::io::BufRead;
 use std::sync::Arc;
@@ -37,53 +14,40 @@ use serde_json::Value;
 use crate::config::{self, AppConfig, ValidationReport, WarningCategory, WarningKind};
 use crate::progress::{ModelCallInfo, ModelCallOutcome, RunContext};
 
-/// Native Ollama endpoint paths, joined onto the configured daemon base.
+/// Native Ollama endpoint paths, joined onto the configured daemon base. The
+/// daemon's OpenAI-compatible `/v1/` layer is deliberately unused:
+/// schema-constrained output needs the native `format` parameter, which `/v1/`
+/// lacks, and the native stream is newline-delimited JSON rather than SSE.
 const CHAT_PATH: &str = "/api/chat";
 const TAGS_PATH: &str = "/api/tags";
 
-/// Backstop deadline for a request that declares no generation reservations — the
-/// supervision probes (`/api/tags`) and bare test requests — and the floor no
-/// derived chat deadline goes under ([`DeadlinePolicy`]).
+/// Backstop deadline for a request that declares no generation reservation (the
+/// `/api/tags` probes, bare test requests) and the floor no derived chat
+/// deadline goes under ([`DeadlinePolicy`]).
 ///
-/// How reqwest's blocking client applies a timeout matters here, because the
-/// naive reading ("a total deadline for the call") is wrong in a way that hid a
-/// run killer. The blocking builder keeps its timeout on the blocking side —
-/// it is never forwarded to the async client — and applies it twice: once as
-/// the wait for the response *headers*, then afresh on every body `read()`. For
-/// a chat call the header wait is where generation happens: with
-/// `stream: false` the daemon answers only once the whole chain has generated,
-/// and with `stream: true` the first bytes are expected only with the first
-/// token (Go's HTTP server sends headers on the first write), so prompt
-/// evaluation sits inside the header wait on both paths. A fixed ten minutes
-/// there capped a thinking chain at roughly a third of its reservation
-/// (`docs/verification/2026-08-24-portfolio-analysis-large-scale-review.md` §C1),
+/// reqwest's blocking builder keeps its timeout on the blocking side and applies
+/// it twice: once as the wait for the response headers, then afresh on every
+/// body `read()`. For a chat call the header wait is where generation happens
+/// (with `stream: false` the daemon answers once the whole chain has generated;
+/// with `stream: true` the first bytes arrive with the first token), so a fixed
+/// ten minutes here would cap a thinking chain well under its reservation —
 /// which is why a chat request never rides this constant alone.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// The per-call transport bound, derived from the request's own reservations so
 /// transport cannot cut a generation that stays inside its reservation while
-/// the daemon holds the drafted floors and its pre-generation overhead — runner
-/// scheduling, a cold model load — fits in the slack the unused reservation
-/// leaves. `num_ctx` over a prompt-evaluation floor covers the prefill that sits
-/// inside the header wait, budgeted over the full context rather than the actual
-/// prompt; on the non-streaming path, where the whole chain generates before
-/// the headers arrive, `num_predict` over a decode floor covers the chain
-/// itself. The slack is the unused part of that budget — unfilled context at
-/// the prefill floor plus, on the non-streaming path, ungenerated output at the
-/// decode floor. Generation shares `num_ctx` with the prompt, so a non-streaming
-/// call can never consume both terms: at the thinking reservation (half the
-/// context) the combined slack is at least `65_536 / prefill_floor` ≈ 11 min,
-/// while a streaming call's slack is only the context its prompt leaves. The
-/// streaming path takes the prefill term alone — its tokens arrive as they
-/// generate — and the same value then bounds each body read as an idle limit,
-/// so a daemon that goes silent mid-stream is still caught. The floors are
-/// drafted just under the pinned serving path's worst measured row (160 K prompt
-/// tokens: 113 tok/s prefill, 13.3 tok/s decode —
-/// `docs/verification/2026-07-28-m5-preflight.md`), calibratable like the
-/// engine's other starting parameters, and a re-verification item on any
-/// serving-path change (`docs/local-model-operations.md §M5 pre-flight
-/// checklist`). The contract is recorded at `docs/local-models.md §The
-/// local-model adapter seam`.
+/// the daemon holds the drafted floors. `num_ctx` over a prefill floor covers
+/// the prompt evaluation that sits inside the header wait; on the non-streaming
+/// path, where the whole chain generates before the headers arrive,
+/// `num_predict` over a decode floor covers the chain itself. The unused part
+/// of that budget is the slack for pre-generation overhead (runner scheduling,
+/// a cold model load). The streaming path takes the prefill term alone — its
+/// tokens arrive as they generate — and the same value then bounds each body
+/// read as an idle limit, so a daemon that goes silent mid-stream is still
+/// caught. The floors are drafted just under the pinned serving path's worst
+/// measured row and are a re-verification item on any serving-path change
+/// (`docs/local-model-operations.md §M5 pre-flight checklist`); the contract is
+/// `docs/local-models.md §The local-model adapter seam`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeadlinePolicy {
     /// Prompt-evaluation throughput floor, tokens per second.
@@ -129,11 +93,9 @@ impl DeadlinePolicy {
     }
 }
 
-/// Name a transport timeout for what it is: the derived deadline reached. Read as
-/// a stalled daemon, throughput under the drafted floor, or pre-generation
-/// overhead (runner scheduling, a cold model load) outrunning the reservation's
-/// slack — the three things a healthy generation inside its reservation cannot
-/// be — rather than reqwest's opaque "operation timed out".
+/// Name a transport timeout for what it is — the derived deadline reached — rather
+/// than reqwest's opaque "operation timed out". The three readings it names are
+/// the only things a healthy generation inside its reservation cannot be.
 fn deadline_reached(deadline: Duration) -> String {
     format!(
         "transport deadline of {} min reached — the daemon stalled, its throughput fell \
@@ -160,8 +122,7 @@ fn is_transport_timeout(err: &anyhow::Error) -> bool {
 }
 
 /// Wrap a chat-call error so a deadline trip carries [`deadline_reached`] as its
-/// outermost message — the one the tracker row and the failure detail show (the
-/// report run's, or an isolated Portfolio holding's failed step).
+/// outermost message — the one the tracker row and the failure detail show.
 fn name_deadline_trip(err: anyhow::Error, deadline: Duration) -> anyhow::Error {
     if is_transport_timeout(&err) {
         err.context(deadline_reached(deadline))
@@ -191,11 +152,9 @@ pub(crate) enum RetryClass {
     /// The stream carried an error chunk or ended before its done chunk.
     Stream,
     /// The appendix parsed but a value fell outside its declared domain
-    /// (`portfolio::validate_appendix_domain`) — a sampled
-    /// response whose re-issue may well land in-domain, so it classifies
-    /// transient, as its own class so the data-health read tells an
-    /// off-domain value from malformed content (the 2026-08-24 review's
-    /// Codex I6, ruled 2026-08-29).
+    /// (`portfolio::validate_appendix_domain`) — a sampled response whose
+    /// re-issue may well land in-domain. Its own class so the data-health read
+    /// tells an off-domain value from malformed content.
     ModelArmDomain,
 }
 
@@ -226,8 +185,7 @@ pub struct RetryEvent {
     /// The [`RetryClass`] display form followed by the failed attempt's full
     /// error chain (`{class}: {err:#}`) — a string so persisted rows outlive
     /// enum changes, and the whole chain so a parse failure's innermost cause
-    /// and body snippet survive into the data-health read (attempt-8
-    /// Finding 1: the class alone could not say why a synthesis failed).
+    /// and body snippet survive into the data-health read.
     pub cause: String,
 }
 
@@ -319,12 +277,9 @@ impl RetryOnce {
         if progress.is_cancelled() {
             return false;
         }
-        // The retry's own row pair: the streaming stages emit no per-request
-        // rows, so this is a fired retry's only tracker surface — status
-        // "failed" (attempt one did fail), the detail naming the class, the
-        // single re-attempt and the full error chain — `{err:#}`, not `{err}`,
-        // so the innermost message (a serde error, a blank-field guard) and any
-        // body snippet survive alongside the outermost context.
+        // The streaming stages emit no per-request rows, so this row pair is a
+        // fired retry's only tracker surface; `{err:#}` keeps the innermost
+        // cause and any body snippet beside the outermost context.
         progress.request_started("Local", "local", stage, "Local model retry");
         progress.request_finished(
             "Local",
@@ -393,13 +348,11 @@ impl RetryOnce {
 /// per token (mirrors the cloud streaming path's flush cadence).
 const TOKEN_FLUSH_CHARS: usize = 24;
 
-/// Reduce a configured endpoint to the daemon **origin** the `/api/...` paths join
-/// onto. The Ollama docs present the API base *with* the `/api` segment
-/// (`http://localhost:11434/api`, https://docs.ollama.com/api), while the daemon
-/// host (`OLLAMA_HOST`) is `http://localhost:11434` — so a user may reasonably enter
-/// either. Trimming a trailing `/api` (and any trailing slashes) makes both resolve
-/// to the same origin, so the joined path is never doubled into `/api/api/chat`.
-/// [`LocalModelClient`] appends `/api/...` to it.
+/// Reduce a configured endpoint to the daemon origin the `/api/...` paths join
+/// onto. The Ollama docs present the API base with the `/api` segment while
+/// `OLLAMA_HOST` is the bare origin, so a user may reasonably enter either;
+/// trimming a trailing `/api` keeps the joined path from doubling into
+/// `/api/api/chat`.
 pub(crate) fn normalize_endpoint(endpoint: &str) -> String {
     let trimmed = endpoint.trim().trim_end_matches('/');
     trimmed
@@ -479,10 +432,9 @@ pub struct ChatRequest {
     pub tools: Option<Value>,
     /// The model's thinking mode (Ollama native `think`). `None` omits the field —
     /// the model's own default, and the safe shape for a model that can't take the
-    /// parameter at all. `Some(b)` is **always serialized**, so a non-thinking stage
+    /// parameter at all. `Some(b)` is always serialized, so a non-thinking stage
     /// explicitly says `think: false` rather than silently riding a thinking-on
-    /// default (the first live run's F3: the omitted flag cost ~45 minutes,
-    /// `docs/verification/2026-07-31-first-live-portfolio-run.md`).
+    /// default.
     pub think: Option<bool>,
     /// Generation options (temperature, `num_ctx`, …) passed as Ollama `options`.
     pub options: Option<Value>,
@@ -551,10 +503,8 @@ pub mod options {
     /// `num_predict` is the stage's explicit output reservation — a generous
     /// diagnostic ceiling, not a constraint: a stop at the limit surfaces as
     /// `done_reason: "length"` and becomes a legible truncation error instead of
-    /// an opaque downstream parse failure
-    /// (`docs/verification/2026-08-10-big-run-attempt-1.md` §Fix candidates 4).
-    /// A load-time option it is not — unlike `num_ctx`, changing it never
-    /// reloads the resident runner.
+    /// an opaque downstream parse failure. Unlike `num_ctx` it is not a
+    /// load-time option, so changing it never reloads the resident runner.
     pub fn thinking_general(num_ctx: u32, num_predict: u32) -> Value {
         json!({
             "temperature": 1.0,
@@ -639,8 +589,7 @@ pub enum ThinkingObservation {
 }
 
 /// One resolved physical attempt, captured before downstream validation. The
-/// collector is independent of the diagnostic log and drained by holding. The
-/// required app fields deliberately reject retired pre-release persisted shapes.
+/// collector is independent of the diagnostic log and drained by holding.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PromptUsage {
     pub stage: String,
@@ -1123,7 +1072,7 @@ impl LocalModelClient {
             .map_err(|e| name_deadline_trip(e, deadline))?;
         if !status.is_success() {
             // Rooted in the class marker so the bounded retry-once classifies
-            // without string-matching; the message stays the display.
+            // without string-matching.
             return Err(anyhow::Error::new(RetryClass::DaemonStatus)
                 .context(format!("local model returned {status}: {text}")));
         }
@@ -1166,11 +1115,9 @@ impl LocalModelClient {
             .map_err(|e| name_deadline_trip(e, deadline))?;
         let status = resp.status();
         if !status.is_success() {
-            // The status is the diagnosis; the body is detail. A body read that
-            // itself fails keeps its live error chain rooted — a stalled error
-            // body is a deadline trip and must classify as one (never retried),
-            // not as a retryable daemon status — while the message still leads
-            // with the status and names the deadline.
+            // A body read that itself fails keeps its live error chain rooted: a
+            // stalled error body is a deadline trip and must classify as one
+            // (never retried), not as a retryable daemon status.
             let text = match resp.text() {
                 Ok(text) => text,
                 Err(e) => {
@@ -1348,7 +1295,6 @@ fn stream_chat_response_observed(
         let Ok(event) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        // An explicit error chunk fails the stream with its reason.
         if let Some(err) = event.get("error").and_then(Value::as_str) {
             return Err(anyhow::Error::new(RetryClass::Stream)
                 .context(format!("local model stream error: {err}")));
@@ -1386,9 +1332,8 @@ fn stream_chat_response_observed(
                 prompt_eval_duration: event.get("prompt_eval_duration").and_then(Value::as_u64),
                 eval_duration: event.get("eval_duration").and_then(Value::as_u64),
             };
-            // The terminal chunk carries the run counters (`prompt_eval_count` …)
-            // and the stop reason — a `num_predict`/length stop still ends with
-            // `done: true`, so this is where a truncation becomes visible.
+            // A `num_predict`/length stop still ends with `done: true`, so this
+            // is where a truncation becomes visible.
             prompt_eval_count = event.get("prompt_eval_count").and_then(Value::as_u64);
             eval_count = event.get("eval_count").and_then(Value::as_u64);
             done_reason = event
@@ -1455,16 +1400,13 @@ pub fn roster_from_config(cfg: &AppConfig) -> Roster {
 
 /// The local-suite execution gate, as a [`ValidationReport`] reusing the report's
 /// warning model (one [`WarningKind::LocalModels`] category). Pure over the probe
-/// outcome so the matrix is unit-testable; the live probe is
-/// [`LocalModelClient::probe_daemon`]. Independent of the cloud-report gate
-/// ([`config::validate`]) — a machine set up for the report need not be set up for
-/// the local suite, and vice versa.
+/// outcome; the live probe is [`LocalModelClient::probe_daemon`]. Independent of
+/// the cloud-report gate ([`config::validate`]).
 ///
-/// Three gaps fold into the one category, in order: configuration not yet complete
-/// (endpoint or the reasoner — the one **required** roster slot — blank; the
-/// optional fast tier never gates, `docs/configuration.md §Local Analysis Suite
-/// Configuration` — a blank fast falls back to the reasoner in the pipeline), the
-/// daemon unreachable, and a configured roster id the daemon doesn't have.
+/// Three gaps fold into the one category: configuration incomplete (endpoint or
+/// the reasoner blank — the optional fast tier never gates,
+/// `docs/configuration.md §Local Analysis Suite Configuration`), the daemon
+/// unreachable, and a configured roster id the daemon doesn't have.
 pub fn local_gate(cfg: &AppConfig, probe: &DaemonProbe) -> ValidationReport {
     let mut items: Vec<String> = Vec::new();
 
@@ -1500,13 +1442,10 @@ pub fn local_gate(cfg: &AppConfig, probe: &DaemonProbe) -> ValidationReport {
         });
     }
 
-    // The shared FMP / FRED credential presence joins the local gate
-    // (`docs/portfolio-workflow.md` §Step 1): the per-holding fundamentals surface
-    // (FMP) and the run-level rate anchors (FRED) are load-bearing engine inputs, so
-    // a missing key blocks at the gate rather than failing hours into a run.
-    // Presence-only (no live probe), surfaced through the **existing**
-    // missing-provider-credentials category — no new category — while Tavily
-    // deliberately does not gate the local suite (which does not use it — SearXNG-only).
+    // FMP and FRED presence joins the local gate (`docs/portfolio-workflow.md`
+    // §Step 1): both are load-bearing engine inputs, so a missing key blocks here
+    // rather than hours into a run. Presence-only, through the existing
+    // provider-credentials category; Tavily does not gate the local suite.
     let mut missing_creds: Vec<&str> = Vec::new();
     if config::present(&cfg.fmp_api_key).is_none() {
         missing_creds.push("Financial Modeling Prep");
@@ -1530,12 +1469,9 @@ pub fn local_gate(cfg: &AppConfig, probe: &DaemonProbe) -> ValidationReport {
     }
 }
 
-/// The **presence-only** half of [`local_gate`], for the proactive Persistent
-/// Warning Area render (`docs/interface.md §Connection status`): the persistent
-/// warning fires on missing *configuration* only, never on a live connectivity
-/// probe — so this gates on the config fields alone by treating the daemon as
-/// reachable with a full roster. Connectivity stays a run-gate / Test-Connection
-/// concern, discovered at run time. Sync-safe: no network.
+/// The presence-only half of [`local_gate`], for the Persistent Warning Area
+/// (`docs/interface.md §Connection status`): gates on the config fields alone by
+/// treating the daemon as reachable with a full roster. No network.
 pub fn local_presence_gate(cfg: &AppConfig) -> ValidationReport {
     local_gate(cfg, &DaemonProbe::Reachable { missing: Vec::new() })
 }
@@ -1607,8 +1543,6 @@ mod tests {
             local_daemon_endpoint: Some("http://localhost:11434".into()),
             local_reasoner_model: Some("qwen3.5:122b".into()),
             local_fast_model: Some("qwen3.5:35b".into()),
-            // The shared FMP / FRED credentials joined the local gate with the full
-            // Portfolio slice (`docs/portfolio-workflow.md` §Step 1).
             fmp_api_key: Some("fmp-key".into()),
             fred_api_key: Some("fred-key".into()),
             ..AppConfig::default()
@@ -1636,7 +1570,6 @@ mod tests {
         let req = ChatRequest::new("m", vec![ChatMessage::user("x")]);
         let body = build_chat_body(&req, false);
         assert_eq!(body["stream"], false);
-        // Unset think, format, tools, options, keep_alive are all omitted entirely.
         let obj = body.as_object().unwrap();
         assert!(!obj.contains_key("think"), "{obj:?}");
         assert!(!obj.contains_key("format"), "{obj:?}");
@@ -1647,10 +1580,8 @@ mod tests {
 
     #[test]
     fn build_chat_body_serializes_an_explicit_think_false_and_keep_alive() {
-        // The F3 regression guard: `Some(false)` must reach the wire as a literal
-        // `"think": false` (never skipped), or a non-thinking stage silently rides
-        // the model's thinking-on default. `keep_alive: -1` rides beside it as the
-        // stay-resident posture.
+        // `Some(false)` must reach the wire as a literal `"think": false`, or a
+        // non-thinking stage silently rides the model's thinking-on default.
         let mut req = ChatRequest::new("m", vec![ChatMessage::user("x")]);
         req.think = Some(false);
         req.keep_alive = Some(-1);
@@ -1687,8 +1618,7 @@ mod tests {
 
     #[test]
     fn option_profiles_match_the_vendor_sampling_rows() {
-        // The two rows from `docs/local-model-operations.md §Sampling settings`,
-        // exact — and never greedy (temperature 0 is explicitly warned against).
+        // `docs/local-model-operations.md §Sampling settings`, exact.
         let think = options::thinking_general(131_072, 65_536);
         assert_eq!(think["temperature"], 1.0);
         assert_eq!(think["top_p"], 0.95);
@@ -1967,10 +1897,8 @@ mod tests {
 
     #[test]
     fn local_gate_blocks_on_missing_fmp_or_fred_via_the_shared_category() {
-        // The credential precondition of `docs/portfolio-workflow.md` §Step 1: FMP +
-        // FRED presence joins the local gate through the existing
-        // missing-provider-credentials category (no new category); Tavily
-        // deliberately does not gate the local suite.
+        // `docs/portfolio-workflow.md` §Step 1: FMP + FRED gate through the shared
+        // provider-credentials category; Tavily never gates the local suite.
         let mut cfg = local_cfg();
         cfg.fred_api_key = None;
         cfg.tavily_api_key = None;
@@ -1983,16 +1911,14 @@ mod tests {
             .expect("the shared provider-credentials category");
         assert!(cat.items[0].contains("FRED"), "{:?}", cat.items);
         assert!(!cat.items[0].contains("Tavily"), "Tavily never gates: {:?}", cat.items);
-        // With both present, no credential category fires.
         let clean = local_gate(&local_cfg(), &DaemonProbe::Reachable { missing: vec![] });
         assert!(clean.categories.iter().all(|c| c.kind != WarningKind::ProviderCredentials));
     }
 
     #[test]
     fn gate_never_blocks_on_the_optional_fast_tier() {
-        // Endpoint + reasoner with NO fast model is a valid documented
-        // setup (`docs/configuration.md` — the fast tier never gates); the
-        // pipeline falls back to the reasoner for distillation.
+        // Endpoint + reasoner with no fast model is a valid setup
+        // (`docs/configuration.md`); the pipeline falls back to the reasoner.
         let cfg = AppConfig {
             local_fast_model: None,
             ..local_cfg()
@@ -2004,8 +1930,7 @@ mod tests {
 
     #[test]
     fn presence_gate_reads_config_only_never_a_probe() {
-        // Unset config blocks; full config passes with no daemon anywhere — the
-        // presence-only contract the proactive warning band relies on
+        // Full config passes with no daemon anywhere
         // (`docs/interface.md §Connection status`).
         let blocked = local_presence_gate(&AppConfig::default());
         assert!(blocked.is_blocked);
@@ -2057,7 +1982,7 @@ mod tests {
         assert_eq!(server.request_paths(), vec!["/api/chat".to_string()]);
     }
 
-    // ---- transport deadline (2026-08-24 review §C1) ----
+    // ---- transport deadline ----
 
     /// A thinking-stage request as the pipeline builds it: the interpret context
     /// and the thinking reservation.
@@ -2080,9 +2005,9 @@ mod tests {
     #[test]
     fn deadline_policy_derives_from_the_request_reservations() {
         let policy = DeadlinePolicy::DEFAULT;
-        // Non-streaming thinking (the 6c research turn): 131,072 / 100 tok/s of
-        // prefill plus 65,536 / 12 tok/s of decode — ~113 minutes, an order past the
-        // old fixed ten, and past the reservation at the drafted floor by design.
+        // Non-streaming thinking: 131,072 / 100 tok/s of prefill plus 65,536 / 12
+        // tok/s of decode — ~113 minutes, past the reservation at the drafted
+        // floor by design.
         let thinking = policy.request_deadline(&thinking_request(), false);
         assert_eq!(thinking, Duration::from_millis(1_310_720 + 5_461_334));
         assert!(
@@ -2133,9 +2058,8 @@ mod tests {
 
     #[test]
     fn chat_trips_the_derived_deadline_when_the_daemon_never_answers() {
-        // The daemon reads the request and goes quiet for longer than the deadline
-        // — the header wait is where a non-streaming generation lives, so this is
-        // the exact shape a chain past the old fixed ten minutes produced.
+        // The daemon reads the request and goes quiet past the deadline: the
+        // header wait is where a non-streaming generation lives.
         let server = MockHttp::serve(vec![Canned::Delay {
             for_ms: 1_500,
             then: Box::new(Canned::Reply {
@@ -2276,9 +2200,7 @@ mod tests {
         assert!(msg.contains("local model returned 500"), "{msg}");
         assert!(msg.contains("transport deadline"), "{msg}");
         // The stalled error body is a deadline trip: it must never classify for
-        // the bounded retry-once, whatever status headline it carries (a
-        // DaemonStatus marker here would spend another idle span on a stalled
-        // daemon — external review finding, 2026-08-27).
+        // the bounded retry-once, whatever status headline it carries.
         assert!(is_transport_timeout(&err));
         assert_eq!(retry_class(&err), None);
     }
@@ -2313,8 +2235,6 @@ mod tests {
 
     #[test]
     fn normalize_endpoint_accepts_host_and_documented_api_base() {
-        // The daemon host and the documented `…/api` base both resolve to one origin,
-        // so the joined `/api/...` path never doubles into `/api/api/...`.
         for input in [
             "http://localhost:11434",
             "http://localhost:11434/",
@@ -2358,7 +2278,6 @@ mod tests {
             .chat(&ChatRequest::new("m", vec![ChatMessage::user("x")]))
             .unwrap_err();
         assert!(err.to_string().contains("500"), "{err}");
-        // The non-2xx carries the retry class for the bounded retry-once.
         assert_eq!(retry_class(&err), Some(RetryClass::DaemonStatus));
     }
 
@@ -2366,13 +2285,12 @@ mod tests {
 
     #[test]
     fn retry_class_finds_the_marker_through_context_layers() {
-        // Rooted marker (the daemon-status / stream sites), re-wrapped the way
-        // call sites wrap.
+        // Rooted marker, re-wrapped the way call sites wrap.
         let rooted = anyhow::Error::new(RetryClass::DaemonStatus)
             .context("local model returned 500")
             .context("research turn failed");
         assert_eq!(retry_class(&rooted), Some(RetryClass::DaemonStatus));
-        // Context marker over a source error (the schema-parse sites).
+        // Context marker over a source error.
         let serde_err = serde_json::from_str::<ChatReplyWire>("not json").unwrap_err();
         let marked = anyhow::Error::new(serde_err)
             .context(RetryClass::SchemaParse)
@@ -2382,8 +2300,7 @@ mod tests {
 
     #[test]
     fn retry_class_refuses_unmarked_failures() {
-        // The whitelist is the contract: a refusal-shaped or unknown failure and
-        // a length-stop bail (both unmarked) never classify.
+        // The whitelist is the contract: unmarked failures never classify.
         assert_eq!(retry_class(&anyhow::anyhow!("model declined the task")), None);
         assert_eq!(
             retry_class(&anyhow::anyhow!(
@@ -2480,7 +2397,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].stage, "interpret TEST");
         // The persisted cause opens with the class display and carries the
-        // whole chain, innermost included (attempt-8 Finding 1).
+        // whole chain, innermost included.
         assert!(
             events[0].cause.starts_with(&format!("{}: ", RetryClass::DaemonStatus)),
             "{}",
@@ -2489,8 +2406,6 @@ mod tests {
         assert!(events[0].cause.contains("interpreting TEST failed"), "{}", events[0].cause);
         assert!(events[0].cause.contains("500: boom"), "{}", events[0].cause);
         assert!(retry.take_events().is_empty(), "the drain empties the record");
-        // The fired retry left its own tracker row naming the re-attempt, with
-        // the same full chain in its detail.
         let detail = rec.messages().iter().find_map(|m| match &m.event {
             ProgressEvent::RequestFinished { name, detail, .. }
                 if name == "Local model retry" => detail.clone(),
@@ -2601,7 +2516,6 @@ mod tests {
     #[test]
     fn stream_decoder_accumulates_and_emits_tokens_and_thinking() {
         let (rec, ctx) = recording_ctx();
-        // Two content chunks + one thinking chunk, then the terminal done chunk.
         let ndjson = concat!(
             r#"{"message":{"content":"Hel"}}"#,
             "\n",
@@ -2646,11 +2560,9 @@ mod tests {
         let resp = stream_chat_response(ndjson.as_bytes(), &ctx, StreamRole::Analyst("bear")).unwrap();
         assert_eq!(resp.content, "the structured review body"); // still accumulated
         let msgs = rec.messages();
-        // No content tokens stream for an analyst...
         assert!(!msgs
             .iter()
             .any(|m| matches!(&m.event, ProgressEvent::AgentToken { .. })));
-        // ...but its thinking does, posture-tagged.
         assert!(msgs.iter().any(|m| matches!(
             &m.event,
             ProgressEvent::AnalystThinking { posture, .. } if posture == "bear"
@@ -2672,11 +2584,9 @@ mod tests {
             stream_chat_response(ndjson.as_bytes(), &ctx, StreamRole::Step("holding-AAPL")).unwrap();
         assert_eq!(resp.content, r#"{"grade":"B"}"#); // still accumulated
         let msgs = rec.messages();
-        // No content tokens stream for a structured stage...
         assert!(!msgs
             .iter()
             .any(|m| matches!(&m.event, ProgressEvent::AgentToken { .. })));
-        // ...but its reasoning streams onto the owning step's channel.
         assert!(msgs.iter().any(|m| matches!(
             &m.event,
             ProgressEvent::StepThinking { step, .. } if step == "holding-AAPL"
@@ -2791,7 +2701,6 @@ mod tests {
             trace[3].starts_with("finished 1 failed None None None Some(\"local model returned 500"),
             "{trace:?}"
         );
-        // The cap: a long message is cut and marked, a short one kept whole.
         let long = "x".repeat(CALL_DETAIL_CAP + 50);
         let capped = cap_call_detail(&long);
         assert_eq!(capped.chars().count(), CALL_DETAIL_CAP + 1);
@@ -2838,8 +2747,6 @@ mod tests {
 
     #[test]
     fn chat_reply_captures_prompt_eval_count_and_tolerates_absence() {
-        // The context-fit instrumentation: the count rides the reply when the daemon
-        // reports it, and its absence is `None`, never a parse failure.
         let with = parse_chat_reply(
             r#"{"message":{"content":"ok"},"prompt_eval_count":117964,"eval_count":42}"#,
         )
@@ -2867,8 +2774,6 @@ mod tests {
 
     #[test]
     fn tool_calls_parse_from_a_reply_and_empty_arrays_collapse_to_none() {
-        // The research loop's turn protocol: a reply carrying tool_calls
-        // surfaces them raw; an empty array reads as a no-tools turn.
         let with = parse_chat_reply(
             r#"{"message":{"content":"","tool_calls":[{"function":{"name":"web_search","arguments":{"q":"x"}}}]}}"#,
         )
@@ -2880,9 +2785,6 @@ mod tests {
         let none = parse_chat_reply(r#"{"message":{"content":"done"}}"#).unwrap();
         assert_eq!(none.tool_calls, None);
 
-        // The wire side: a tool-result message serializes with role "tool",
-        // and an echoed assistant turn carries its tool_calls; plain messages
-        // omit the field entirely.
         let req = ChatRequest::new(
             "m",
             vec![
@@ -2900,9 +2802,8 @@ mod tests {
 
     #[test]
     fn a_length_stop_is_a_done_stream_with_the_reason_captured() {
-        // Ollama ends a `num_predict` stop with `done: true` and HTTP 200 — the
-        // stream is NOT the "ended before completion" truncation, so the decoder
-        // returns Ok and `done_reason` is the only truncation witness.
+        // Ollama ends a `num_predict` stop with `done: true` and HTTP 200, so the
+        // decoder returns Ok and `done_reason` is the only truncation witness.
         let (_rec, ctx) = recording_ctx();
         let ndjson = concat!(
             r#"{"message":{"content":"partial"}}"#,
@@ -2919,7 +2820,7 @@ mod tests {
     #[test]
     fn request_num_ctx_reads_the_options_field() {
         let mut req = ChatRequest::new("m", vec![ChatMessage::user("x")]);
-        assert_eq!(request_num_ctx(&req), None); // no options at all
+        assert_eq!(request_num_ctx(&req), None);
         assert_eq!(request_num_predict(&req), None);
         req.options = Some(options::thinking_general(131_072, 65_536));
         assert_eq!(request_num_ctx(&req), Some(131_072));
@@ -2929,7 +2830,6 @@ mod tests {
     #[test]
     fn stream_decoder_bails_on_truncation() {
         let (_rec, ctx) = recording_ctx();
-        // No done chunk and not cancelled => truncated.
         let ndjson = "{\"message\":{\"content\":\"partial\"}}\n";
         let err = stream_chat_response(ndjson.as_bytes(), &ctx, StreamRole::Main).unwrap_err();
         assert!(err.to_string().contains("before completion"), "{err}");
@@ -2941,9 +2841,6 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(true)); // already cancelled
         let ctx = RunContext::new("run", rec, cancel);
         let ndjson = "{\"message\":{\"content\":\"x\"}}\n";
-        // A cancelled stream resolves to Err (not a partial Ok), so a prose stage can't
-        // mistake a cut-off stream for a complete answer; run_job maps it to Cancelled
-        // via the shared flag.
         let err = stream_chat_response(ndjson.as_bytes(), &ctx, StreamRole::Main).unwrap_err();
         assert!(err.to_string().contains("cancelled"), "{err}");
     }
@@ -2961,12 +2858,9 @@ mod tests {
     #[test]
     fn length_stop_reading_attributes_only_on_full_counts() {
         use LengthStopReading::*;
-        // At or past the reservation: the reservation bound.
         assert_eq!(length_stop_reading(Some(65_536), Some(65_536)), AtReservation);
         assert_eq!(length_stop_reading(Some(70_000), Some(65_536)), AtReservation);
-        // Well under a declared reservation: context filled first.
         assert_eq!(length_stop_reading(Some(1_200), Some(65_536)), UnderReservation);
-        // A missing count or reservation never earns a confident lever.
         assert_eq!(length_stop_reading(None, Some(65_536)), Unattributed);
         assert_eq!(length_stop_reading(Some(1_200), None), Unattributed);
         assert_eq!(length_stop_reading(None, None), Unattributed);
@@ -2984,7 +2878,6 @@ mod tests {
         let r = roster_from_config(&cfg);
         assert_eq!(r.reasoner, "qwen3.5:122b");
         assert_eq!(r.fast, "qwen3.5:35b");
-        // A blank endpoint reads as unset.
         let blank = AppConfig {
             local_daemon_endpoint: Some("  ".into()),
             ..AppConfig::default()

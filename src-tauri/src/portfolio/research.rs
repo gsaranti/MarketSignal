@@ -1,40 +1,9 @@
 //! The live per-holding research loop — Step 6c (`docs/portfolio-workflow.md`
 //! §Step 6c; the loop contract in `docs/web-research.md §The research loop and
-//! context management`).
-//!
-//! The orchestrator — never the model — owns the agenda, every request, and
-//! every bound. The agenda is assembled deterministically from the documented
-//! topic list (fixed topics plus deterministically triggered conditional
-//! ones); the reasoner *works* it, one topic at a time in isolation. Each
-//! topic's pass is a bounded multi-turn **gathering loop** in which the model
-//! emits `web_search` / `web_fetch` tool calls, the orchestrator executes them,
-//! and the results return as tool messages; the pass's **write-up** is then
-//! authored by a **separate synthesis conversation** over a fresh,
-//! tool-history-free conversation with no grammar — prose, read as text and
-//! validated by nothing — whose second message asks whether the research has a
-//! follow-up question (the one word `none` the only reply the app interprets).
-//! Per-pass turn, tool-batch, and aggregate history bounds work beside
-//! per-topic depth ≤ 2 follow-ups (≤ 3 passes per topic, each follow-up the
-//! model's question the orchestrator decides to spend) and a per-item fetch +
-//! wall-clock budget that binds first, spent across topics in priority order
-//! and polled at request boundaries — a spent budget stops further fetches and
-//! topics but never suppresses the current pass's synthesis, and the
-//! lowest-priority remaining topics skip fail-soft as recorded gaps.
-//!
-//! Context stays bounded by extraction and by bounded documents, never by a
-//! transcript: a topic has one write-up at any time, rewritten whole by each
-//! follow-up pass, and the disconfirming pass writes its own over the run's
-//! write-ups. Provenance rides the page and its roster, not a typed claim:
-//! every page the model reads carries its address, the reported publication
-//! date and the retrieval time in its header, and every page shown enters the
-//! holding's page roster on the audit. The news leads are leads, never
-//! evidence.
-//!
-//! Failure posture: web errors degrade the evidence (an errored search/fetch
-//! returns a fixed sentence as the tool result and the loop continues); a model
-//! failure propagates hard, per the 6c–6f rule (`docs/portfolio-analysis.md`
-//! §Failure posture). Fetched page text is data, not instructions — it is
-//! framed as quoted evidence in the tool result.
+//! context management`). The orchestrator — never the model — owns the agenda,
+//! every request, and every bound. Web errors degrade the evidence and the loop
+//! continues; a model failure propagates hard (`docs/portfolio-analysis.md`
+//! §Failure posture).
 
 use std::time::Duration;
 
@@ -51,82 +20,70 @@ use crate::web_research::registry::SourceAnnotation;
 use crate::web_research::search::SearchHit;
 
 // ---------------------------------------------------------------------------
-// Constants (drafted, calibratable — `docs/web-research.md`: the fetch-count,
-// topic, and depth caps are pinned defaults; the wall-clock cap is calibrated
-// against measured local throughput on first runs)
+// Constants (calibratable defaults — `docs/web-research.md`)
 // ---------------------------------------------------------------------------
 
-/// Per-holding web-fetch ceiling (live fetch **attempts** — failures included,
-/// so failing URLs can't ride for free; a document-cache hit spends nothing).
+/// Per-holding web-fetch ceiling, counted in live fetch attempts — failures
+/// included, so failing URLs can't ride for free; a document-cache hit spends
+/// nothing.
 pub const MAX_FETCHES_PER_HOLDING: u32 = 40;
 
-/// Per-holding wall-clock ceiling. Generous by design — the 122B's thinking
-/// turns dominate, and the first live runs calibrate it down.
+/// Per-holding wall-clock ceiling; generous because the model's thinking turns
+/// dominate, calibrated down from live runs.
 pub const MAX_WALL_PER_HOLDING: Duration = Duration::from_secs(30 * 60);
 
-/// Turns per pass — an orchestrator safety net against a tool-call loop that
-/// never converges, distinct from the budget (which binds first).
+/// Turns per pass — a safety net against a tool-call loop that never converges,
+/// distinct from the budget (which binds first).
 pub const MAX_TURNS_PER_PASS: u32 = 8;
 
-/// Tool calls accepted from one model turn. A single response is model output,
-/// so its array length is not otherwise bounded; process a deterministic head
-/// and synthesize immediately when the tail is omitted.
+/// Tool calls accepted from one model turn; the response's array length is not
+/// otherwise bounded, so a deterministic head is processed and the tail omitted.
 pub const MAX_TOOL_CALLS_PER_TURN: usize = 8;
 
 /// Fixed room for the request envelope around the gathering messages and tool
-/// schema. The packet guard serializes those two variable inputs exactly, then
-/// keeps this reserve rather than issuing a request right at the context edge.
+/// schema, kept so the packet guard never issues a request at the context edge.
 const GATHERING_PACKET_RESERVE_CHARS: usize = 2_048;
 
 /// Depth cap: a topic's root pass plus at most two follow-ups (≤3 passes).
 pub const MAX_PASSES_PER_TOPIC: usize = 3;
 
 /// Whether a proposal from a pass at `depth` (0 for a topic's root) can still
-/// be spent under the depth cap — the one test the scheduler queues a
-/// follow-up by and the synthesis asks for one by (`portfolio-v60`).
+/// be spent under the depth cap — the one test both the scheduler's queueing
+/// and the synthesis's follow-up ask go by.
 fn followup_spendable(depth: usize) -> bool {
     depth + 1 < MAX_PASSES_PER_TOPIC
 }
 
-/// Hits rendered into a search tool result (the filter already capped the
-/// tail; this bounds the tool message).
+/// Hits rendered into a search tool result; bounds the tool message.
 const HITS_PER_SEARCH_RESULT: usize = 8;
 
-/// Page text cap per fetch tool result — extraction already stripped chrome;
-/// this bounds a very long article's context cost.
+/// Page text cap per fetch tool result; bounds a very long article's context
+/// cost.
 const PAGE_TEXT_CAP_CHARS: usize = 12_000;
 
-/// Headline cap for a source's extracted title in the synthesis header. A page
-/// title is untrusted and unbounded; capping it keeps each header bounded so a
-/// degenerate title cannot inflate the framing past the input guard.
+/// Cap on a source's extracted title in the synthesis header: a page title is
+/// untrusted and unbounded.
 const TITLE_CAP_CHARS: usize = 300;
 
-/// Untrusted search/fetch metadata also rides the gathering history. Bound the
-/// display-only fields so one hostile result cannot consume the whole packet;
-/// exact fetched URLs remain in the synthesis evidence store and validator.
+/// Caps on the untrusted, display-only search/fetch metadata in the gathering
+/// history, so one hostile result cannot consume the whole packet; exact
+/// fetched URLs remain in the synthesis evidence store and validator.
 const SEARCH_SNIPPET_CAP_CHARS: usize = 1_000;
 const PUBLISHED_CAP_CHARS: usize = 100;
 const TOOL_URL_CAP_CHARS: usize = 2_048;
 
-/// Bounds on the model-derived sections of the pass prefix (`pass_brief`) — a
-/// write-up and the follow-up question are model output with no grammar
-/// bound, so without these the prefix (the gathering request's whole user
-/// message, and the synthesis prefix) could exceed the input guard before any
-/// evidence is sized (attempt-4 review, Finding 1). A per-write-up cap and a
-/// follow-up cap keep the prefix bounded, with a final head-cap in
-/// `pass_brief` as the hard backstop. A write-up's length band is 400–900
-/// words (`docs/portfolio-analysis.md §Starting parameters`), so the cap sits
-/// well above a document that keeps its band.
+/// Bounds on the model-derived sections of the pass prefix (`pass_brief`): a
+/// write-up and the follow-up question are model output with no grammar bound,
+/// so without these the prefix could exceed the input guard before any evidence
+/// is sized. A write-up's band is 400–900 words (`docs/portfolio-analysis.md
+/// §Starting parameters`), so the cap sits well above a document that keeps it.
 const WRITE_UP_CAP_CHARS: usize = 12_000;
 const FOLLOWUP_CAP_CHARS: usize = 1_000;
 
 
-/// Gathering-phase degradation for one pass — search/fetch failures, fetch-cap
-/// truncation, malformed or capped calls, and budget-bound omissions that live
-/// only in the tool-call history the fresh synthesis conversation discards (fix
-/// B). Surfaced to the sole findings author as a plain fact — partial coverage,
-/// stated, not a prescribed conclusion — so the model weighs it itself, and
-/// recorded as a data-health gap (attempt-4 review, Finding 2).
+/// Gathering-phase degradation for one pass — losses that live only in the
+/// tool-call history the fresh synthesis conversation discards, so they are
+/// recorded as a data-health gap and stated as a plain fact of partial coverage.
 #[derive(Debug, Default, Clone, Copy)]
 struct PassDegradation {
     searches_failed: usize,
@@ -160,9 +117,8 @@ impl PassDegradation {
             || self.history_budget_exhausted
     }
 
-    /// A one-line factual summary of what gathering lost — `None` when the pass
-    /// gathered cleanly. Used both as the synthesis brief's degradation note and
-    /// as the persisted gap, so the model and data-health read the same fact.
+    /// One-line factual summary of what gathering lost — `None` when the pass
+    /// gathered cleanly. Persisted as the data-health gap.
     fn summary(&self) -> Option<String> {
         if !self.any() {
             return None;
@@ -236,10 +192,9 @@ impl PassDegradation {
     }
 
     /// The plain-words sentence of what was lost — no cap, bound or budget
-    /// named (`portfolio-v43`). Since `portfolio-v59` it reaches no model: it
-    /// rides only the app-recorded findings of a pass that retrieved no page
-    /// (the synthesis brief carried it as SEARCHING until then). `summary`
-    /// stays the persisted gap, where the mechanism belongs.
+    /// named. It reaches no model: it rides only the app-recorded findings of a
+    /// pass that retrieved no page. `summary` stays the persisted gap, where the
+    /// mechanism belongs.
     fn model_note(&self) -> Option<String> {
         if !self.any() {
             return None;
@@ -300,10 +255,9 @@ impl PassDegradation {
     }
 }
 
-/// Conservative wire-size proxy for one gathering request. JSON serialization
-/// counts escaped message content and the complete tool schema, so it is safer
-/// than summing visible message text alone. Serialization failure is treated as
-/// over-budget and forces synthesis rather than issuing an unbounded request.
+/// Conservative wire-size proxy for one gathering request: JSON serialization
+/// counts escaped message content and the complete tool schema. Serialization
+/// failure counts as over-budget and forces synthesis.
 fn gathering_packet_chars(messages: &[ChatMessage], tools: &Value) -> usize {
     crate::local_model::prompt_material_chars(messages, Some(tools))
 }
@@ -342,23 +296,20 @@ fn topic(key: &str, title: &str, questions: &[&str]) -> AgendaTopic {
     }
 }
 
-/// The deterministic agenda inputs the pipeline computes before the loop runs
-/// (the conditional topics' triggers — `docs/portfolio-workflow.md` §Step 6c).
+/// The conditional topics' triggers, computed by the pipeline before the loop
+/// runs (`docs/portfolio-workflow.md` §Step 6c).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AgendaTriggers {
-    /// The engine's Step-6b technology-event pre-flag fired — the technology
-    /// topic's only trigger (`docs/portfolio-analysis.md` §The per-holding
-    /// pipeline). The symbol-scoped `news/stock` leads are no trigger of their
-    /// own: they ride the pass brief.
+    /// The Step-6b technology-event pre-flag fired — the technology topic's only
+    /// trigger (`docs/portfolio-analysis.md` §The per-holding pipeline); the
+    /// news leads are no trigger of their own.
     pub tech_pre_flag_fired: bool,
     /// The stock entered the pre-profit overlay (eligible read).
     pub overlay_eligible: bool
 }
 
 /// Assemble the holding's agenda deterministically (`docs/portfolio-workflow.md`
-/// §Step 6c): the equity six (plus conditional technology-event and pre-profit
-/// topics), or the fund-flavored set (CEF discount topic included). The
-/// reasoner works this; it never authors it.
+/// §Step 6c). The reasoner works this; it never authors it.
 pub fn build_agenda(dossier: &HoldingDossier, triggers: &AgendaTriggers) -> Vec<AgendaTopic> {
     if let Some(fund) = &dossier.fund {
         let mut agenda = vec![
@@ -378,9 +329,9 @@ pub fn build_agenda(dossier: &HoldingDossier, triggers: &AgendaTriggers) -> Vec<
                     "Any fee changes, structural events (splits, conversions), or tax issues?",
                 ],
             ),
-            // Exposure facts only (fix list 4.4, ruled 2026-09-15, landed
-            // `portfolio-v43`): the fit judgment is the interpretation call's,
-            // which sees the market analysis this loop never does.
+            // Exposure facts only: the fit judgment belongs to the
+            // interpretation call, which sees the market analysis this loop
+            // never does.
             topic(
                 "fund-exposure-profile",
                 "Exposure profile",
@@ -474,8 +425,6 @@ pub fn build_agenda(dossier: &HoldingDossier, triggers: &AgendaTriggers) -> Vec<
     agenda
 }
 
-/// The conditional technology-event topic, selected when assembling the agenda
-/// from the event pre-flag.
 pub fn technology_topic() -> AgendaTopic {
     topic(
         "technology-event",
@@ -488,8 +437,8 @@ pub fn technology_topic() -> AgendaTopic {
 }
 
 /// The disconfirming pass's topic (`docs/web-research.md §Source quality and
-/// evidence weighting`): one question over the run's write-ups so far, which
-/// the pass brief renders as WRITE-UPS SO FAR.
+/// evidence weighting`): one question over the run's write-ups, which the pass
+/// brief renders as WRITE-UPS SO FAR.
 pub(crate) fn disconfirming_topic() -> AgendaTopic {
     topic(
         "disconfirming",
@@ -502,10 +451,9 @@ pub(crate) fn disconfirming_topic() -> AgendaTopic {
 // The news leads and the holding-constant brief
 // ---------------------------------------------------------------------------
 
-/// One news lead fed to the loop — a lead, never evidence
-/// (`docs/web-research.md §The research loop and context management`): a
-/// dated headline with its address, rendered under NEWS LEADS as a fetch
-/// candidate beside the search results.
+/// One news lead — a lead, never evidence (`docs/web-research.md §The research
+/// loop and context management`); rendered under NEWS LEADS as a fetch
+/// candidate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewsLead {
     pub headline: String,
@@ -515,14 +463,8 @@ pub struct NewsLead {
 }
 
 /// The holding-constant text every pass's brief leads with
-/// (`docs/portfolio-workflow.md` §Step 6c): the holding header, FETCHED VALUES
-/// as the thesis-document message renders it — the same bytes, so the three
-/// messages share one rendering — the news leads, and on a continuity run the
-/// prior documents block: PRIOR ANALYSIS then PRIOR THESIS, each with its
-/// date and any split-context line, the prior run's analysis and thesis
-/// document verbatim. The pipeline assembles it; the loop renders it in this
-/// order on every gathering brief, and the synthesis message leads with the
-/// header and FETCHED VALUES alone.
+/// (`docs/portfolio-workflow.md` §Step 6c). FETCHED VALUES is the same bytes
+/// the thesis-document message renders, so the messages share one rendering.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct HoldingBrief {
     /// The HOLDING block (`pipeline::holding_header`).
@@ -530,11 +472,9 @@ pub struct HoldingBrief {
     /// The FETCHED VALUES block (`pipeline::fetched_values_section`), empty
     /// where the brief carries none.
     pub fetched_values: String,
-    /// The news leads (NEWS LEADS).
     pub leads: Vec<NewsLead>,
-    /// The prior documents on a continuity run, rendered as the analysis and
-    /// thesis messages render them (PRIOR ANALYSIS, then PRIOR THESIS, each
-    /// under its date with any split-context line); empty on a debut.
+    /// The prior documents on a continuity run (PRIOR ANALYSIS, then PRIOR
+    /// THESIS, each under its date); empty on a debut.
     pub prior_documents: String,
 }
 
@@ -550,11 +490,9 @@ impl HoldingBrief {
 // The loop's output shapes
 // ---------------------------------------------------------------------------
 
-/// One topic's write-up (`docs/portfolio-workflow.md` §Step 6c): the topic's
-/// running account of what its research established, rewritten whole by each
-/// follow-up pass, so a topic has one write-up at any time — `None` where no
-/// pass retrieved a page with body text (a pass that retrieved none spends no
-/// synthesis and leaves no write-up of its own).
+/// One topic's write-up (`docs/portfolio-workflow.md` §Step 6c), rewritten
+/// whole by each follow-up pass so a topic has one write-up at any time —
+/// `None` where no pass retrieved a page with body text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TopicWriteUp {
     pub topic_key: String,
@@ -562,15 +500,12 @@ pub struct TopicWriteUp {
     pub write_up: Option<String>,
     /// Passes run on the topic — the root plus the follow-ups spent.
     pub passes: usize,
-    /// Set when the topic never ran (budget exhausted before it) — the
-    /// fail-soft degraded-input gap.
+    /// Set when the topic never ran (budget exhausted before it).
     pub skipped: Option<String>
 }
 
 /// One page shown to the model, as the holding's page roster records it
-/// (`docs/storage.md §Local Analysis Suite Storage`): its address, title,
-/// the publication date the search reported, the retrieval time and the
-/// source tier — never its text.
+/// (`docs/storage.md §Local Analysis Suite Storage`) — never its text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PageRosterEntry {
     pub url: String,
@@ -584,25 +519,21 @@ pub struct PageRosterEntry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct HoldingResearch {
     pub topics: Vec<TopicWriteUp>,
-    /// The once-per-holding disconfirming pass's write-up (after the topics),
-    /// or `None` with its gap recorded when the budget was exhausted or the
-    /// pass retrieved no page.
+    /// The disconfirming pass's write-up, or `None` with its gap recorded when
+    /// the budget was exhausted or the pass retrieved no page.
     pub disconfirming: Option<String>,
     /// Every page shown to the model, in first-retrieval order.
     pub roster: Vec<PageRosterEntry>,
     pub fetches_spent: u32,
     pub elapsed_secs: u64,
-    /// Recorded degraded-input gaps (skipped topics, an unspent disconfirming
-    /// pass, gathering degradation, evidence omitted or truncated).
+    /// Recorded degraded-input gaps.
     pub gaps: Vec<String>,
 }
 
 /// The per-holding research audit record (`docs/storage.md §Local Analysis
-/// Suite Storage` — the research-derived artifacts): the write-ups as written,
-/// the disconfirming pass's write-up, the page roster, the budget spend, the
-/// degraded gaps, and the consolidation's distillation shape with its call
-/// count (`docs/portfolio-workflow.md` §Step 6d). The analysis itself rides
-/// the audit beside this record ([`crate::portfolio::HoldingAudit::analysis`]).
+/// Suite Storage`; the distillation shape per `docs/portfolio-workflow.md`
+/// §Step 6d). The analysis itself rides the audit beside this record
+/// ([`crate::portfolio::HoldingAudit::analysis`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResearchAuditRecord {
     pub write_ups: Vec<TopicWriteUp>,
@@ -618,8 +549,6 @@ pub struct ResearchAuditRecord {
 }
 
 impl ResearchAuditRecord {
-    /// The record the loop's output persists as, with the consolidation's
-    /// distillation record beside it.
     pub fn from_research(
         research: &HoldingResearch,
         distillation: crate::portfolio::distill::DistillationRecord,
@@ -636,9 +565,8 @@ impl ResearchAuditRecord {
     }
 }
 
-/// Everything a holding's research needs, assembled deterministically by the
-/// pipeline before the loop runs: the agenda, the holding-constant brief, and
-/// the tracker step.
+/// Everything a holding's research needs, assembled by the pipeline before the
+/// loop runs.
 #[derive(Debug, Clone, Default)]
 pub struct ResearchPlan {
     pub agenda: Vec<AgendaTopic>,
@@ -647,12 +575,10 @@ pub struct ResearchPlan {
     pub step_label: String
 }
 
-/// The offline analyst's research — pipeline-shaped with no web tool: every
-/// agenda topic present and skipped with no write-up, the loop's absence a
-/// recorded gap, so the ANALYSIS the thesis document reads is the bridge's
-/// one no-write-up sentence rather than a note under a topic's title. The
-/// defaulted [`crate::portfolio::pipeline::HoldingAnalyst::research`] path
-/// for deterministic stubs and the demo.
+/// The offline analyst's research: every agenda topic skipped with no write-up
+/// and the loop's absence a recorded gap. The default
+/// [`crate::portfolio::pipeline::HoldingAnalyst::research`] path for
+/// deterministic stubs and the demo.
 pub fn offline_stub(plan: &ResearchPlan) -> HoldingResearch {
     let topics = plan
         .agenda
@@ -676,16 +602,13 @@ pub fn offline_stub(plan: &ResearchPlan) -> HoldingResearch {
 // Seams
 // ---------------------------------------------------------------------------
 
-/// The model seam for one research turn: messages in, response out. The live
-/// implementation wraps [`crate::local_model::LocalModelClient`] with the
-/// reasoner id and thinking options; tests script it.
+/// The model seam for one research turn. The live implementation wraps
+/// [`crate::local_model::LocalModelClient`]; tests script it.
 pub trait ResearchModel {
-    /// One model turn. `stage` is the call's diagnostic label — the holding's
-    /// step, the topic, the leg, and a gathering turn's index — carried on the
-    /// call-boundary progress events (`docs/run-tracking.md §Thought-log
-    /// capture`); it never reaches the prompt. The live adapter forwards the
-    /// reply's thinking under the holding's step role itself, so the loop
-    /// emits none.
+    /// `stage` is the call's diagnostic label, carried on the call-boundary
+    /// progress events (`docs/run-tracking.md §Thought-log capture`); it never
+    /// reaches the prompt. The live adapter forwards the reply's thinking
+    /// itself, so the loop emits none.
     fn research_turn(
         &self,
         stage: &str,
@@ -694,12 +617,10 @@ pub trait ResearchModel {
         format: Option<&Value>,
     ) -> Result<ChatResponse>;
 
-    /// The bounded retry-once gate (`docs/local-models.md §The local-model
-    /// adapter seam`): whether one re-attempt may fire for this failed turn or
-    /// findings parse. The live adapter delegates to the shared gate — which
-    /// classifies, refuses when cancelled, notes the retry, and pauses;
-    /// defaulted closed so scripted test models never retry unless a test
-    /// opts in.
+    /// The retry-once gate (`docs/local-models.md §The local-model adapter
+    /// seam`): whether one re-attempt may fire for this failed turn or findings
+    /// parse. Defaulted closed so scripted test models never retry unless a
+    /// test opts in.
     fn retry_permitted(&self, _stage: &str, _err: &anyhow::Error) -> bool {
         false
     }
@@ -772,7 +693,7 @@ struct RememberedFailure {
     class: FailureClass,
     /// The typed root of the original error, replayed as the root of every
     /// remembered reply so the model-facing line reads the same class the
-    /// live failure did (`portfolio-v58`).
+    /// live failure did.
     failure: Option<crate::web_research::fetch::FetchFailure>,
     until: Option<Duration>,
     retry_at: Duration,
@@ -805,7 +726,7 @@ struct FetchMemory {
     hosts: std::collections::HashMap<String, RememberedFailure>,
 }
 
-/// Exact document identity for failure memory; intentionally not the older
+/// Exact document identity for failure memory; intentionally not the
 /// successful-document cache normalization (which merges trailing slashes).
 fn failed_url_key(url: &str) -> String {
     match reqwest::Url::parse(url) {
@@ -886,9 +807,9 @@ impl std::error::Error for SuppressedHost {}
 
 /// The live web seam (`docs/web-research.md`): SearXNG-only search (Tavily is
 /// reserved for the report job), the SSRF-guarded fetch behind the shared
-/// document cache, and per-domain extraction telemetry — wired to the app
-/// stores over its own DB connection (SQLite serves concurrent connections; the
-/// store writes are tiny and the per-holding loop is sequential).
+/// document cache, and per-domain extraction telemetry, over its own DB
+/// connection (SQLite serves concurrent connections; the per-holding loop is
+/// sequential).
 pub struct LiveResearchWeb {
     search: crate::web_research::search::SearchTool,
     fetcher: Box<dyn crate::web_research::fetch::PageFetcher>,
@@ -900,9 +821,8 @@ pub struct LiveResearchWeb {
 type GuardedFetch<'a, T> = dyn Fn(&dyn Fn(&reqwest::Url) -> Result<()>) -> Result<T> + 'a;
 
 impl LiveResearchWeb {
-    /// Build the stack from configuration. A `None` or unreachable SearXNG
-    /// endpoint degrades rather than errors — every search then fail-softs
-    /// inside the loop. The local suite is SearXNG-only; there is no Tavily
+    /// A `None` or unreachable SearXNG endpoint degrades rather than errors —
+    /// every search then fail-softs inside the loop; there is no Tavily
     /// fallback.
     pub fn new(searxng_endpoint: Option<&str>, db_path: &std::path::Path) -> Result<Self> {
         let searxng = searxng_endpoint
@@ -1151,12 +1071,11 @@ impl ResearchWeb for LiveResearchWeb {
 }
 
 /// Per-domain telemetry for a failed live fetch (`docs/web-research.md
-/// §Extraction telemetry`): an HTTP 401/403 answer counts as denied, any other
-/// failure past the app's own guard as failed, and a policy refusal — which
-/// never reached the source — is not the source's record. Keyed by the
-/// requested host, preserving the persisted attribution independently of
-/// redirect-host backoff. Best-effort like the served-page write: a lost
-/// sample never costs the research.
+/// §Extraction telemetry`): 401/403 counts as denied, any other failure past
+/// the app's own guard as failed, and a policy refusal — which never reached
+/// the source — is not the source's record. Keyed by the requested host,
+/// independent of redirect-host backoff. Best-effort: a lost sample never costs
+/// the research.
 fn record_failed_fetch(
     conn: &rusqlite::Connection,
     url: &str,
@@ -1196,14 +1115,9 @@ impl ResearchBudget<'_> {
 // Tool definitions + findings schema
 // ---------------------------------------------------------------------------
 
-/// The two tools the loop offers (Ollama native `tools` shape).
-/// Since `portfolio-v50` each description states what its result shows — the
-/// search tool the tier scale (0 to 5), the fetch tool the page header's
-/// fields, the extraction-quality range (0 to 1) and the stub flag in plain
-/// words — which the gathering brief's Part 1 carried as a TOOL RESULTS legend
-/// before; Part 1 is inputs only. The quoted-material frame rides each page's
-/// text marker and the fallible-source clause Part 2's weighing sentence, so
-/// the descriptions say what a result carries and nothing about weighing it.
+/// The two tools the loop offers (Ollama native `tools` shape). Each
+/// description says what a result carries and nothing about weighing it; the
+/// weighing rides the gathering brief.
 pub fn research_tools() -> Value {
     json!([
         {
@@ -1237,8 +1151,8 @@ pub fn research_tools() -> Value {
 /// interprets (`docs/web-research.md §The research loop and context
 /// management`); anything else is the follow-up question verbatim. Read
 /// trimmed and case-insensitively, with surrounding quotes or backticks and a
-/// trailing period stripped (ruled 2026-10-08), so `None.` reads as none and a
-/// question is never lost to the word appearing inside it.
+/// trailing period stripped, so `None.` reads as none and a question is never
+/// lost to the word appearing inside it.
 pub(crate) fn reads_none(reply: &str) -> bool {
     let word = reply
         .trim()
@@ -1250,9 +1164,8 @@ pub(crate) fn reads_none(reply: &str) -> bool {
     word.eq_ignore_ascii_case("none")
 }
 
-/// The follow-up reply read: `none` is no follow-up, anything else is the
-/// question verbatim once trimmed. A blank reply never reaches here — the
-/// prose turn classifies it as an empty completion and retries or fails.
+/// A blank reply never reaches here — the prose turn classifies it as an empty
+/// completion and retries or fails.
 fn followup_question_of(reply: &str) -> Option<String> {
     let question = reply.trim();
     if reads_none(question) {
@@ -1266,7 +1179,6 @@ fn followup_question_of(reply: &str) -> Option<String> {
 // The runner
 // ---------------------------------------------------------------------------
 
-/// One parsed tool call off a turn.
 #[derive(Debug, Clone, PartialEq)]
 enum ToolCall {
     Search { query: String },
@@ -1274,9 +1186,8 @@ enum ToolCall {
     Unknown { name: String }
 }
 
-/// Parse the raw `tool_calls` value into typed calls; an unexpected shape
-/// degrades to `Unknown` entries (answered with an error note) rather than
-/// failing the pass.
+/// An unexpected shape degrades to `Unknown` entries (answered with an error
+/// note) rather than failing the pass.
 fn parse_tool_calls(raw: &Value) -> Vec<ToolCall> {
     let Some(arr) = raw.as_array() else {
         return Vec::new();
@@ -1317,7 +1228,7 @@ fn parse_tool_calls(raw: &Value) -> Vec<ToolCall> {
         .collect()
 }
 
-/// The per-holding research runner. Owns the budget state across topics.
+/// Owns the budget state across topics.
 pub struct ResearchRunner<'a> {
     pub model: &'a dyn ResearchModel,
     pub web: &'a dyn ResearchWeb,
@@ -1330,19 +1241,15 @@ pub struct ResearchRunner<'a> {
 
 /// The stage a research-loop retry event carries (`docs/local-models.md §The
 /// local-model adapter seam`): the holding's tracker step, then the topic and
-/// the leg — `gathering` (a tool turn) or `synthesis` (the grammar-only
-/// findings call, its parse re-issue included) — so a fired retry is
-/// attributable to the topic it failed on, not only the holding (attempt-5
-/// Finding 5, `docs/verification/2026-09-01-big-run-attempt-5-findings.md`:
-/// the bare holding stage left the parse-retry ↔ dropped-topic link a
-/// per-holding co-occurrence).
+/// the leg — `gathering` or `synthesis` — so a fired retry is attributable to
+/// the topic it failed on, not only the holding.
 fn research_retry_stage(step_label: &str, topic_key: &str, leg: &str) -> String {
     format!("{step_label} research {topic_key} {leg}")
 }
 
 /// What the fetch layer recorded about a served page beside its text: the
 /// extracted title and the publication date the search result (or the lead)
-/// reported for its URL, when one did (`portfolio-v43`).
+/// reported for its URL.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PageMeta {
     pub title: String,
@@ -1375,8 +1282,6 @@ impl ReusablePage {
                 .all(|url| check_url_policy(url).is_ok())
     }
 
-    /// The page as the roster records it — the final address, the title, the
-    /// reported publication date, the retrieval time and the source tier.
     fn roster_entry(&self) -> PageRosterEntry {
         let (title, _) = crate::data_sources::cap_chars(&self.page.title, TITLE_CAP_CHARS);
         let published = self.published.as_deref().map(|p| {
@@ -1421,13 +1326,12 @@ fn reuse_pages(
         crate::portfolio::pipeline::NUM_CTX_INTERPRET,
     ) / 3;
     // The gloss names web_fetch as the shape each page is shown in, so the
-    // header fields point at the one place they are defined, the fetch
-    // description (`portfolio-v56`).
+    // header fields point at the one place they are defined.
     let heading = "\nPAGES ALREADY RETRIEVED\nPages retrieved while researching this holding, each as \
                    web_fetch returns it.\n";
     // Reserve the omission line even when no omission is ultimately needed,
-    // and size against the brief as it renders with a page shown — the longer
-    // item 1 (`portfolio-v50`).
+    // and size against the brief as it renders with a page shown (the longer
+    // form).
     let mut room = prefix_cap.saturating_sub(pass_brief_with_reuse(ctx, "", true).chars().count()
         + gathering_countdown(MAX_TURNS_PER_PASS).content.chars().count() + heading.len() + 200);
     let mut block = String::from(heading);
@@ -1485,8 +1389,7 @@ fn reuse_pages(
 }
 
 /// Everything a pass needs beyond the runner: the holding-constant brief, the
-/// topic, and the pass's own text — the follow-up question it pursues with the
-/// topic's write-up so far, or on the disconfirming pass the run's write-ups.
+/// topic, and the pass's own text.
 struct PassContext<'a> {
     brief: &'a HoldingBrief,
     topic: &'a AgendaTopic,
@@ -1498,11 +1401,10 @@ struct PassContext<'a> {
     /// The run's write-ups so far, each under its topic's title — the
     /// disconfirming pass's subject; empty on every topic pass.
     write_ups_so_far: &'a [(String, String)],
-    /// The disconfirming pass's special framing.
     disconfirming: bool,
     /// The pass's depth within its topic: 0 for the root, one more per
-    /// follow-up (`portfolio-v60`). The disconfirming pass sits outside every
-    /// topic's depth cap and carries 0.
+    /// follow-up. The disconfirming pass sits outside every topic's depth cap
+    /// and carries 0.
     depth: usize,
 }
 
@@ -1510,16 +1412,15 @@ impl PassContext<'_> {
     /// Whether the synthesis conversation's second message asks for a
     /// follow-up question: only where the app can spend one — never on the
     /// disconfirming pass, and never on the last pass a topic's depth cap
-    /// allows (`portfolio-v60`, ruled 2026-09-29), whose question no pass
-    /// could take up.
+    /// allows, whose question no pass could take up.
     fn offers_followup(&self) -> bool {
         !self.disconfirming && followup_spendable(self.depth)
     }
 }
 
-/// One pass's outcome: the write-up the synthesis wrote (`None` where the pass
-/// retrieved no page with body text and spent no synthesis), and the follow-up
-/// question where the second message asked and the reply was one.
+/// One pass's outcome: the write-up (`None` where the pass retrieved no page
+/// with body text and spent no synthesis) and the follow-up question where one
+/// was asked for and given.
 #[derive(Debug, Clone, PartialEq, Default)]
 struct PassOutcome {
     write_up: Option<String>,
@@ -1568,14 +1469,12 @@ impl ResearchRunner<'_> {
         let mut inventory = Vec::new();
         // Titles and publication dates ride a parallel per-holding map (like
         // `page_texts`) so the fresh synthesis conversation can render the
-        // headline the discarded gathering transcript used to carry
-        // (attempt-4 review, Finding 3) and the date the search reported
-        // (`portfolio-v43`).
+        // headline and date the discarded gathering transcript carried.
         let mut page_meta: std::collections::HashMap<String, PageMeta> =
             std::collections::HashMap::new();
-        // The publication dates the search results (and the leads) reported,
-        // by normalized URL — a served page's header carries the one for its
-        // URL where there is one.
+        // Publication dates the search results and leads reported, by
+        // normalized URL; a served page's header carries its URL's where there
+        // is one.
         let mut published_by_url: std::collections::HashMap<String, String> = leads
             .iter()
             .filter_map(|s| {
@@ -1659,11 +1558,9 @@ impl ResearchRunner<'_> {
         }
         let worked: Vec<TopicWriteUp> = topics.into_iter().map(|t| t.research).collect();
 
-        // The disconfirming pass: once per holding, after its topics, spent
-        // from the same budget, outside any topic's depth cap
-        // (`docs/portfolio-workflow.md` §Step 6c — the canonical placement) —
-        // one gathering conversation searching for evidence against the run's
-        // write-ups so far, then its own synthesis writing its own write-up.
+        // The disconfirming pass: once per holding, after its topics, from the
+        // same budget, outside any topic's depth cap
+        // (`docs/portfolio-workflow.md` §Step 6c).
         let write_ups: Vec<(String, String)> = worked
             .iter()
             .filter_map(|t| t.write_up.as_ref().map(|w| (t.title.clone(), w.clone())))
@@ -1701,9 +1598,8 @@ impl ResearchRunner<'_> {
 
         out.gaps.extend(recovery.gaps);
         out.topics = worked;
-        // Every page shown to the model, in first-retrieval order — the
-        // inventory holds exactly the served pages, each shown at least once
-        // as a tool result (`docs/storage.md §Local Analysis Suite Storage`).
+        // The inventory holds exactly the served pages, in first-retrieval
+        // order (`docs/storage.md §Local Analysis Suite Storage`).
         out.roster = inventory.iter().map(ReusablePage::roster_entry).collect();
         out.fetches_spent = fetches_spent;
         out.elapsed_secs = self.budget.clock.elapsed().as_secs();
@@ -1711,13 +1607,12 @@ impl ResearchRunner<'_> {
     }
 
     /// One bounded multi-turn pass, in two phases. The gathering loop carries
-    /// the tools and no grammar — a turn that requests tools continues the loop,
-    /// a turn that requests none (or a spent fetch, turn, tool-batch, or aggregate
-    /// history budget) ends gathering.
-    /// Then `synthesize_write_up` authors the pass's write-up from a separate,
-    /// tool-history-free conversation carrying no tools and no grammar, so the
-    /// two never share a request (attempt-4 Finding 4, fix B) — a
-    /// budget-interrupted pass still synthesizes from what landed, never nothing.
+    /// the tools and no grammar — a turn that requests tools continues the
+    /// loop, a turn that requests none (or a spent bound) ends gathering. Then
+    /// `synthesize_write_up` authors the write-up from a separate,
+    /// tool-history-free conversation with no tools and no grammar, so the two
+    /// never share a request — a budget-interrupted pass still synthesizes
+    /// from what landed.
     #[allow(clippy::too_many_arguments)] // transient holding stores plus this pass's budget and gaps
     fn run_pass(
         &self,
@@ -1738,21 +1633,13 @@ impl ResearchRunner<'_> {
         ];
         // Explicitly fetched URLs (reused sources join after gathering).
         let mut fetched: Vec<(String, String, Option<SourceAnnotation>)> = Vec::new();
-        // The gathering phase's degradation, accumulated across turns — a
-        // persisted gap, since the tool-call history that carried these
-        // failures is discarded (attempt-4 review, Finding 2).
         let mut degradation = PassDegradation::default();
 
         // ── Gathering ──────────────────────────────────────────────────────
-        // The tool loop only searches and fetches — tools on, no `format`
-        // grammar. The findings grammar rides a separate clean-conversation
-        // synthesis call below, so tools and `format` never share one request:
-        // interleaving them on a turn carrying the whole tool-call history is
-        // what left the terminal turn emitting empty/fenced bodies at ~70%
-        // (Finding 4, `docs/verification/2026-08-31-big-run-attempt-4-findings.md`).
-        // Gathering ends when the model stops requesting tools, or a turn, batch,
-        // history, fetch, or wall-clock bound is reached — then synthesis writes
-        // up whatever landed.
+        // Tools on, no `format` grammar: the synthesis rides a separate clean
+        // conversation below, so tools and `format` never share one request —
+        // interleaving them on a turn carrying the whole tool-call history left
+        // the terminal turn emitting empty/fenced bodies most of the time.
         let mut turns = 0u32;
         let gathering_stage = research_retry_stage(&self.step_label, &ctx.topic.key, "gathering");
         'gather: loop {
@@ -1760,28 +1647,22 @@ impl ResearchRunner<'_> {
                 bail!("research cancelled");
             }
             if turns >= MAX_TURNS_PER_PASS {
-                // The model was still requesting tools when the turn cap cut it
-                // off — gathering was truncated, not voluntarily finished, so the
-                // synthesis should read it as partial (Finding 3).
+                // Still requesting tools at the turn cap: gathering was
+                // truncated, not voluntarily finished.
                 degradation.turn_cap_hit = true;
                 break;
             }
             if self.budget.exhausted(*fetches_spent) {
-                // The fetch or wall-clock budget ran out at a turn boundary — the
-                // model did not voluntarily finish, so the synthesis should read
-                // gathering as forcibly stopped (Finding 2). The mid-turn skip
-                // (`budget_skipped`) only fires when a later call in the same
-                // response is cut; an exact-ceiling or between-turns exit needs
-                // this signal.
+                // The mid-turn skip (`budget_skipped`) only fires when a later
+                // call in the same response is cut; an exact-ceiling or
+                // between-turns exit needs this signal.
                 degradation.budget_exhausted = true;
                 break;
             }
-            // Guard the complete variable gathering packet before every model
-            // call. Unlike the fresh synthesis request, this conversation grows
-            // across turns; no cache-hit or search-result path may let it cross
-            // the shared portfolio input ceiling.
-            // Append current control data only; never rewrite a prefix already
-            // issued to the model. A retry below reuses this exact packet.
+            // This conversation grows across turns, so guard the complete
+            // packet before every call. Append control data only; never
+            // rewrite a prefix already issued to the model — a retry below
+            // reuses this exact packet.
             let mut candidate = messages.clone();
             candidate.push(gathering_countdown(MAX_TURNS_PER_PASS - turns));
             if !gathering_packet_fits(&candidate, &tools) {
@@ -1790,8 +1671,7 @@ impl ResearchRunner<'_> {
             }
             messages = candidate;
             turns += 1;
-            // One bounded re-attempt on a transient turn failure — the messages
-            // are unchanged, so the re-issued request is the same turn
+            // Retry-once on a transient failure re-issues the same messages
             // (`docs/local-models.md §The local-model adapter seam`).
             let turn_stage = format!("{gathering_stage} turn {turns}");
             let resp = match self
@@ -1807,18 +1687,15 @@ impl ResearchRunner<'_> {
                 Err(first) => return Err(first.context("research turn failed"))
             };
             let Some(raw_calls) = resp.tool_calls.clone() else {
-                // No tool call requested: the model has finished gathering this
-                // topic — hand off to synthesis rather than parsing this turn.
+                // No tool call: the model has finished gathering.
                 break;
             };
             let Some(raw_array) = raw_calls.as_array() else {
-                // A present-but-non-array `tool_calls` (an object, a stringified
-                // array, a scalar) is malformed model output — the decoder
-                // already collapsed empty arrays and null to None, so this is
-                // never a legitimate empty. Record it as degradation and end
-                // gathering rather than echoing an off-protocol assistant message
-                // back onto the wire or spinning silently to the turn cap
-                // (attempt-4 review P2). Synthesis works from what already landed.
+                // A present-but-non-array `tool_calls` is malformed model
+                // output — the decoder already collapsed empty arrays and null
+                // to None, so this is never a legitimate empty. Record it and
+                // end gathering rather than echoing an off-protocol assistant
+                // message back onto the wire or spinning to the turn cap.
                 degradation.malformed_calls += 1;
                 break;
             };
@@ -1896,8 +1773,7 @@ impl ResearchRunner<'_> {
             }
         }
 
-        // The synthesis roster in render order (`portfolio-v49`, attempt-8
-        // Finding 4, ruled 2026-09-27): the reused pages first, in
+        // The synthesis roster in render order: the reused pages first, in
         // first-retrieval order — the order the brief showed them — then this
         // pass's explicit fetches in fetch order, once per final URL. An
         // explicit re-read of a reused page keeps the reused position with the
@@ -1923,19 +1799,17 @@ impl ResearchRunner<'_> {
         // ── Synthesis ──────────────────────────────────────────────────────
         // A fresh conversation carrying only the gathered evidence, with no
         // tools, no grammar and no tool-call history. The gathering
-        // degradation the discarded history carried is recorded as a
-        // data-health gap and reaches no model (`portfolio-v59`, ruled
-        // 2026-09-29: the fresh synthesis conversation cannot attribute
-        // aggregate losses to a question).
+        // degradation is recorded as a data-health gap and reaches no model:
+        // the fresh conversation cannot attribute aggregate losses to a
+        // question.
         if let Some(summary) = degradation.summary() {
             gaps.push(format!(
                 "topic {}: gathering degraded — {summary}; coverage partial",
                 ctx.topic.key
             ));
         }
-        // No page with body text landed: the pass spends no synthesis
-        // conversation — the topic's write-up so far stands, the pass leaves
-        // none of its own, and its losses persist as gaps
+        // No page with body text landed: the pass spends no synthesis — the
+        // write-up so far stands and the losses persist as gaps
         // (`docs/web-research.md §The research loop and context management`).
         let mut seen = std::collections::HashSet::new();
         let (with_body, without_body) = fetched
@@ -1969,12 +1843,9 @@ impl ResearchRunner<'_> {
         self.synthesize_write_up(ctx, &fetched, &explicit, page_texts, page_meta, gaps)
     }
 
-    /// One prose turn of the synthesis conversation under the bounded
-    /// retry-once (`docs/local-models.md §The local-model adapter seam`): a
-    /// transient call failure re-attempts the identical messages once, and a
-    /// blank reply — the adapter's empty-completion class — is a transient
-    /// failure of the same kind. The reply is returned as text, validated by
-    /// nothing else.
+    /// One prose turn under the retry-once (`docs/local-models.md §The
+    /// local-model adapter seam`); a blank reply is a transient failure of the
+    /// same kind. The reply is validated by nothing else.
     fn prose_turn(&self, stage: &str, messages: &[ChatMessage]) -> Result<String> {
         let issue = || -> Result<String> {
             let resp = self.model.research_turn(stage, messages, None, None)?;
@@ -1996,15 +1867,13 @@ impl ResearchRunner<'_> {
     }
 
     /// Write up one pass from a fresh conversation (`docs/portfolio-workflow.md`
-    /// §Step 6c): the gathered evidence rendered into a single user message
-    /// with no grammar and **no** tool-call history (Finding 4:
-    /// `docs/verification/2026-08-31-big-run-attempt-4-findings.md`); the
-    /// reply is the pass's write-up as prose. Where the pass offers a
-    /// follow-up, the same conversation's second message asks whether the
-    /// research has a follow-up question — the write-up echoed as the
-    /// assistant's turn, then the ask — and the reply is the question verbatim
-    /// or the one word `none`, the only reply the app interprets.
-    #[allow(clippy::too_many_arguments)] // the roster and its first-claim set are one input split by kind (`portfolio-v49`)
+    /// §Step 6c): the evidence in a single user message with no grammar and no
+    /// tool-call history; the reply is the write-up as prose. Where the pass
+    /// offers a follow-up, the second message asks for one — the write-up
+    /// echoed as the assistant's turn, then the ask — and the reply is the
+    /// question verbatim or the one word `none`, the only reply the app
+    /// interprets.
+    #[allow(clippy::too_many_arguments)] // the roster and its first-claim set are one input split by kind
     fn synthesize_write_up(
         &self,
         ctx: &PassContext<'_>,
@@ -2051,10 +1920,8 @@ impl ResearchRunner<'_> {
         Ok(PassOutcome { write_up: Some(write_up), followup: followup_question_of(&reply) })
     }
 
-    /// Execute one search call, with its tracker row. Degradation (a failed
-    /// call or an empty result set) is tallied so the synthesis call, which
-    /// never sees this tool result, still learns coverage was partial (Finding 2).
-    /// The row names the topic and carries the query as its target; the
+    /// A failed call or an empty result set is tallied as degradation. The
+    /// tracker row names the topic and carries the query as its target; the
     /// series id pairs start with finish and is never rendered.
     fn exec_search(
         &self,
@@ -2077,8 +1944,7 @@ impl ResearchRunner<'_> {
                     degradation.searches_empty += 1;
                 }
                 // The publication date a result reported rides to the served
-                // page's header (`portfolio-v43`); the first report for a URL
-                // stands.
+                // page's header; the first report for a URL stands.
                 for hit in &hits {
                     if recovery.titles.len() < 4096 {
                         recovery.titles.entry(crate::web_research::store::normalize_url(&hit.url))
@@ -2363,8 +2229,6 @@ impl ResearchRunner<'_> {
         Ok(RecoveredRelease { page, published })
     }
 
-    /// Execute one fetch call, with its tracker row, cache accounting, and the
-    /// quoted-evidence framing.
     #[allow(clippy::too_many_arguments)] // each is one distinct per-pass accumulator or per-holding store, documented at the call site
     fn exec_fetch(
         &self,
@@ -2418,9 +2282,6 @@ impl ResearchRunner<'_> {
                     normalized.clone(),
                     page.text.chars().take(PAGE_TEXT_CAP_CHARS).collect(),
                 );
-                // The extracted headline and the reported publication date ride
-                // their own map so the fresh synthesis header can carry them
-                // (Finding 3; `portfolio-v43`).
                 let published = if let Some(release) = &recovered { release.published.clone() } else { published_by_url
                     .get(&normalized)
                     .or_else(|| published_by_url.get(&requested))
@@ -2469,13 +2330,10 @@ impl ResearchRunner<'_> {
 // Prompt assembly
 // ---------------------------------------------------------------------------
 
-/// The gathering call's system prompt (`portfolio-v43`, ruled 2026-09-17 on
-/// the `portfolio-v40` frame; `docs/verification/2026-09-17-research-prompt-rewrite.md`):
-/// the role line, the two-part shape and what the conversation is for, naming
-/// the two tools Part 2's verbs map onto (`portfolio-v50`). The
-/// task itself — what to find, how to weigh a source, when to stop — is
-/// Part 2 of the user message, which persists across the tool turns exactly
-/// as this prompt does.
+/// The gathering call's system prompt: the role line, the two-part shape and
+/// the two tools. The task itself — what to find, how to weigh a source, when
+/// to stop — is Part 2 of the user message, which persists across the tool
+/// turns exactly as this prompt does.
 fn research_system_prompt() -> String {
     "You are an investment analyst researching one holding for a portfolio review. Part 1 \
 of the message gives the inputs. Part 2 states what to find and when to stop. You search \
@@ -2483,10 +2341,8 @@ with web_search and fetch with web_fetch, and write nothing up in this conversat
         .to_string()
 }
 
-/// The synthesis conversation's system prompt (`portfolio-v72`): the role
-/// line and the two-part shape on the frame every prose call shares (the
-/// thesis document's), since the write-up is prose under no grammar. The
-/// system prompt is not part of the brief's sized packet; it rides the slack
+/// The synthesis conversation's system prompt, on the frame every prose call
+/// shares. It is not part of the brief's sized packet; it rides the slack
 /// above `input_budget_chars`, which a test keeps it well inside.
 fn synthesis_system_prompt() -> String {
     "You are an investment analyst writing up one topic of research on one holding for a \
@@ -2496,9 +2352,8 @@ and how to return it."
 }
 
 /// The synthesis conversation's second message (`docs/portfolio-workflow.md`
-/// §Step 6c): whether the research has a follow-up question. The reply is the
-/// question as plain text and nothing else, or the one word `none`, the only
-/// reply the app interprets.
+/// §Step 6c). The reply is the question as plain text, or the one word `none`,
+/// the only reply the app interprets.
 pub(crate) fn followup_ask() -> String {
     "Does the research have a follow-up question — one further question on the questions under \
 TOPIC worth a search of its own? Reply with the question as plain text and nothing else, or the \
@@ -2506,21 +2361,11 @@ one word none."
         .to_string()
 }
 
-/// The EVIDENCE section's gloss, once per synthesis message (`portfolio-v43`;
-/// the tier scale's range stated since `portfolio-v50`; the value named
-/// `source tier` since `portfolio-v52`, the subject-tier relation carried by
-/// the header's two fields and stated nowhere since `portfolio-v53`). Since
-/// `portfolio-v59` (ruled 2026-09-29) it names the TOPIC heading the pages
-/// were retrieved for — a forward reference, since EVIDENCE leads Part 1 for
-/// the cache — and states the header's fields in the fetch description's
-/// words and shape (a semicolon list, each explanation bracketed, in the
-/// header's order); the fallible-source clause rides the task's weighing
-/// sentence, as on the gathering side. Extraction quality is glossed as the
-/// measure it is and the stub flag as a page that did not yield its article
-/// (`web_research::fetch::quality_of`). Since `portfolio-v60` (ruled
-/// 2026-09-29) the disconfirming pass's gloss names "the question under
-/// TOPIC", the one its topic holds (`evidence_gloss`); that synthesis opens on
-/// its own system message, so the wording costs no shared prefix.
+/// The EVIDENCE section's gloss, once per synthesis message: the header's
+/// fields in the fetch description's words and shape, in the header's order,
+/// the stub flag glossed as a page that did not yield its article
+/// (`web_research::fetch::quality_of`). `evidence_gloss` prefixes the TOPIC
+/// reference — a forward reference, since EVIDENCE leads Part 1 for the cache.
 const EVIDENCE_HEADER_GLOSS: &str = ", each under a header of: its id; its address; the published date, where the search reported one; when it was \
 retrieved; its source tier (0 to 5: 0 is a primary source — a filing, the issuer, a regulator — \
 and 5 is sentiment only); the subjects its source is trusted on; and its extraction quality (0 to \
@@ -2536,22 +2381,17 @@ fn evidence_gloss(ctx: &PassContext<'_>) -> String {
 }
 
 /// The one continuation marker a shown page ends with when it was cut — at
-/// the fetch cap or to fit the input budget (`portfolio-v43`: the fact, not
-/// the cause).
+/// the fetch cap or to fit the input budget; the fact, not the cause.
 const PAGE_CONTINUES_MARKER: &str = "\n[the page continues beyond what is shown]";
 
-/// The one line a capped inputs block ends with (`portfolio-v43`): the fact,
-/// not the cause. Reserved inside the gathering brief's allowance so a cut
-/// never spends the space the questions need.
+/// The one line a capped inputs block ends with: the fact, not the cause.
+/// Reserved inside the gathering brief's allowance so a cut never spends the
+/// space the questions need.
 const INPUTS_CONTINUE_MARKER: &str = "\n[the inputs continue beyond what is shown]\n";
 
 /// The app-computed source annotation as header fields, shared by the
-/// gathering page result and the synthesis source header: the source tier
-/// (named so since `portfolio-v52`), what the source is trusted on (`trusted
-/// on`, `portfolio-v50`), the extraction quality
-/// and the stub flag. The
-/// recency score stays computed and persisted but is not rendered
-/// (`portfolio-v43`, ruled 2026-09-17: the dates say more).
+/// gathering page result and the synthesis source header. The recency score
+/// stays computed and persisted but is not rendered: the dates say more.
 fn annotation_fields(a: &SourceAnnotation) -> String {
     let mut s = format!(" | source tier {}", a.source_tier);
     if !a.evidence_kinds.is_empty() {
@@ -2564,7 +2404,6 @@ fn annotation_fields(a: &SourceAnnotation) -> String {
     s
 }
 
-/// The TOPIC section, shared by both messages: the title and the questions.
 fn topic_section(topic: &AgendaTopic) -> String {
     let mut out = format!("\nTOPIC\n{}\n", topic.title);
     for q in &topic.questions {
@@ -2573,8 +2412,7 @@ fn topic_section(topic: &AgendaTopic) -> String {
     out
 }
 
-/// The FOLLOW-UP section, shared by both messages: the question the pass
-/// pursues — capped, since it is unbounded model output (Finding 1).
+/// Capped, since the question is unbounded model output.
 fn followup_section(question: &str) -> String {
     let mut out = String::from("\nFOLLOW-UP\nThe question this pass pursues.\n");
     let (question, cut) = crate::data_sources::cap_chars(question, FOLLOWUP_CAP_CHARS);
@@ -2586,8 +2424,6 @@ fn followup_section(question: &str) -> String {
     out
 }
 
-/// One write-up as a block's body, capped at the write-up cap with the
-/// continuation line where it was cut.
 fn capped_write_up(write_up: &str) -> String {
     let (text, cut) = crate::data_sources::cap_chars(write_up.trim(), WRITE_UP_CAP_CHARS);
     let mut out = text;
@@ -2599,9 +2435,6 @@ fn capped_write_up(write_up: &str) -> String {
     out
 }
 
-/// The WRITE-UP SO FAR section of a follow-up pass, shared by both messages:
-/// the topic's write-up from its earlier passes, which the pass rewrites
-/// whole.
 fn write_up_so_far_section(write_up: &str) -> String {
     format!(
         "\nWRITE-UP SO FAR\nThe topic's write-up from its earlier passes.\n{}",
@@ -2609,9 +2442,6 @@ fn write_up_so_far_section(write_up: &str) -> String {
     )
 }
 
-/// The WRITE-UPS SO FAR section of the disconfirming pass, shared by both
-/// messages: this run's write-ups on the holding, each under its topic's
-/// title.
 fn write_ups_so_far_section(write_ups: &[(String, String)]) -> String {
     let mut out =
         String::from("\nWRITE-UPS SO FAR\nThis run's write-ups on the holding, each under its topic.\n");
@@ -2624,9 +2454,8 @@ fn write_ups_so_far_section(write_ups: &[(String, String)]) -> String {
     out
 }
 
-/// The clause naming where a figure's source is stated: the page's address,
-/// or FETCHED VALUES where the brief carries that block — never a heading
-/// the message does not show.
+/// Names FETCHED VALUES only where the brief carries that block — never a
+/// heading the message does not show.
 fn source_clause(ctx: &PassContext<'_>) -> &'static str {
     if ctx.brief.fetched_values.is_empty() {
         "the address of the page under EVIDENCE that states it"
@@ -2636,15 +2465,9 @@ figure comes from there"
     }
 }
 
-/// Part 2 of the synthesis message (`docs/portfolio-workflow.md` §Step 6c):
-/// the write-up — what the research established on the topic's questions,
-/// each figure with the date or period its source gives for it and that
-/// source, where pages disagree, and what the evidence leaves unanswered,
-/// within the write-up's length band; on a follow-up pass the topic's
-/// write-up rewritten whole with the new evidence folded in; on the
-/// disconfirming pass how the evidence bears on the run's write-ups. The
-/// no-fence clause stays from the typed calls: the model deliberates the
-/// question in its thinking unless told (fix list 3.7, ruled 2026-09-16).
+/// Part 2 of the synthesis message (`docs/portfolio-workflow.md` §Step 6c).
+/// The no-fence clause stays: the model deliberates the question in its
+/// thinking unless told.
 fn synthesis_task(ctx: &PassContext<'_>) -> String {
     let mut out = String::from("\n======== PART 2: TASK ========\n\n");
     let plain = "as plain text — no code fence, no JSON, no heading before the first line";
@@ -2667,17 +2490,14 @@ unanswered."
 question under TOPIC, where pages disagree, and what the evidence leaves unanswered."
         ));
     }
-    // Each figure with the date or period its source gives for it and that
-    // source — the page's address, or FETCHED VALUES where the brief carries
-    // the block (`docs/portfolio-workflow.md` §Step 6c).
     out.push_str(&format!(
         " Each figure is quoted with the date or period its source gives for it, and its source \
 is named: {}.",
         source_clause(ctx)
     ));
-    // The governed source-quality rule reaches the call that authors the
-    // write-up, not only the gathering conversation it never sees
-    // (`docs/web-research.md §Source quality and evidence weighting`).
+    // The source-quality rule reaches the write-up's author, not only the
+    // gathering conversation (`docs/web-research.md §Source quality and
+    // evidence weighting`).
     out.push_str(
         " Weigh each page by its source tier and extraction quality; a weak source lowers \
 confidence in what it says, it does not exclude it, and a figure that cannot be right is a defect \
@@ -2689,43 +2509,34 @@ of the source.",
     out
 }
 
-/// The synthesis conversation's first message: one message in two parts.
-/// Part 1 is inputs only — since `portfolio-v49` (attempt-8 Finding 4, ruled
-/// 2026-09-27) in holding-constant-first order: the holding header and
-/// FETCHED VALUES, then EVIDENCE, the retrieved pages with their headers
-/// glossed once, in the order the gathering conversation showed them (the
-/// reused pages in first-retrieval order, then this pass's own fetches), then
-/// TOPIC, on a follow-up pass FOLLOW-UP and WRITE-UP SO FAR, on the
-/// disconfirming pass WRITE-UPS SO FAR. Part 2 is the write-up task. The
-/// order serves the runtime's prefix cache: consecutive syntheses on one
-/// holding begin with the same header, fetched values and leading pages, and
-/// the topic-variable tail after the evidence stays short, so the previous
-/// synthesis's saved checkpoint falls inside the shared text. The evidence is
-/// sized against the model's input budget with the shared chars-per-token
-/// guard, Part 2 and the topic block reserved first, and trimmed per-page
-/// only if it would overflow — the sanctioned lever, never raising `num_ctx`
-/// (BUILD §Standing constraints).
-#[allow(clippy::too_many_arguments)] // the roster and its first-claim set are one input split by kind (`portfolio-v49`)
+/// The synthesis conversation's first message. Part 1 is inputs only, holding-
+/// constant first — the header and FETCHED VALUES, then EVIDENCE in the order
+/// gathering showed the pages, then the topic-variable tail; Part 2 is the
+/// task. The order serves the runtime's prefix cache: consecutive syntheses on
+/// one holding share their leading text. The evidence is sized against the
+/// model's input budget, Part 2 and the topic block reserved first, and
+/// trimmed per-page only on overflow — the sanctioned lever, never raising
+/// `num_ctx` (`docs/local-model-operations.md` §The `num_ctx` trap).
+#[allow(clippy::too_many_arguments)] // the roster and its first-claim set are one input split by kind
 fn synthesis_brief(
     ctx: &PassContext<'_>,
     // The roster in render order: the pass's reused pages in first-retrieval
     // order, then its explicit fetches in fetch order (`run_pass`).
     fetched: &[(String, String, Option<SourceAnnotation>)],
     // The URLs this pass fetched itself. They keep first claim on the input
-    // budget (ruled 2026-09-27): under overflow a reused page's tail is cut
-    // before a page the model chose for this topic loses a character.
+    // budget: under overflow a reused page's tail is cut before a page the
+    // model chose for this topic loses a character.
     explicit: &std::collections::HashSet<String>,
     page_texts: &std::collections::HashMap<String, String>,
     page_meta: &std::collections::HashMap<String, PageMeta>,
     gaps: &mut Vec<String>,
-    // The URLs and ids actually rendered into the brief — the pages shown to
-    // the synthesis, each under the id its header carries; a dropped page is
-    // excluded.
+    // The URLs and ids actually rendered into the brief, each under the id its
+    // header carries; a dropped page is excluded.
     shown: &mut std::collections::HashMap<String, String>,
 ) -> String {
     let mut out = synthesis_lead(ctx);
-    // The topic block closes Part 1 after the evidence (`portfolio-v49`); it
-    // is reserved before the pages are sized.
+    // The topic block closes Part 1 after the evidence; it is reserved before
+    // the pages are sized.
     let tail = synthesis_orientation(ctx);
     let task = synthesis_task(ctx);
     out.push_str("\nEVIDENCE\n");
@@ -2738,23 +2549,18 @@ fn synthesis_brief(
         .iter()
         .filter(|(url, _, _)| seen.insert(url.clone()))
         .collect();
-    // Defensive: `run_pass` records a pass with no page body in the app and
-    // never issues this message for it (`portfolio-v43`, fix list 4.3), so
-    // this branch and the no-text branch below are reachable from direct
-    // callers and tests only.
+    // Defensive: `run_pass` never issues this message for a pass with no page
+    // body, so this branch and the no-text branch below are reachable from
+    // direct callers and tests only.
     if unique.is_empty() {
         out.push_str("No page was retrieved for this topic.\n");
         out.push_str(&tail);
         out.push_str(&task);
         return out;
     }
-    // A fetch that extracted no body text carries no citable article evidence —
-    // drop it so its URL never renders header-only and never enters the
-    // validator's allow-set (attempt-4 review, Finding 1; fix B's water-fill only
-    // ever dropped on budget, and a body-less page whose length is 0 slipped
-    // through as "whole"). The extracted title still leads a kept page's header
-    // (Finding 3) but is never itself a page's whole evidence, so an empty-body
-    // page's URL is not made citable on a headline alone.
+    // A fetch that extracted no body text carries no citable evidence — drop
+    // it so its URL never renders header-only and never enters the allow-set;
+    // a title alone never makes a URL citable.
     let meta_of = |url: &str| page_meta.get(url);
     let text_of = |url: &str| page_texts.get(url).map(String::as_str).unwrap_or("");
     let mut empty_dropped = 0usize;
@@ -2782,13 +2588,8 @@ fn synthesis_brief(
         out.push_str(&task);
         return out;
     }
-    // The source annotation, matching `render_page` so the synthesis call —
-    // the sole author of findings — can apply the source-quality weighting
-    // contract (`docs/web-research.md §Source quality`): tier, evidence kinds,
-    // extraction quality, thin-stub. The extracted title leads the body so the
-    // sole findings author sees the headline the gathering transcript used to
-    // carry (attempt-4 review, Finding 3); the publication date the search
-    // reported leads the retrieval time (`portfolio-v43`).
+    // The header matches `render_page` so the write-up's author can apply the
+    // source-quality weighting (`docs/web-research.md §Source quality`).
     // Reserve the largest possible ID before selection; final IDs are assigned
     // only at admission, so compacting them cannot exceed this budget.
     let source_prefix_reserve = synthesis_header("", &format!("S{}", kept.len())).chars().count();
@@ -2806,9 +2607,6 @@ fn synthesis_brief(
                 h.push_str(&annotation_fields(a));
             }
             h.push_str(") ===\n");
-            // The extracted title is untrusted, page-derived, and unbounded, so
-            // cap it to a headline length — an oversized title must not inflate
-            // the header framing past the input guard (attempt-4 review, Finding 1).
             let title = meta_of(url).map(|m| m.title.trim()).unwrap_or("");
             if !title.is_empty() {
                 h.push_str("TITLE: ");
@@ -2884,9 +2682,9 @@ fn synthesis_brief(
     let all_minimum_total = (0..kept.len()).fold(prefix_len, |total, index| {
         total.saturating_add(rendered_cost(index, minimum_body_cost(lengths[index])))
     });
-    // Admission order (ruled 2026-09-27): this pass's explicit fetches first,
-    // then the reused pages, each group in render order — the render order
-    // stays the roster's, so the leading pages read the same on every pass.
+    // Admission order: this pass's explicit fetches first, then the reused
+    // pages, each group in render order — the render order stays the
+    // roster's, so the leading pages read the same on every pass.
     let first_claim: Vec<bool> =
         kept.iter().map(|(url, _, _)| explicit.contains(url)).collect();
     let selected: Vec<usize> = if all_minimum_total <= budget {
@@ -2931,12 +2729,12 @@ fn synthesis_brief(
     let available = budget
         .saturating_sub(fixed)
         .saturating_sub(if omitted > 0 { DROP_SUMMARY_RESERVE } else { 0 });
-    // Two tiers share `available` (ruled 2026-09-27): the explicit pages plan
-    // first against everything the reused pages' minimum bodies leave, and the
-    // reused pages take what the explicit plans did not use — a cut lands on a
-    // reused tail before an explicit page loses a character, while every
-    // selected page keeps at least its minimum body (the selection's
-    // invariant). One tier alone is the plain water-fill.
+    // Two tiers share `available`: the explicit pages plan first against
+    // everything the reused pages' minimum bodies leave, and the reused pages
+    // take what the explicit plans did not use — a cut lands on a reused tail
+    // before an explicit page loses a character, while every selected page
+    // keeps at least its minimum body (the selection's invariant). One tier
+    // alone is the plain water-fill.
     let plan_cost = |plan: PagePlan| plan.text + if plan.marker { marker_len } else { 0 };
     let (tier_a, tier_b): (Vec<usize>, Vec<usize>) =
         selected.iter().copied().partition(|&index| first_claim[index]);
@@ -3030,12 +2828,10 @@ fn synthesis_brief(
     out
 }
 
-/// Allocate a per-page character budget across the pass's fetched pages: when
-/// the aggregate fits `available`, every page gets its full length; on overflow,
-/// each page shorter than its fair share keeps its full text and the freed
-/// budget is redistributed among the longer pages (water-filling), so a page is
-/// truncated only when the packet genuinely overflows. Pure, so the boundary is
-/// unit-testable without a live model.
+/// Water-fill `available` chars across the pages: each page shorter than its
+/// fair share keeps its full text and the freed budget is redistributed among
+/// the longer ones, so a page is truncated only when the packet genuinely
+/// overflows. Pure, so the boundary is unit-testable.
 fn allocate_page_budget(lengths: &[usize], available: usize) -> Vec<usize> {
     let mut alloc = vec![0usize; lengths.len()];
     let mut pending: Vec<usize> = (0..lengths.len()).collect();
@@ -3077,10 +2873,10 @@ struct PagePlan {
     dropped: bool
 }
 
-/// Admit a planned source to the shown set — its header's id — only when the
-/// plan carries usable evidence. This duplicates the allocator invariant at
-/// the boundary so a future math regression fails closed in release: a page
-/// with no usable body is never shown as a source.
+/// Admit a planned source to the shown set only when the plan carries usable
+/// evidence. This duplicates the allocator invariant at the boundary so a math
+/// regression fails closed in release: a page with no usable body is never
+/// shown as a source.
 fn admit_planned_source(
     plan: PagePlan,
     source_url: &str,
@@ -3096,11 +2892,10 @@ fn admit_planned_source(
 
 /// Plan how each page renders under `available` chars: whole when it fits; cut
 /// with an inline marker when its allocation still holds the marker plus some
-/// text; or **dropped** (omitted entirely) when the allocation is too small even
-/// for the marker — so a source is never rendered as a deceptively-empty page
-/// whose URL the model might still cite (round-7). A dropped page is counted and
-/// summarized instead. Pure, so the sub-marker boundary is unit-testable without
-/// a live model or a multi-thousand-page fixture.
+/// text; or dropped entirely when the allocation is too small even for the
+/// marker — so a source is never rendered as a deceptively-empty page whose URL
+/// the model might still cite. Pure, so the sub-marker boundary is
+/// unit-testable.
 fn plan_evidence(lengths: &[usize], available: usize, marker_len: usize) -> Vec<PagePlan> {
     allocate_page_budget(lengths, available)
         .into_iter()
@@ -3124,23 +2919,18 @@ fn synthesis_header(header: &str, id: &str) -> String {
     format!("\n=== {id}{header}")
 }
 
-/// Part 1's opening (`portfolio-v49`): the holding header and FETCHED VALUES
-/// — the bytes every synthesis on the holding shares, so consecutive
-/// syntheses begin alike and the evidence that follows can extend a saved
-/// prefix.
+/// Part 1's opening: the holding header and FETCHED VALUES — the bytes every
+/// synthesis on the holding shares, so consecutive syntheses begin alike and
+/// the evidence that follows can extend a saved prefix.
 fn synthesis_lead(ctx: &PassContext<'_>) -> String {
     let mut out = String::from("======== PART 1: INPUTS ========\n");
     out.push_str(&ctx.brief.lead());
     out
 }
 
-/// The topic-variable block of Part 1, rendered after the evidence since
-/// `portfolio-v49` (attempt-8 Finding 4, ruled 2026-09-27): TOPIC, on a
-/// follow-up pass FOLLOW-UP and WRITE-UP SO FAR, and on the disconfirming
-/// pass WRITE-UPS SO FAR — this pass's own frame and nothing the write-up
-/// does not need: no news leads, no prior documents, no URL roster beyond
-/// the evidence, and no instruction. Capped so the task always renders
-/// whole.
+/// The topic-variable block of Part 1, rendered after the evidence: this
+/// pass's own frame and nothing the write-up does not need — no news leads, no
+/// prior documents, no instruction. Capped so the task always renders whole.
 fn synthesis_orientation(ctx: &PassContext<'_>) -> String {
     let mut out = topic_section(ctx.topic);
     if let Some(followup) = ctx.followup {
@@ -3162,25 +2952,8 @@ fn synthesis_orientation(ctx: &PassContext<'_>) -> String {
     out
 }
 
-/// The gathering call's user message: one message in two parts. Part 1 is
-/// inputs only — since `portfolio-v49` (attempt-8 Finding 4, ruled
-/// 2026-09-27) in holding-constant-first order: the holding header, FETCHED
-/// VALUES, NEWS LEADS (the tool results' fields are glossed on the tool
-/// descriptions since `portfolio-v50`), on a continuity run the prior
-/// documents, then the PAGES ALREADY RETRIEVED block, and only then the
-/// topic's own text — TOPIC, on a follow-up pass FOLLOW-UP and WRITE-UP SO
-/// FAR, on the disconfirming pass WRITE-UPS SO FAR — each explained once and
-/// then its values, no instruction in it. Part 2 is the task: what to find,
-/// how to weigh a source, the per-reply bound and when to stop. The order
-/// serves the runtime's prefix cache: consecutive topic roots share their
-/// leading text through the reused pages, and the topic-variable tail that
-/// follows stays short, so the previous root's saved checkpoint falls inside
-/// the shared text. The inputs are bounded (each write-up by its cap) and
-/// each block is capped so the task always renders whole (Finding 1); TOPIC
-/// leads the capped topic block, so the questions survive any cut.
-/// The brief with no reuse block and no page shown — the tests' and samples'
-/// shorthand; production sizes and renders through `pass_brief_with_reuse`
-/// (`portfolio-v50`).
+/// The brief with no reuse block and no page shown — the tests' shorthand;
+/// production renders through `pass_brief_with_reuse`.
 #[cfg(test)]
 fn pass_brief(ctx: &PassContext<'_>) -> String {
     pass_brief_with_reuse(ctx, "", false)
@@ -3194,9 +2967,8 @@ fn gathering_countdown(remaining: u32) -> ChatMessage {
 }
 
 /// The holding-constant opening of Part 1 (`docs/portfolio-workflow.md`
-/// §Step 6c): the header, FETCHED VALUES, NEWS LEADS and on a continuity run
-/// the prior documents — the same bytes on every pass of the holding, so a
-/// fresh root's prompt begins where the previous root's did.
+/// §Step 6c) — the same bytes on every pass of the holding, so a fresh root's
+/// prompt begins where the previous root's did.
 fn gathering_constant_block(ctx: &PassContext<'_>) -> String {
     let mut out = String::from("======== PART 1: INPUTS ========\n");
     out.push_str(&ctx.brief.lead());
@@ -3222,9 +2994,8 @@ fn gathering_constant_block(ctx: &PassContext<'_>) -> String {
     out
 }
 
-/// The topic-variable block of Part 1: TOPIC, on a follow-up pass FOLLOW-UP
-/// and WRITE-UP SO FAR, on the disconfirming pass WRITE-UPS SO FAR — what
-/// changes from pass to pass, rendered after the reused pages.
+/// The topic-variable block of Part 1 — what changes from pass to pass,
+/// rendered after the reused pages.
 fn gathering_topic_block(ctx: &PassContext<'_>) -> String {
     let mut out = topic_section(ctx.topic);
     if let Some(question) = ctx.followup {
@@ -3239,16 +3010,20 @@ fn gathering_topic_block(ctx: &PassContext<'_>) -> String {
     out
 }
 
+/// The gathering call's user message. Part 1 is inputs only, holding-constant
+/// first (the header, FETCHED VALUES, NEWS LEADS, the prior documents, PAGES
+/// ALREADY RETRIEVED), then the topic's own text; Part 2 is the task. The
+/// order serves the runtime's prefix cache: consecutive topic roots share
+/// their leading text.
 fn pass_brief_with_reuse(ctx: &PassContext<'_>, reuse: &str, pages_shown: bool) -> String {
     let task = gathering_task(ctx, pages_shown);
-    // Hard backstop: bound the inputs so neither the gathering request (whose
-    // user message IS this brief) nor its growth across turns can exceed the
-    // input guard before evidence is even sized (Finding 1); the task is
-    // appended after the caps so it always renders whole. The reuse block was
-    // sized by `reuse_pages` against this pass's own brief, so it fits between
-    // the two capped blocks; the constant block's cap reserves the TOPIC
-    // section beside the task and countdown, and TOPIC leads the head-capped
-    // topic block, so the questions render whole under any cut.
+    // Hard backstop: bound the inputs so the gathering request cannot exceed
+    // the input guard before evidence is sized; the task is appended after the
+    // caps so it always renders whole. The reuse block was sized by
+    // `reuse_pages` against this pass's own brief, so it fits between the two
+    // capped blocks; the constant block's cap reserves the TOPIC section
+    // beside the task and countdown, and TOPIC leads the head-capped topic
+    // block, so the questions render whole under any cut.
     let prefix_cap = crate::portfolio::distill::input_budget_chars(
         crate::portfolio::pipeline::NUM_CTX_INTERPRET,
     ) / 3;
@@ -3259,8 +3034,7 @@ fn pass_brief_with_reuse(ctx: &PassContext<'_>, reuse: &str, pages_shown: bool) 
     // Each cap reserves its own marker, so a cut block plus its marker still
     // fits the allowance, and the constant block's cap also reserves the reuse
     // block as rendered — in an overflow that is its heading and omission line
-    // — so the TOPIC reservation is never spent on a marker or on framing
-    // (Codex, Slice B review).
+    // — so the TOPIC reservation is never spent on a marker or on framing.
     let marker = INPUTS_CONTINUE_MARKER.chars().count();
     let topic_reserve = topic_section(ctx.topic).chars().count();
     let (mut out, constant_cut) = crate::data_sources::cap_chars(
@@ -3282,18 +3056,11 @@ fn pass_brief_with_reuse(ctx: &PassContext<'_>, reuse: &str, pages_shown: bool) 
     out
 }
 
-/// Part 2 of the gathering message (`portfolio-v43`): the opening names what
-/// to find for this pass kind, then how to search and weigh a source, the
-/// per-reply bound (an over-size batch ends gathering, so it is a requirement
-/// on the reply, not a hidden cap — ruled 2026-09-17), and when to stop.
-/// Item 1 opens on the pages under PAGES ALREADY RETRIEVED only where one is
-/// shown (`portfolio-v50`); a brief with none asks to search first. On a
-/// follow-up pass the opening's second sentence says what the TOPIC questions
-/// are for and that the pass does not search them, and items 1 and 3 name the
-/// FOLLOW-UP question (`portfolio-v51`); on the disconfirming pass it says the
-/// write-ups under WRITE-UPS SO FAR are what its question tests. Every pass
-/// points at its headings — never with a heading as an adjective
-/// (`portfolio-v60`, ruled 2026-09-29).
+/// Part 2 of the gathering message: what to find for this pass kind, how to
+/// search and weigh a source, the per-reply bound (an over-size batch ends
+/// gathering, so it is a requirement on the reply, not a hidden cap), and
+/// when to stop. Every pass points at its headings — never with a heading as
+/// an adjective.
 fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
     let opening = if ctx.disconfirming {
         "Find what the web shows on the question under TOPIC for this holding, as of the date \
@@ -3310,20 +3077,19 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
          under HOLDING."
             .to_string()
     };
-    // The fetch candidates: the search results and, where the brief carries
-    // any, the news leads — one clause under the one relevance test, since a
-    // lead orients the research and only its fetched page can be evidence
-    // (`portfolio-v50`; the leads render on every pass of the holding).
+    // The leads join the search results as fetch candidates under the one
+    // relevance test: a lead orients the research and only its fetched page
+    // can be evidence.
     let candidates = if ctx.brief.leads.is_empty() {
         "the results"
     } else {
         "the results and the leads under NEWS LEADS"
     };
     // The noun the items search, weigh against and stop on: the one question
-    // under FOLLOW-UP on a follow-up pass, so "the questions" never points that pass
-    // back at the topic its opening said not to search (`portfolio-v51`); the
-    // one question on the disconfirming pass, whose brief carries no other
-    // (`portfolio-v55`); the TOPIC questions otherwise.
+    // under FOLLOW-UP on a follow-up pass, so "the questions" never points
+    // that pass back at the topic its opening said not to search; the one
+    // question on the disconfirming pass, whose brief carries no other; the
+    // TOPIC questions otherwise.
     let (questions, them, allow, answered) = if ctx.followup.is_some() {
         (
             "the question under FOLLOW-UP",
@@ -3343,9 +3109,8 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
         format!("1. Search for what {questions} {asks}, then fetch and read {candidates} most likely to answer {them}.")
     };
     // The preference is stated by the two scales' endpoints, in the words the
-    // results and headers carry (`portfolio-v52`). The subject-tier relation is
-    // not stated: the header's `source tier N | trusted on …` fields carry it
-    // (`portfolio-v53`, ruled 2026-09-29).
+    // results and headers carry. The subject-tier relation is not stated: the
+    // header's `source tier N | trusted on …` fields carry it.
     item1.push_str(&format!(
         " Prefer a source tier nearer 0 and an extraction quality nearer 1 where {allow}; \
          a weak source lowers confidence in what it says, it does not exclude it, and a figure \
@@ -3358,17 +3123,14 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
     )
 }
 
-/// The one line a failed search returns to the model (`portfolio-v58`, ruled
-/// 2026-09-29): a fixed sentence, never the operator's error text — that
-/// rides the run tracker's request row.
+/// The one line a failed search returns to the model: a fixed sentence, never
+/// the operator's error text — that rides the run tracker's request row.
 pub(crate) const SEARCH_FAILED_LINE: &str = "SEARCH FAILED: the search did not complete.";
 
-/// The one line a failed fetch returns to the model (`portfolio-v58`, ruled
-/// 2026-09-29): a fixed sentence chosen by the failure's typed class — the
-/// site's own HTTP answer with its status (a paywall or a dead link reads
-/// differently from a site worth trying again), an address the app does not
-/// fetch, a document that could not be read, an invalid address, or no
-/// answer — never the operator's error text, which rides the tracker row.
+/// The one line a failed fetch returns to the model: a fixed sentence chosen
+/// by the failure's typed class (a paywall or a dead link reads differently
+/// from a site worth trying again) — never the operator's error text, which
+/// rides the tracker row.
 pub(crate) fn fetch_failed_line(err: &anyhow::Error) -> String {
     use crate::web_research::fetch::{failure_of, FetchFailure};
     let reason = match failure_of(err) {
@@ -3386,7 +3148,6 @@ pub(crate) fn fetch_failed_line(err: &anyhow::Error) -> String {
     format!("FETCH FAILED: {reason}. No text was retrieved.")
 }
 
-/// Render search hits as a tool result.
 fn render_hits(hits: &[SearchHit]) -> String {
     if hits.is_empty() {
         return "No results.".to_string();
@@ -3429,11 +3190,9 @@ fn render_hits(hits: &[SearchHit]) -> String {
     out
 }
 
-/// Render a fetched page as a tool result (`portfolio-v43`): the address and
-/// title, then one line with the publication date the search reported (where
-/// one did), the retrieval time and the annotation fields, then the page text
-/// framed as quoted material — the frame `docs/web-research.md §Safety and
-/// provenance` requires, in the same words as the synthesis gloss.
+/// The page text is framed as quoted material — the frame
+/// `docs/web-research.md §Safety and provenance` requires, in the same words
+/// as the synthesis gloss.
 fn render_page(
     page: &FetchedPage,
     annotation: Option<&SourceAnnotation>,
@@ -3491,8 +3250,7 @@ mod tests {
     use std::cell::RefCell;
     use std::sync::Mutex;
 
-    /// `portfolio-v58`: the model-facing failure lines are fixed sentences by
-    /// class, and a remembered failure replays the class its live failure had.
+    /// A remembered failure replays the class its live failure had.
     #[test]
     fn failed_tool_results_are_fixed_sentences_by_class() {
         use crate::web_research::fetch::FetchFailure;
@@ -3522,8 +3280,8 @@ mod tests {
         assert!(format!("{err:#}").contains("HTTP 403"), "{err:#}");
     }
 
-    // Entry 4: use the production web adapter, failure memory and runner with
-    // scripted transport and a monotonic clock; no live service or model call.
+    // The production web adapter, failure memory and runner over scripted
+    // transport and a monotonic clock; no live service or model call.
     #[derive(Default)]
     struct FetchTestTime {
         millis: std::sync::atomic::AtomicU64,
@@ -3665,7 +3423,7 @@ mod tests {
         use crate::progress::{RecordingReporter, RunContext};
         use std::sync::{atomic::AtomicBool, Arc};
         let url = "https://investors.progyny.com/synthetic-fixture";
-        // Synthetic evidence only: the archived failure did not name its cause.
+        // The cause is synthetic; the test is about nesting, not the cause.
         let error = anyhow::Error::new(std::io::Error::other("synthetic TLS handshake failure"))
             .context("connecting to source")
             .context(format!("fetching {url}"));
@@ -3791,8 +3549,7 @@ mod tests {
 
     #[test]
     fn entry4_attempt6_url_status_fixture_reuses_denials_across_holdings() {
-        // Three identical 403 rows in attempt-6 tauri-dev.log (TSLA). Timing
-        // here is synthetic: the archived progress rows have no timestamps.
+        // Three identical 403s on one URL; timing is synthetic.
         let url =
             "https://www.nhtsa.gov/press-releases/investigation-tesla-cybercab-self-certification";
         let time = std::sync::Arc::new(FetchTestTime::default());
@@ -3902,8 +3659,8 @@ mod tests {
 
     #[test]
     fn entry4_attempt6_distinct_phillips_urls_share_one_host_cooldown() {
-        // Different 403 URLs from attempt-6 PSX rows; URL dedup alone cannot
-        // remove either distinct request. Synthetic time pins the host bound.
+        // Two distinct 403 URLs on one host: URL dedup alone cannot remove
+        // either request. Synthetic time pins the host bound.
         let urls = [
             "https://investor.phillips66.com/financial-information/news-releases/news-release-details/2025/Phillips-66-Provides-Statement-of-Critical-Facts/default.aspx",
             "https://investor.phillips66.com/financial-information/news-releases/news-release-details/2024/Phillips-66-provides-notice-of-its-plan-to-cease-operations-at-Los-Angeles-area-refinery/default.aspx",
@@ -4163,8 +3920,8 @@ mod tests {
     fn entry4_unknowns_expire_without_retry_and_retry_denials_change_class() {
         let url = "https://investors.progyny.com/news-releases/news-release-details/progyny-inc-announces-fourth-quarter-2025-results";
         let time = std::sync::Arc::new(FetchTestTime::default());
-        // Archived Progyny rows name only "fetching <url>"; no transient cause
-        // is inferred from that text. A typed timeout is a separate synthetic case.
+        // A bare "fetching <url>" error names no transient cause, so none is
+        // inferred from its text; a typed timeout is the separate case.
         let (web, calls) = fetch_web(
             vec![
                 Err(anyhow::anyhow!("fetching {url}")),
@@ -4380,10 +4137,8 @@ mod tests {
 
     #[test]
     fn a_failed_live_fetch_counts_against_its_requested_host() {
-        // Attempt-5 Finding 1: 17 of PSX's 25 fetch attempts failed, almost all
-        // HTTP 401/403, and none of them reached the per-domain telemetry the
-        // render tier and Connected Sources schedule off — only served pages
-        // did. Every non-policy failure now counts, 401/403 as denied.
+        // Every non-policy failure reaches the per-domain telemetry the render
+        // tier and Connected Sources schedule off, 401/403 as denied.
         use crate::web_research::fetch::FetchFailure;
         use crate::web_research::store::source_state;
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -4455,8 +4210,8 @@ mod tests {
 
     #[test]
     fn the_one_word_none_is_the_only_reply_the_app_reads() {
-        // Ruled 2026-10-08: trimmed, case-insensitive, surrounding quotes and
-        // a trailing period tolerated; anything else is the question verbatim.
+        // Trimmed, case-insensitive, surrounding quotes and a trailing period
+        // tolerated; anything else is the question verbatim.
         for reply in ["none", "None", " NONE ", "None.", "\"none\"", "`none`", "'None.'", "**none**"] {
             assert!(reads_none(reply), "{reply:?}");
             assert_eq!(followup_question_of(reply), None, "{reply:?}");
@@ -4523,8 +4278,6 @@ mod tests {
         }
     }
 
-    /// A prose reply — a synthesis conversation's write-up or its follow-up
-    /// reply.
     fn prose(body: &str) -> ChatResponse {
         ChatResponse {
             content: body.to_string(),
@@ -4536,9 +4289,8 @@ mod tests {
         }
     }
 
-    /// A no-tool-call gathering turn that ends the gather loop (its content is
-    /// discarded — the write-up comes from the separate synthesis
-    /// conversation). A pass's script is `[...tool turns..., gather_done(),
+    /// A no-tool-call gathering turn that ends the gather loop; its content is
+    /// discarded. A pass's script is `[...tool turns..., gather_done(),
     /// <write-up>, <follow-up reply where the pass offers one>]`.
     fn gather_done() -> ChatResponse {
         ChatResponse {
@@ -4656,12 +4408,10 @@ mod tests {
     const WID_HEADER: &str =
         "HOLDING\nWID (Widget Co).\nPrice: $10.00 per share.\nDate: 2026-08-22.\n";
 
-    /// A brief carrying the header alone — the tests' shorthand.
     fn brief_of(header: &str) -> HoldingBrief {
         HoldingBrief { header: header.to_string(), ..Default::default() }
     }
 
-    /// The Widget Co brief with its one news lead.
     fn brief_with_leads() -> HoldingBrief {
         HoldingBrief { header: WID_HEADER.into(), leads: leads(), ..Default::default() }
     }
@@ -5294,9 +5044,9 @@ mod tests {
         let brief = brief_with_leads();
         let out = r.run_holding(&brief, &agenda).unwrap();
         assert_eq!(out.fetches_spent, 3);
-        // `portfolio-v49`: the re-read page keeps its first-retrieval position
-        // (second, after the page read first in topic a) with the fresh read's
-        // provenance — on the roster and in the synthesis.
+        // The re-read page keeps its first-retrieval position (second, after
+        // the page read first in topic a) with the fresh read's provenance —
+        // on the roster and in the synthesis.
         assert_eq!(out.roster.len(), 2);
         assert_eq!(out.roster[0].url, "https://reuters.com/other");
         assert_eq!(out.roster[1].url, "https://reuters.com/final");
@@ -5490,7 +5240,7 @@ mod tests {
         assert!(block.contains(PAGE_CONTINUES_MARKER));
         assert!(gaps.iter().any(|g| g.contains("omitted from gathering")));
         let brief_text = pass_brief_with_reuse(&ctx, &block, !selected.is_empty());
-        // `portfolio-v50`: with a page shown, item 1 names the block it reads.
+        // With a page shown, item 1 names the block it reads.
         assert!(brief_text.contains("1. Read the pages under PAGES ALREADY RETRIEVED against the questions."), "{brief_text}");
         let cap = crate::portfolio::distill::input_budget_chars(
             crate::portfolio::pipeline::NUM_CTX_INTERPRET,
@@ -5521,17 +5271,16 @@ mod tests {
     /// a prompt's checkpoint 1,024 tokens before its end (its default
     /// micro-batch; the app sets nothing), so the topic-variable text after the
     /// shared prefix must stay under that — ≈3,000 chars at the shared
-    /// 3-chars-per-token estimate, pinned with margin (attempt-8 Finding 4).
+    /// 3-chars-per-token estimate, pinned with margin.
     const RESTORE_TAIL_CHARS: usize = 2_800;
 
     #[test]
     fn slice_b_consecutive_roots_and_syntheses_share_their_leading_text() {
-        // Attempt-8 Finding 4 (`portfolio-v49`, ruled 2026-09-27): every fresh
-        // conversation leads with the holding-constant text, so a topic root's
-        // brief begins with the previous root's brief through its reused pages,
-        // and a synthesis begins with the previous synthesis through its
-        // evidence; source ids follow first-retrieval order; and the tail after
-        // the shared text stays under the restore bound.
+        // Every fresh conversation leads with the holding-constant text, so a
+        // topic root's brief begins with the previous root's brief through its
+        // reused pages, and a synthesis begins with the previous synthesis
+        // through its evidence; source ids follow first-retrieval order; and
+        // the tail after the shared text stays under the restore bound.
         struct PerUrlWeb;
         impl ResearchWeb for PerUrlWeb {
             fn search(&self, _: &str) -> Result<Vec<SearchHit>> {
@@ -5646,10 +5395,10 @@ mod tests {
 
     #[test]
     fn synthesis_brief_keeps_explicit_pages_whole_before_reused_tails() {
-        // Ruled 2026-09-27 (`portfolio-v49`): the roster renders reused pages
-        // first, but this pass's own fetches keep first claim on the input
-        // budget — under overflow the reused tails are cut and the explicit
-        // pages render whole, in render order, within the guard.
+        // The roster renders reused pages first, but this pass's own fetches
+        // keep first claim on the input budget — under overflow the reused
+        // tails are cut and the explicit pages render whole, in render order,
+        // within the guard.
         let budget = crate::portfolio::distill::input_budget_chars(
             crate::portfolio::pipeline::NUM_CTX_INTERPRET,
         );
@@ -5703,10 +5452,10 @@ mod tests {
 
     #[test]
     fn slice_b_topic_renders_whole_when_the_constant_block_overflows() {
-        // Codex (Slice B review): with the truncation markers reserved inside
-        // the allowance, an oversized holding-constant block is cut and marked
-        // while the TOPIC section renders whole and the brief plus its first
-        // countdown stays within the initial allowance.
+        // With the truncation markers reserved inside the allowance, an
+        // oversized holding-constant block is cut and marked while the TOPIC
+        // section renders whole and the brief plus its first countdown stays
+        // within the initial allowance.
         let agenda = one_topic_agenda();
         let prefix_cap = crate::portfolio::distill::input_budget_chars(
             crate::portfolio::pipeline::NUM_CTX_INTERPRET,
@@ -5732,7 +5481,7 @@ mod tests {
         // The production path on a later topic: the inventory is not empty, no
         // page fits, and the reuse block is its heading and omission line —
         // framing the constant block's cap reserves, so TOPIC still renders
-        // whole within the allowance (Codex, Slice B review, round 2).
+        // whole within the allowance.
         let inventory = vec![ReusablePage {
             page: FetchedPage {
                 final_url: "https://reuters.com/a".into(),
@@ -5755,7 +5504,7 @@ mod tests {
         assert!(rendered.contains(&topic_section(&agenda[0])), "TOPIC was cut: {}", &rendered[rendered.len() - 600..]);
         assert!(rendered.contains("\nPAGES ALREADY RETRIEVED\n"));
         // A heading-and-omission block shows no page, so item 1 asks to search
-        // first rather than to read pages that are not there (`portfolio-v50`).
+        // first rather than to read pages that are not there.
         assert!(!rendered.contains("Read the pages under") && rendered.contains("1. Search for what the questions ask"), "{rendered}");
         assert_eq!(rendered.matches(INPUTS_CONTINUE_MARKER.trim()).count(), 1);
         assert!(rendered.chars().count() + countdown <= prefix_cap);
@@ -5764,10 +5513,10 @@ mod tests {
 
     #[test]
     fn synthesis_brief_admits_explicit_pages_before_reused_ones_when_pages_must_be_dropped() {
-        // Ruled 2026-09-27 (`portfolio-v49`): when even minimum bodies cannot
-        // all fit, admission runs explicit-first — this pass's own fetches land
-        // although they sit last in render order, and reused pages are the ones
-        // omitted; the brief stays within the guard.
+        // When even minimum bodies cannot all fit, admission runs
+        // explicit-first — this pass's own fetches land although they sit last
+        // in render order, and reused pages are the ones omitted; the brief
+        // stays within the guard.
         let budget = crate::portfolio::distill::input_budget_chars(
             crate::portfolio::pipeline::NUM_CTX_INTERPRET,
         );
@@ -5815,10 +5564,6 @@ mod tests {
 
     #[test]
     fn the_synthesis_message_is_two_parts_with_no_app_concept() {
-        // Part 1 the inputs — the holding header and FETCHED VALUES, EVIDENCE
-        // glossed once with the tier scale's polarity and no recency score,
-        // then TOPIC — and no instruction; Part 2 the write-up task with its
-        // length band and no return shape; no app word anywhere.
         let agenda = one_topic_agenda();
         let brief = HoldingBrief {
             header: WID_HEADER.into(),
@@ -5861,8 +5606,8 @@ mod tests {
         for section in ["\nFETCHED VALUES\n", "\nTOPIC\n", "\nEVIDENCE\n"] {
             assert!(part1.contains(section), "Part 1 lacks {section}: {part1}");
         }
-        // `portfolio-v49` (attempt-8 Finding 4): the evidence follows the header
-        // and the fetched values and precedes the topic's text.
+        // The evidence follows the header and the fetched values and precedes
+        // the topic's text.
         let at = |section: &str| part1.find(section).unwrap_or_else(|| panic!("{section}"));
         assert!(at("\nFETCHED VALUES\n") < at("\nEVIDENCE\n") && at("\nEVIDENCE\n") < at("\nTOPIC\n"), "{part1}");
         assert!(!part1.contains("SEARCHING") && !part2.contains("SEARCHING"), "{user}");
@@ -6222,11 +5967,6 @@ mod tests {
 
     #[test]
     fn the_synthesis_is_a_fresh_conversation_with_no_grammar_and_no_tools() {
-        // The gathering turns carry tools and no grammar; the synthesis
-        // conversation carries neither — a fresh two-message conversation
-        // (system + user) with no tool-call history for the write-up, then the
-        // same conversation's fourth message for the follow-up ask; the
-        // disconfirming pass's synthesis asks nothing.
         struct RecordingModel {
             inner: ScriptModel,
             // per issued call: (message count, tools present, grammar present)
@@ -6490,8 +6230,8 @@ mod tests {
         let p = plan_evidence(&[1000, 1000], 400, m);
         assert!(p.iter().all(|pl| pl.marker && !pl.dropped && pl.text == 200 - m));
         // Sub-marker shares: pages too small for even the marker are dropped
-        // entirely, not rendered marker-less as a deceptively-empty source
-        // (round-7). A 20-page packet in a 1000-char budget → 50-char shares.
+        // entirely, not rendered marker-less as a deceptively-empty source.
+        // A 20-page packet in a 1000-char budget → 50-char shares.
         let p = plan_evidence(&[1000; 20], 1000, m);
         assert!(p.iter().all(|pl| pl.dropped && !pl.marker && pl.text == 0));
     }
@@ -6543,7 +6283,7 @@ mod tests {
     fn dropped_pages_are_never_shown() {
         // One source whose header alone cannot fit is omitted; its URL must not
         // be shown, so the write-up can never name evidence the synthesis
-        // never saw (round-8).
+        // never saw.
         let budget = crate::portfolio::distill::input_budget_chars(
             crate::portfolio::pipeline::NUM_CTX_INTERPRET,
         );
@@ -6581,10 +6321,10 @@ mod tests {
 
     #[test]
     fn synthesis_brief_reclaims_omitted_headers_for_usable_evidence() {
-        // Regression for the post-Fix-B allocator review: reserving every header
-        // before planning bodies made a large cache-hit burst drop all pages and
-        // leave almost the whole input budget unused. The joint selector must
-        // keep a useful subset, reclaim omitted headers, and stay in bounds.
+        // Reserving every header before planning bodies would let a large
+        // cache-hit burst drop all pages and leave almost the whole input
+        // budget unused. The joint selector must keep a useful subset, reclaim
+        // omitted headers, and stay in bounds.
         let budget = crate::portfolio::distill::input_budget_chars(
             crate::portfolio::pipeline::NUM_CTX_INTERPRET,
         );
@@ -6672,7 +6412,7 @@ mod tests {
     #[test]
     fn synthesis_brief_renders_a_fitting_packet_whole() {
         // Sub-cap pages whose aggregate fits the budget must not be truncated —
-        // the marker reservation must not induce false truncation (round-4 F1).
+        // the marker reservation must not induce false truncation.
         let mut fetched = Vec::new();
         let mut page_texts = std::collections::HashMap::new();
         for i in 0..30 {
@@ -6715,7 +6455,7 @@ mod tests {
     fn synthesis_brief_preserves_short_pages_in_a_mixed_overflow() {
         // Mixed overflow: short pages are rendered whole and only the long ones
         // are truncated, with the rendered brief within budget — the marker
-        // reservation must not leave a preserved page short (round-5 F1).
+        // reservation must not leave a preserved page short.
         let budget = crate::portfolio::distill::input_budget_chars(
             crate::portfolio::pipeline::NUM_CTX_INTERPRET,
         );
@@ -6767,7 +6507,7 @@ mod tests {
         // but no body), one wholly empty. Only the body-bearing page is shown
         // and renders its title; both body-less pages are dropped, their URLs
         // never shown, with the drop recorded as a gap — a headline alone never
-        // makes a URL a source (attempt-4 review, Findings 1 and 3).
+        // makes a URL a source.
         let mut fetched = Vec::new();
         let mut page_texts = std::collections::HashMap::new();
         let mut page_titles = std::collections::HashMap::new();
@@ -6818,9 +6558,9 @@ mod tests {
 
     #[test]
     fn synthesis_brief_bounds_titles_and_holds_the_guard_under_a_page_burst() {
-        // Finding 1: an oversized title is capped in the header, and a burst of
-        // pages (cache hits spend no fetch budget, so the count is not bounded by
-        // the fetch ceiling) can never sum their headers past the input guard.
+        // An oversized title is capped in the header, and a burst of pages
+        // (cache hits spend no fetch budget, so the count is not bounded by the
+        // fetch ceiling) can never sum their headers past the input guard.
         // Joint selection drops the overflow while preserving usable bodies and
         // the rendered brief stays within budget.
         let budget = crate::portfolio::distill::input_budget_chars(
@@ -6868,8 +6608,8 @@ mod tests {
 
     #[test]
     fn synthesis_brief_carries_no_degradation_note() {
-        // The gathering degradation is a persisted gap only (`portfolio-v59`):
-        // the brief states no loss and never prescribes how to weigh it.
+        // The gathering degradation is a persisted gap only: the brief states
+        // no loss and never prescribes how to weigh it.
         let mut fetched = Vec::new();
         let mut page_texts = std::collections::HashMap::new();
         let url = "https://example.com/only".to_string();
@@ -6899,9 +6639,9 @@ mod tests {
 
     #[test]
     fn degradation_summary_covers_the_turn_cap_and_malformed_calls() {
-        // Finding 3(a)/(b): the turn-cap cut-off and malformed tool calls — which
-        // live only in the discarded gathering history — reach the summary the
-        // data-health read; a clean pass yields no summary.
+        // The turn-cap cut-off and malformed tool calls — which live only in
+        // the discarded gathering history — reach the summary the data-health
+        // read; a clean pass yields no summary.
         assert_eq!(PassDegradation::default().summary(), None);
         let d = PassDegradation {
             malformed_calls: 2,
@@ -6991,11 +6731,10 @@ mod tests {
 
     #[test]
     fn pass_brief_bounds_huge_write_ups() {
-        // Finding 1: the prefix — the write-ups so far and the follow-up — is
-        // model output with no grammar bound, so a run of huge write-ups must
-        // not push pass_brief (the gathering request's whole user message, and
-        // the synthesis prefix) past the input guard before any evidence is
-        // sized: each write-up is capped with the continuation line.
+        // The prefix — the write-ups so far and the follow-up — is model output
+        // with no grammar bound, so a run of huge write-ups must not push
+        // pass_brief past the input guard before any evidence is sized: each
+        // write-up is capped with the continuation line.
         let budget = crate::portfolio::distill::input_budget_chars(
             crate::portfolio::pipeline::NUM_CTX_INTERPRET,
         );
@@ -7050,10 +6789,10 @@ mod tests {
 
     #[test]
     fn a_budget_exhausted_gathering_pass_records_the_stop() {
-        // Finding 2: the fetch budget is exhausted exactly at a turn boundary (one
-        // fetch, ceiling of one), with no later in-turn call to trigger the
-        // mid-turn skip — the synthesis still runs over what landed and the
-        // data-health read learns gathering was forcibly stopped.
+        // The fetch budget is exhausted exactly at a turn boundary (one fetch,
+        // ceiling of one), with no later in-turn call to trigger the mid-turn
+        // skip — the synthesis still runs over what landed and the data-health
+        // read learns gathering was forcibly stopped.
         let model = ScriptModel::new(vec![
             turn_with_tools(json!([
                 {"function": {"name": "web_fetch", "arguments": {"url": "https://reuters.com/a"}}}
@@ -7079,10 +6818,10 @@ mod tests {
 
     #[test]
     fn a_malformed_non_array_tool_calls_reaches_the_degradation_gap() {
-        // Finding (fourth review): a present-but-non-array `tool_calls` (an object
-        // here) is malformed model output — the decoder already collapsed empty
-        // arrays and null to None — so it must be counted as degradation and reach
-        // data-health, not vanish silently. No page landed, so no synthesis.
+        // A present-but-non-array `tool_calls` (an object here) is malformed
+        // model output — the decoder already collapsed empty arrays and null to
+        // None — so it must be counted as degradation and reach data-health,
+        // not vanish silently. No page landed, so no synthesis.
         let model = ScriptModel::new(vec![turn_with_tools(json!({ "not": "an array" }))]);
         let web = ScriptWeb::new();
         let clock = FrozenClock(Duration::from_secs(10));
@@ -7102,8 +6841,7 @@ mod tests {
     fn a_degraded_gathering_pass_records_a_gap() {
         // End-to-end through run_holding: a pass whose search and fetch both fail
         // must record the degradation as a persisted gap, so data-health sees the
-        // partial coverage the discarded gathering transcript carried (attempt-4
-        // review, Finding 2).
+        // partial coverage the discarded gathering transcript carried.
         struct DegradedWeb;
         impl ResearchWeb for DegradedWeb {
             fn search(&self, _query: &str) -> Result<Vec<SearchHit>> {
@@ -7248,10 +6986,10 @@ mod tests {
 
     #[test]
     fn a_fired_research_retry_names_its_topic_and_leg() {
-        // Attempt-5 Finding 5: the retry gate must be handed a stage naming the
-        // topic and the leg — a gathering turn, the synthesis call or its
-        // follow-up ask — so a persisted retry event correlates with the topic
-        // it fired on, not only with the holding.
+        // The retry gate must be handed a stage naming the topic and the leg —
+        // a gathering turn, the synthesis call or its follow-up ask — so a
+        // persisted retry event correlates with the topic it fired on, not
+        // only with the holding.
         struct StageRecorder {
             inner: ScriptModel,
             fail_first: Mutex<RefCell<bool>>,
@@ -7539,8 +7277,7 @@ mod tests {
     }
 
     /// A topic's last pass under the depth cap asks for no follow-up and keeps
-    /// none, as the disconfirming pass (`portfolio-v60`, ruled 2026-09-29): its
-    /// question could never be spent.
+    /// none, as the disconfirming pass: its question could never be spent.
     #[test]
     fn the_last_pass_under_the_depth_cap_asks_for_no_followup() {
         struct Recording {
@@ -7906,11 +7643,6 @@ mod tests {
 
     #[test]
     fn the_gathering_message_is_two_parts_with_no_app_concept() {
-        // Part 1 the inputs — the holding header, FETCHED VALUES, NEWS LEADS
-        // without ids, on a continuity run the prior documents, then TOPIC
-        // (the tier scale rides the tool descriptions since v50) — and no
-        // instruction; Part 2 the task with the weighing clause, the per-reply
-        // bound and the stopping rule; no app word anywhere.
         let agenda = one_topic_agenda();
         let brief = HoldingBrief {
             header: WID_HEADER.into(),
@@ -7939,8 +7671,8 @@ mod tests {
         );
         assert!(part1.contains("- Widget beats — https://reuters.com/widget (fmp-news, 2026-08-20)\n"), "{part1}");
         assert!(!part1.contains("[seed-1]"), "{part1}");
-        // `portfolio-v50`: Part 1 carries no TOOL RESULTS legend; the tier scale
-        // and the page header's fields ride the tool descriptions.
+        // Part 1 carries no TOOL RESULTS legend; the tier scale and the page
+        // header's fields ride the tool descriptions.
         assert!(!part1.contains("TOOL RESULTS") && !part1.contains("0 is a primary source"), "{part1}");
         let tools = research_tools().to_string();
         assert!(
@@ -8002,8 +7734,8 @@ mod tests {
             fu.contains("Find what the web shows on the question under FOLLOW-UP for this holding, as of the date under HOLDING. The questions under TOPIC are what that question serves; this pass does not search them.\n"),
             "{fu}"
         );
-        // `portfolio-v51`: the items name the one question the pass pursues;
-        // `portfolio-v60`: by the heading it sits under.
+        // The items name the one question the pass pursues, by the heading it
+        // sits under.
         assert!(
             fu.contains("1. Search for what the question under FOLLOW-UP asks, then fetch and read the results most likely to answer it. Prefer a source tier nearer 0 and an extraction quality nearer 1 where the question allows;"),
             "{fu}"
@@ -8031,7 +7763,7 @@ mod tests {
             dc.contains("Find what the web shows on the question under TOPIC for this holding, as of the date under HOLDING. The write-ups under WRITE-UPS SO FAR are what that question tests: search for evidence against them, not for more evidence for them."),
             "{dc}"
         );
-        // `portfolio-v55`: the disconfirming items use the singular, as the brief carries one question.
+        // The disconfirming items use the singular, as the brief carries one question.
         assert!(
             dc.contains("1. Search for what the question asks, then fetch and read the results most likely to answer it. Prefer a source tier nearer 0 and an extraction quality nearer 1 where the question allows;")
                 && dc.contains("3. Stop when the question is answered, or when what remains cannot be found:")
@@ -8044,10 +7776,9 @@ mod tests {
 
     #[test]
     fn the_model_note_is_plain_words_and_the_summary_keeps_the_mechanism() {
-        // `portfolio-v43` (ruled 2026-09-17): two renderings from one record —
-        // the plain sentence (the no-page gap's parenthetical since the
-        // research chain) names no cap, bound or budget; the persisted summary
-        // still does.
+        // Two renderings from one record — the plain sentence (the no-page
+        // gap's parenthetical) names no cap, bound or budget; the persisted
+        // summary still does.
         assert_eq!(PassDegradation::default().model_note(), None);
         let d = PassDegradation {
             searches_empty: 1,
@@ -8159,13 +7890,10 @@ mod tests {
     }
 }
 
-/// Rendered samples of the research messages for the fixed-evidence
-/// harness's pins and prompt dump: the gathering passes (root, follow-up,
-/// continuity, disconfirming, a later topic with reused pages) and the
-/// synthesis conversation (the root write-up on a later topic, the follow-up
-/// pass, the disconfirming pass, and the follow-up ask) on hand-written
-/// leads, write-ups and pages — the prompts' shape on a holding, never a run's
-/// research. The live harness issues no research call.
+/// Rendered samples of the research messages for the fixed-evidence harness's
+/// pins and prompt dump, on hand-written leads, write-ups and pages — the
+/// prompts' shape on a holding, never a run's research. The live harness
+/// issues no research call.
 #[cfg(test)]
 pub(crate) mod samples {
     use super::*;
@@ -8173,10 +7901,9 @@ pub(crate) mod samples {
     use crate::web_research::registry::SourceAnnotation;
     use crate::web_research::search::SearchHit;
 
-    /// One rendered research call: the two messages, what the loop appends
-    /// before issue, and the request's protocol half — the tools on a
-    /// gathering turn, nothing on a synthesis call — under the stage label the
-    /// run gives it.
+    /// One rendered research call under the stage label the run gives it: the
+    /// two messages, what the loop appends before issue, and the protocol half
+    /// (the tools on a gathering turn, nothing on a synthesis call).
     pub(crate) struct Sample {
         pub label: String,
         pub stage: String,
@@ -8200,13 +7927,12 @@ pub(crate) mod samples {
         }
     }
 
-    /// The loop's per-turn countdown, for the docs examples' tool-turn shape.
     pub(crate) fn countdown(remaining: u32) -> ChatMessage {
         gathering_countdown(remaining)
     }
 
-    /// The assistant turn the loop echoes back before the results — the
-    /// model's accepted tool calls, verbatim — for the docs examples.
+    /// The assistant turn the loop echoes back before the results, for the
+    /// docs examples.
     pub(crate) fn tool_call_turn() -> ChatMessage {
         ChatMessage::assistant_with_tool_calls(
             "",
@@ -8217,7 +7943,6 @@ pub(crate) mod samples {
         )
     }
 
-    /// Two hand-written headlines for the stock sample.
     pub(crate) fn stock_leads(stub: bool) -> Vec<NewsLead> {
         vec![
             NewsLead {
@@ -8235,8 +7960,7 @@ pub(crate) mod samples {
         ]
     }
 
-    /// Two hand-written headlines for a bond-fund holding, so the fund sample
-    /// reads as one.
+    /// Headlines for a bond-fund holding, so the fund sample reads as one.
     pub(crate) fn fund_leads(stub: bool) -> Vec<NewsLead> {
         vec![
             NewsLead {
@@ -8254,8 +7978,6 @@ pub(crate) mod samples {
         ]
     }
 
-    /// The topic's write-up from its root pass — what a follow-up pass
-    /// rewrites whole.
     pub(crate) fn write_up_so_far(stub: bool) -> String {
         prose(
             stub,
@@ -8264,8 +7986,6 @@ pub(crate) mod samples {
         )
     }
 
-    /// The follow-up question the root pass's synthesis answered its second
-    /// message with.
     pub(crate) fn followup_question(stub: bool) -> String {
         prose(
             stub,
@@ -8274,8 +7994,6 @@ pub(crate) mod samples {
         )
     }
 
-    /// This run's write-ups so far, each under its topic — the disconfirming
-    /// pass's subject.
     pub(crate) fn write_ups_so_far(stub: bool) -> Vec<(String, String)> {
         vec![
             ("Competitive / business position".to_string(), write_up_so_far(stub)),
@@ -8295,7 +8013,6 @@ pub(crate) mod samples {
     pub(crate) const WSJ_URL: &str = "https://www.wsj.com/business/autos/tesla-europe-byd-august-2026";
     pub(crate) const WSJ_TEXT: &str = "Sign in to continue reading. Subscribe for full access to The Wall Street Journal.";
 
-    /// The served page's extracted text, or its stub.
     pub(crate) fn ir_text(stub: bool) -> String {
         prose(stub, "the page's extracted article text — a primary-source results release", IR_TEXT)
     }
@@ -8356,10 +8073,9 @@ pub(crate) mod samples {
         research_retry_stage(&crate::portfolio::holding_step_key(symbol), topic_key, leg)
     }
 
-    /// Gathering samples: the root pass on a first analysis, the follow-up
-    /// pass, the root pass on a continuity run (over `continuity`, the brief
-    /// carrying the prior documents), the disconfirming pass, and a later
-    /// topic with already retrieved text.
+    /// Gathering samples: the root pass, the follow-up pass, the root pass on
+    /// a continuity run (over `continuity`), the disconfirming pass, and a
+    /// later topic with already retrieved text.
     pub(crate) fn gathering_messages(
         symbol: &str,
         brief: &HoldingBrief,
@@ -8400,9 +8116,7 @@ pub(crate) mod samples {
 
     /// The synthesis conversation's first message on one topic, over two
     /// hand-written pages — the first reused from an earlier topic, the second
-    /// fetched by this pass (`portfolio-v49`: reused pages lead, in
-    /// first-retrieval order): the root, a follow-up, and the disconfirming
-    /// pass.
+    /// fetched by this pass: the root, a follow-up, and the disconfirming pass.
     pub(crate) fn synthesis_messages(
         symbol: &str,
         brief: &HoldingBrief,
@@ -8431,7 +8145,7 @@ pub(crate) mod samples {
 
     /// The synthesis conversation's second message on a root pass: the first
     /// message, the write-up echoed as the assistant's turn, then the
-    /// follow-up ask — the reply the question verbatim or the one word `none`.
+    /// follow-up ask.
     pub(crate) fn followup_ask_sample(
         symbol: &str,
         brief: &HoldingBrief,
@@ -8453,7 +8167,6 @@ pub(crate) mod samples {
         }
     }
 
-    /// The synthesis message over the two sample pages.
     fn synthesis_user(c: &PassContext<'_>, stub: bool) -> String {
         let ir = page(IR_URL, &ir_title(stub), &ir_text(stub), 0.92, false);
         let wsj = page(WSJ_URL, &wsj_title(stub), &wsj_text(stub), 0.04, true);
@@ -8474,8 +8187,8 @@ pub(crate) mod samples {
         synthesis_brief(c, &fetched, &explicit, &texts, &meta, &mut gaps, &mut shown)
     }
 
-    /// What a gathering turn gets back: a search result set, an empty one, a
-    /// failed search, a served page, a thin stub and a failed fetch.
+    /// One tool result per shape: a search result set, an empty one, a failed
+    /// search, a served page, a thin stub and a failed fetch.
     pub(crate) fn tool_results(stub: bool) -> Vec<(String, String)> {
         let hits = vec![
             SearchHit { title: prose(stub, "result title", "Tesla Q2 2026 Update"), url: IR_URL.into(), host: "ir.tesla.com".into(), snippet: Some(prose(stub, "the result's snippet", "Total revenues of $25.5B, up 3% YoY. Automotive gross margin excluding regulatory credits was 14.6%...")), published: Some("2026-07-22".into()), tier: 0 },

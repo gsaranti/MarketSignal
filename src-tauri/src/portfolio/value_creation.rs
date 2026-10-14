@@ -1,19 +1,9 @@
-//! The **value-creation read** — the shared engine's second engine lens
-//! (`docs/trade-opportunities.md` §The lenses, §Starting parameters;
-//! `docs/trade-opportunities-workflow.md` §Step 5c): whether the business earns
-//! more on its capital than that capital costs (ROIC against a CAPM-based cost of
-//! capital), with **R&D capitalized** so a research-heavy name isn't mis-scored as
-//! unprofitable; the reinvestment rate and the growth it compounds at
-//! (g ≈ ROIC × reinvestment); owner earnings; and the measurable moat proxies the
-//! thesis document reads — classifying the moat by source stays the model's.
-//!
-//! Pure over [`CompanyFinancials`], the profile sector and the run-level `DGS10`,
-//! so every leg is unit-testable offline. A leg whose inputs are missing reads
-//! absent with a typed reason ([`ValueCreationGap`]), never a guessed value.
-//!
-//! The module also owns the shared engine's own-history unit, the trailing-twelve-
-//! month statement window ([`ttm_windows`]), which the factor composite
-//! (`portfolio::factors`) reads too.
+//! The value-creation read (`docs/trade-opportunities.md` §The lenses,
+//! §Starting parameters; `docs/trade-opportunities-workflow.md` §Step 5c): ROIC
+//! against a CAPM-based cost of capital with R&D capitalized, reinvestment and
+//! growth, owner earnings and the moat proxies. A missing leg reads absent with
+//! a typed reason ([`ValueCreationGap`]), never a guessed value. Also owns the
+//! trailing-twelve-month window ([`ttm_windows`]) the factor composite reads.
 
 use std::collections::HashMap;
 
@@ -23,8 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::engine::{quarters_contiguous, CompanyFinancials, FILING_GRACE_DAYS};
 
 // ---------------------------------------------------------------------------
-// Calibration surface — every value drafted, calibratable
-// (`docs/trade-opportunities.md` §Starting parameters, the value-creation row).
+// Calibration surface (`docs/trade-opportunities.md` §Starting parameters).
 // ---------------------------------------------------------------------------
 
 /// Straight-line amortizable life of R&D, in years — uniform across names, and
@@ -116,7 +105,6 @@ pub fn ttm_windows(fin: &CompanyFinancials) -> Vec<TtmWindow> {
             .then_with(|| b.filing_date.cmp(&a.filing_date))
     });
     income.dedup_by(|a, b| a.period_end == b.period_end);
-    // The newest contiguous run: extend while the prefix stays consecutive.
     let mut run = 0;
     while run < income.len()
         && quarters_contiguous(income[..=run].iter().map(|r| r.period_end.as_str()))
@@ -125,8 +113,6 @@ pub fn ttm_windows(fin: &CompanyFinancials) -> Vec<TtmWindow> {
     }
     let income = &income[..run];
 
-    // Cash-flow and balance-sheet rows by period end, the latest filing winning
-    // a duplicated period.
     let mut cash_flow = HashMap::new();
     for row in &fin.quarterly_cash_flow {
         let keep = cash_flow

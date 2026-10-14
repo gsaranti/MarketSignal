@@ -1,16 +1,9 @@
-//! The fixed evidence set from big-run attempt 6 — the verification substrate the
-//! local-model-call slices are admitted against (fix list §8.1 / §8.2, ruled
-//! 2026-09-15; `docs/verification/2026-09-16-ledger-conditions-and-action-packet.md`).
-//!
-//! Each fixture under `fixtures/attempt-6/` is **reconstructed, not replayed**:
-//! reduced from a holding's persisted row (the verdict digest — its model arm
-//! re-shaped by hand into a thesis document and a typed appendix — the engine
-//! output assembled from the audit, the distilled research text) with the
-//! position's economics replaced by synthetic values (ruled 2026-09-16, F8).
-//! The offline tests render the thesis-document, appendix and action messages;
-//! the `#[ignore]`d live harness issues the thesis conversation and the action
-//! call against the local daemon on the same evidence and prints the
-//! per-holding table the §8.2 admission read is made from.
+//! The fixed evidence set: each fixture under `fixtures/attempt-6/` is
+//! reconstructed from a holding's persisted row, not replayed, with the
+//! position's economics replaced by synthetic values. The offline tests render
+//! the thesis-document, appendix and action messages; the `#[ignore]`d live
+//! harness issues the same calls against the local daemon and prints a
+//! per-holding table.
 
 use super::engine::{self, CompanyFinancials, EngineOutput};
 use super::pipeline::{
@@ -30,23 +23,18 @@ struct Fixture {
     asset_class: AssetClass,
     is_fund: bool,
     statement_basis: Option<StatementBasis>,
-    /// The balance-sheet instants' equity source the run stamped — present on
-    /// every holding whose computed metrics carry debt / equity or price / book,
-    /// since the live dossier stamps the source wherever an equity line reached
-    /// the engine (fix list 8.5, ruled 2026-09-17: the harness must not render
-    /// a computed D/E beside a no-balance-sheet line the run never showed).
+    /// Present on every holding whose computed metrics carry debt / equity or
+    /// price / book, so the harness never renders a computed D/E beside a
+    /// no-balance-sheet line the run never showed.
     equity_source: Option<crate::portfolio::EquitySource>,
     spot: f64,
     /// The dated close the run authored against — seeded as the one daily
     /// close of the reconstructed financials.
     authoring_close: engine::DatedValue,
     synthetic_position: SyntheticPosition,
-    /// The persisted verdict, its model arm re-shaped by hand: the thesis
-    /// document composed from attempt 6's persisted prose (the thesis, the
-    /// must-lines, the scenarios, the summary and the target rationale), the
-    /// appendix from the persisted conviction with the twelve-month base as
-    /// its one expected price (the three-month and three-year null — attempt
-    /// 6 authored no such prices).
+    /// The persisted verdict, its model arm re-shaped by hand into a thesis
+    /// document and an appendix whose twelve-month base is its one expected
+    /// price (the three-month and three-year null: the run authored none).
     disposition: VerdictDisposition,
     engine_output: EngineOutput,
     research_combined: String,
@@ -97,10 +85,8 @@ pub(crate) fn analysis_of(d: &super::dossier::HoldingDossier, text: &str) -> sup
     }
 }
 
-/// The thesis-document input over a fixture on a first analysis: the engine
-/// output and the distilled research as the run persisted them, no overlay,
-/// no soft flags (the reconstructed financials carry no balance rows or
-/// scores), no prior.
+/// The thesis-document input over a fixture on a first analysis; the
+/// reconstructed financials carry no balance rows or scores, so no soft flags.
 fn thesis_input<'a>(f: &'a Fixture, d: &'a super::dossier::HoldingDossier) -> ThesisInput<'a> {
     ThesisInput {
         dossier: d,
@@ -116,11 +102,10 @@ fn thesis_input<'a>(f: &'a Fixture, d: &'a super::dossier::HoldingDossier) -> Th
     }
 }
 
-/// A holding dossier reconstructed at bounded fidelity: identity, the synthetic
-/// position, the spot, the stamped basis, the authoring close as the one dated
-/// price print, persisted options readings, and the house view. The statement rows and the fund context are not
-/// persisted and stay absent, so the filing-cadence series carry no observation
-/// and the fund-specific prompt sections do not render.
+/// A holding dossier reconstructed at bounded fidelity. The statement rows and
+/// the fund context are not persisted and stay absent, so the filing-cadence
+/// series carry no observation and the fund-specific prompt sections do not
+/// render.
 fn dossier_of(f: &Fixture, tax_sensitive: bool) -> super::dossier::HoldingDossier {
     let financials = CompanyFinancials {
         symbol: f.symbol.clone(),
@@ -131,8 +116,8 @@ fn dossier_of(f: &Fixture, tax_sensitive: bool) -> super::dossier::HoldingDossie
         ..Default::default()
     };
     let mut d = pipeline::tests::dossier(f.asset_class, financials);
-    // The generic dossier carries sample options readings. These fixtures
-    // persist the actual readings, which must reach the interpretation packet.
+    // The generic dossier carries sample options readings; the fixtures'
+    // persisted readings must reach the interpretation packet instead.
     if let VerdictDisposition::Priced(graded) = &f.disposition {
         d.options_signal = graded.options_signal.clone();
     } else {
@@ -151,29 +136,25 @@ fn dossier_of(f: &Fixture, tax_sensitive: bool) -> super::dossier::HoldingDossie
     d.position.current_price = Some(f.spot);
     d.profile.tax_sensitive = tax_sensitive;
     d.house_view = serde_json::from_str::<HouseView>(HOUSE_VIEW).expect("house view");
-    // The attempt-6 run date, the fixtures' provenance (`portfolio-v43`).
+    // The run date the fixtures were persisted under.
     d.analysis_date = "2026-09-16".into();
     d
 }
 
-// ---- The synthetic role/risk fixture (`portfolio-v42`, ruled 2026-09-17) ----
+// ---- The synthetic role/risk fixture ----
 
-/// The one role/risk case the harness carries — synthetic, not reconstructed:
-/// attempt 6 priced all three of its funds, so no persisted role/risk row
-/// exists. A total bond market ETF at a plausible spot, its reported asset
-/// class routing it to the role/risk readout through the fund engine itself, a
-/// hand-written research summary, the fixed set's house view, and a
-/// hand-written Treasury positioning line; labelled synthetic wherever it
-/// prints (the README, the dump, the live table).
+/// The one role/risk case the harness carries — synthetic, not reconstructed,
+/// since the fixtures' run priced all three of its funds and persisted no
+/// role/risk row. A total bond market ETF routed to the role/risk readout
+/// through the fund engine itself; labelled synthetic wherever it prints.
 struct SyntheticRoleRisk {
     dossier: super::dossier::HoldingDossier,
     readout: super::fund::RoleRiskReadout,
     research: &'static str,
 }
 
-/// The synthetic research summary — plain fund facts in the distillation's
-/// register, carrying no banned word so the lexicon scan reads the app's own
-/// sentences alone.
+/// Plain fund facts in the distillation's register, carrying no banned word so
+/// the lexicon scan reads the app's own sentences alone.
 const SYNTHETIC_ROLE_RISK_RESEARCH: &str = "The Vanguard Total Bond Market ETF tracks the \
 Bloomberg U.S. Aggregate Float Adjusted Index, holding about 11,000 investment-grade, taxable \
 U.S. dollar bonds: roughly 45% U.S. Treasuries and agencies, 25% corporate bonds and 20% \
@@ -339,9 +320,7 @@ impl HoldingAnalyst for RoleRiskCapture {
     }
 }
 
-/// The synthetic case's continuity messages: a stub first run on 2026-09-03,
-/// then the same fund with that verdict as its prior, the system and user
-/// messages captured on the second run.
+/// The system and user messages captured on the synthetic case's second run.
 fn synthetic_role_risk_continuity_messages() -> (String, String) {
     let capture = synthetic_role_risk_second_run();
     (
@@ -394,8 +373,6 @@ fn reconstructed_interpretation_uses_the_persisted_options_evidence() {
         let d = dossier_of(&f, true);
         let prompt = thesis_user_prompt(&thesis_input(&f, &d));
         let options = &graded.options_signal;
-        // The OPTIONS ACTIVITY section (`portfolio-v40`): the persisted values
-        // with their unit and polarity, no grade-input disclaimer.
         let activity = format!(
             "\nOPTIONS ACTIVITY\nput/call volume {:.3}, put/call open interest {:.3}, implied \
              volatility {:.3}, IV skew 0.000 (mean put IV minus mean call IV, in IV's decimal \
@@ -429,9 +406,8 @@ fn attempt_6_action_packets_carry_the_position_and_are_tax_invariant() {
         let taxable = render(&dossier_of(&f, true));
         let exempt = render(&dossier_of(&f, false));
         assert_eq!(taxable, exempt, "{}: the tax posture must not change the packet", f.symbol);
-        // The position's economics render once, under POSITION (`portfolio-v71`,
-        // ruled 2026-10-08): the synthetic ten units and the synthetic P/L's
-        // sign; a repriced position changes POSITION's lines and nothing else.
+        // The position's economics render once, under POSITION; a repriced
+        // position changes POSITION's lines and nothing else.
         assert_eq!(taxable.matches("\nPOSITION\n").count(), 1, "{}: {taxable}", f.symbol);
         assert!(taxable.contains("\nShares held: 10. Cost basis: $"), "{}: {taxable}", f.symbol);
         let p = &f.synthetic_position;
@@ -444,16 +420,14 @@ fn attempt_6_action_packets_carry_the_position_and_are_tax_invariant() {
         let repriced = render(&repriced);
         assert_ne!(taxable, repriced, "{}", f.symbol);
         assert_eq!(without_position(&taxable), without_position(&repriced), "{}: account economics leaked past POSITION", f.symbol);
-        // Case-insensitive outside POSITION: the app-rendered lines never carry
-        // these, and the fixture's model-authored prose is scrubbed of them; the
-        // tax row renders nowhere.
+        // Case-insensitive outside POSITION: the fixture's model-authored prose
+        // is scrubbed of these too; the tax row renders nowhere.
         let outside = without_position(&taxable).to_lowercase();
         for absent in ACCOUNT_ECONOMICS_PHRASES.iter().copied().chain(["- tax", "quantity:"]) {
             assert!(!outside.contains(absent), "{}: {absent} leaked: {taxable}", f.symbol);
         }
         assert!(!taxable.to_lowercase().contains("- tax"), "{}: {taxable}", f.symbol);
-        // The set once as one data line (`portfolio-v41`); the sub-scores'
-        // polarity gloss stays on the thesis message (ruled 2026-10-08).
+        // The sub-scores' polarity gloss stays on the thesis message.
         assert_eq!(taxable.matches("\nSUPPORTED ACTIONS\n").count(), 1, "{}", f.symbol);
         assert_eq!(taxable.matches("higher is better on every axis").count(), 0, "{}", f.symbol);
         // The app-appended caveat for the rung the run chose, on the synthetic P/L.
@@ -468,10 +442,9 @@ fn attempt_6_action_packets_carry_the_position_and_are_tax_invariant() {
     }
 }
 
-/// The live read's prose diagnostics, printed beside a model-authored field and
-/// never a gate: an account-economics phrase (fix list 3.2) and any banned
-/// word (`portfolio-v41`, ruled 2026-09-17 F3 — the offline pin scans the app's
-/// own sentences, so the model's prose is read here).
+/// The live harness's prose diagnostics, printed beside a model-authored field
+/// and never a gate: the offline pin scans the app's own sentences, so the
+/// model's prose is read here.
 fn prose_diagnostics(label: &str, text: &str) {
     let lower = text.to_lowercase();
     if let Some(phrase) = ACCOUNT_ECONOMICS_PHRASES.iter().find(|p| lower.contains(**p)) {
@@ -484,8 +457,8 @@ fn prose_diagnostics(label: &str, text: &str) {
 }
 
 /// Phrases a rationale carries when it argues from what the engine permits
-/// rather than from the evidence — the 3.9 read's permission scan, printed by
-/// the live harness beside each action line and never a gate.
+/// rather than from the evidence — printed by the live harness beside each
+/// action line and never a gate.
 const PERMISSION_PHRASES: [&str; 11] = [
     "engine set",
     "engine admits",
@@ -500,11 +473,9 @@ const PERMISSION_PHRASES: [&str; 11] = [
     "outside the set",
 ];
 
-/// The phrases no model-facing packet may carry once account economics leave
-/// the intrinsic packets (fix list 3.2, `portfolio-v38`): the header's own
-/// labels, the position's P/L vocabulary, and the sized-overlay form. Shared
-/// by the offline isolation test and the live harness's prose scan. The bare
-/// word "unrealized" is deliberately not listed: the distilled research can
+/// The phrases no model-facing packet may carry: the header's own labels, the
+/// position's P/L vocabulary, and the sized-overlay form. The bare word
+/// "unrealized" is deliberately not listed: the distilled research can
 /// legitimately carry an issuer's own "realized and unrealized capital losses"
 /// (ARKF's fixture does), which is the issuer's condition, not the account's.
 pub(crate) const ACCOUNT_ECONOMICS_PHRASES: [&str; 10] = [
@@ -520,13 +491,8 @@ pub(crate) const ACCOUNT_ECONOMICS_PHRASES: [&str; 10] = [
     "/share cost",
 ];
 
-/// Fix list 3.2 (ruled 2026-09-16): both intrinsic interpretation packets are
-/// investment-only — the priced prompt on the six attempt-6 fixtures and the
-/// role/risk prompt on a synthetic fund — so account economics cannot change
-/// the packet and no economics phrase renders. The header, the direction-only
-/// position line and the unsized overlay are the app-rendered routes this
-/// pins; the model-authored prose the packets embed is scrubbed in the
-/// fixtures and scanned live.
+/// Pins the app-rendered routes alone; the model-authored prose the packets
+/// embed is scrubbed in the fixtures and scanned live.
 #[test]
 fn attempt_6_interpretation_packets_carry_no_account_economics() {
     let repriced = |f: &Fixture| {
@@ -554,9 +520,9 @@ fn attempt_6_interpretation_packets_carry_no_account_economics() {
         // §Holdings change tracking).
         assert!(!taxable.contains("This is the first analysis of this holding."), "{taxable}");
         assert!(!taxable.contains("position is unchanged"), "{taxable}");
-        // Fix list 8.5 (portfolio-v39): a fixture carrying a computed debt / equity
-        // stamps the equity source its live dossier would have, so the packet's
-        // balance-sheet line never contradicts its own computed metrics.
+        // A fixture carrying a computed debt / equity stamps the equity source
+        // its live dossier would have, so the packet's balance-sheet line never
+        // contradicts its own computed metrics.
         match (f.engine_output.metrics.debt_to_equity, f.equity_source) {
             // A fund has no statement series: its line names the market
             // metrics' cadence and the expense ratio's source instead.
@@ -578,7 +544,7 @@ fn attempt_6_interpretation_packets_carry_no_account_economics() {
             (de, src) => panic!("{}: debt/equity {de:?} beside equity source {src:?}", f.symbol),
         }
     }
-    // The role/risk branch on a synthetic fund (attempt 6 produced none).
+    // The role/risk branch on a synthetic fund (the fixtures' run produced none).
     let financials = CompanyFinancials { symbol: "BND".into(), current_price: Some(72.0), ..Default::default() };
     let mut fund = pipeline::tests::dossier(AssetClass::Etf, financials);
     fund.position.symbol = "BND".into();
@@ -615,10 +581,8 @@ fn the_fixed_set_is_labelled_reconstructed_and_carries_no_account_economics() {
         // never have ridden in (the extracts' quantities were fractional).
         let f: Fixture = serde_json::from_str(json).unwrap();
         assert_eq!(f.synthetic_position.quantity, 10.0, "{sym}");
-        // The model-authored strings that referenced the account's position —
-        // the rationale's P/L sign, a self-assessment's implied entry, a
-        // summary's per-share cost — are scrubbed, so no economics phrase
-        // survives outside the origin label (review R1, 2026-09-16).
+        // The model-authored strings are scrubbed of the account's position, so
+        // no economics phrase survives outside the origin label.
         let body: serde_json::Value = serde_json::from_str(json).unwrap();
         let mut text = String::new();
         fn collect(v: &serde_json::Value, key: &str, out: &mut String) {
@@ -639,11 +603,9 @@ fn the_fixed_set_is_labelled_reconstructed_and_carries_no_account_economics() {
     }
 }
 
-/// The §8.2 admission harness: the thesis-document conversation and the action
-/// call issued live against the local daemon on the reconstructed packets, `N`
-/// repeats each, and a per-holding table printed for the human read — the
-/// document's opening and its appendix beside the computed bands, the rung
-/// per repeat, and the rung under the tax and cost variants.
+/// The live harness: the thesis-document conversation and the action call
+/// issued against the local daemon on the reconstructed packets, `N` repeats
+/// each, and a per-holding table printed for the human read.
 ///
 /// Requires the local Ollama daemon up with the configured roster present. Run:
 ///   `MARKET_SIGNAL_LOCAL_EVAL_REPEATS=3 cargo test fixed_evidence_live -- --ignored --nocapture`
@@ -651,9 +613,8 @@ fn the_fixed_set_is_labelled_reconstructed_and_carries_no_account_economics() {
 /// `MARKET_SIGNAL_LOCAL_EVAL_THOUGHT_DIR=<dir>` also captures every call's
 /// thinking, fenced, into `<dir>/<stamp>-fixedevi/holding-<SYM>.txt` through
 /// the same [`crate::thought_log::ThoughtLogSink`] the dev app's debug capture
-/// uses, so the attempt-6 per-call segmentation reads the files unchanged
-/// (re-think marker counts stay a diagnostic beside the table, never the gate
-/// — fix list 8.4).
+/// uses (re-think marker counts are a diagnostic beside the table, never a
+/// gate).
 #[test]
 #[ignore = "hits the live local daemon; set MARKET_SIGNAL_LOCAL_* and run with --nocapture"]
 fn fixed_evidence_live() {
@@ -724,9 +685,8 @@ fn fixed_evidence_live() {
         );
 
         // The thesis conversation, N repeats. The first completed one also
-        // feeds a fresh-verdict action call below (the §3 slice's Codex plan
-        // review): the action reads the document this conversation wrote, not
-        // the fixture's persisted one.
+        // feeds a fresh-verdict action call below: the action reads the
+        // document this conversation wrote, not the fixture's persisted one.
         let mut fresh: Option<PricedModelArm> = None;
         let engine_base = f.engine_output.price_targets.twelve_month.as_ref().map(|t| format!("{:.2}", t.base)).unwrap_or_else(|| "(gap)".into());
         for r in 1..=repeats {
@@ -748,8 +708,6 @@ fn fixed_evidence_live() {
                 price(a.expected_price_12m),
                 price(a.expected_price_3y),
             );
-            // The document's opening and closing paragraphs, with the prose
-            // diagnostics — never a gate.
             let paragraphs: Vec<&str> = arm.thesis_document.split("\n\n").collect();
             if let Some(first) = paragraphs.first() {
                 println!("    opens: {}", first.replace('\n', " "));
@@ -782,9 +740,6 @@ fn fixed_evidence_live() {
                         engine_set.iter().map(Action::as_kebab).collect::<Vec<_>>().join(", "),
                         graded.action.as_kebab(), decision.rationale
                     );
-                    // The 3.9 read's permission scan (a diagnostic, never a gate):
-                    // a rationale that argues from what the computed read permits
-                    // rather than from the evidence names itself here.
                     let lower = decision.rationale.to_lowercase();
                     if let Some(phrase) = PERMISSION_PHRASES.iter().find(|p| lower.contains(**p)) {
                         println!("    !! permission phrase in rationale: \"{phrase}\"");
@@ -814,12 +769,9 @@ fn fixed_evidence_live() {
         ctx.step_finished(step_key, "ok", None);
     }
 
-    // The synthetic role/risk case (`portfolio-v42`, ruled 2026-09-17): one bond
-    // fund with hand-written research, labelled synthetic — the branch's only
-    // live exercise until a run supplies a real role/risk holding. Each repeat
-    // is one thesis document and one action call on that repeat's assembled
-    // verdict (ruling 11; Codex 2026-09-17), so the action's variability is
-    // measured beside the document's.
+    // The synthetic role/risk case: each repeat is one thesis document and one
+    // action call on that repeat's assembled verdict, so the action's
+    // variability is measured beside the document's.
     if only.as_ref().is_none_or(|o| o.iter().any(|s| s == "BND")) {
         let fx = synthetic_role_risk_fixture();
         let step_key = crate::portfolio::holding_step_key("BND");
@@ -853,8 +805,6 @@ fn fixed_evidence_live() {
             }
             prose_diagnostics("thesis document", &document);
 
-            // The action call on this repeat's verdict — the pipeline's own
-            // assembly over the document just written.
             let rr = pipeline::role_risk_verdict_from_model_arm(&fx.readout, document);
             let started = std::time::Instant::now();
             match analyst.decide_action(&ActionInput {
@@ -884,26 +834,23 @@ fn fixed_evidence_live() {
     }
 }
 
-// ---- The `portfolio-v40` structural pins: the two-part frame and the banned lexicon ----
+// ---- Structural pins: the two-part frame and the banned lexicon ----
 
-/// The words the interpretation message must not contain (`portfolio-v40`,
-/// ruled 2026-09-17): each is an app concept the model would reason about
-/// instead of using. Matched as whole words, case-insensitive, over the
-/// message's own sentences on the fixed set (the research and market text
-/// are fixture-controlled here, so a hit is the app's).
+/// The words the interpretation message must not contain: each is an app
+/// concept the model would reason about instead of using. Matched as whole
+/// words, case-insensitive; the research and market text are
+/// fixture-controlled here, so a hit is the app's.
 pub(crate) const BANNED_LEXICON: [&str; 19] = [
     "arm", "arms", "engine", "seam", "the app", "deterministic", "this stage",
     "validator", "rejected", "downgrade", "downgraded", "baseline",
     "v1 mechanics", "clamp", "clamped", "degenerate", "inverse map", "trough", "targets-v",
 ];
 
-/// The words of the engine's pre-v42 evidence-gap strings — the app explaining
-/// its own routing — which no rendered packet may carry (ruled 2026-09-17; the
-/// strings are data statements on every surface since `portfolio-v42`).
+/// Words of the app explaining its own routing, which no rendered packet may
+/// carry: an evidence-gap string is a data statement.
 pub(crate) const GAP_ROUTING_WORDS: [&str; 6] =
     ["on-plan", "honestly", "degrade", "unsound", "this pipeline", "current data surface"];
 
-/// Assert that a rendered packet carries none of [`GAP_ROUTING_WORDS`].
 /// Every Part 1 heading a thesis-document message's Part 2 names renders in
 /// Part 1 — no item points at absent content.
 fn assert_part2_headings_render(label: &str, part1: &str, part2: &str) {
@@ -945,11 +892,7 @@ pub(crate) fn banned_hits(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Every thesis-document message on the fixed set is two marked parts in
-/// order, Part 1 carrying the input sections in the doc's order and no
-/// instruction, Part 2 the document's items in order and the length band
-/// (no JSON shape — the document is free prose) — and neither part, nor the
-/// system prompt, nor the appendix message, carries a banned word.
+/// Part 2 carries no JSON shape: the document is free prose.
 #[test]
 fn attempt_6_thesis_messages_are_two_parts_with_no_app_concept() {
     for f in fixtures() {
@@ -961,8 +904,6 @@ fn attempt_6_thesis_messages_are_two_parts_with_no_app_concept() {
             .split_once("======== PART 2: TASK ========")
             .unwrap_or_else(|| panic!("{}: no Part 2 marker\n{user}", f.symbol));
         assert!(part1.starts_with("======== PART 1: INPUTS ========"), "{}: {part1}", f.symbol);
-        // The sections in page order: the header, the fetched data, the computed
-        // reads under one heading, the market analysis, this run's analysis.
         let mut last = 0;
         for section in [
             "HOLDING\n", "FETCHED VALUES\n", "COMPUTED\n", "METRICS\n", "SCORES\n",
@@ -978,27 +919,17 @@ fn attempt_6_thesis_messages_are_two_parts_with_no_app_concept() {
         // A debut carries no PRIOR THESIS and no continuity clause.
         assert!(!part1.contains("PRIOR THESIS"), "{}: {part1}", f.symbol);
         assert!(!part2.contains("PRIOR THESIS"), "{}: {part2}", f.symbol);
-        // The scores line carries the grade and the imputed disclosure as data.
         let scores = part1.split("\nSCORES\n").nth(1).unwrap().split("\nPRICE BANDS").next().unwrap();
         assert!(scores.contains(&format!("Grade {}.", f.engine_output.grade.as_str())), "{}: {scores}", f.symbol);
         assert_eq!(scores.contains("One score is imputed."), f.engine_output.low_confidence_grade);
-        // The three bands with their method clauses, the three-year leg as the
-        // extrapolation it is, and the capital-efficiency read with its state.
         assert!(part1.contains("- three-month: bear ") && part1.contains("prorated to three months"), "{}", f.symbol);
         assert!(part1.contains("- three-year: bear ") && part1.contains("extrapolation"), "{}", f.symbol);
         assert!(part1.contains("; hurdle ") && part1.contains("; read: "), "{}: {part1}", f.symbol);
-        // FETCHED VALUES states the quote, the fetched closes and the Treasury
-        // prints as data; the reconstructed financials carry no statement rows.
         assert!(part1.contains(&format!("Quote: {:.2} per share (the live print, undated).\n", f.spot)), "{}: {part1}", f.symbol);
         assert!(part1.contains("Treasury yields (FRED): 10-year "), "{}: {part1}", f.symbol);
-        // The fund section renders where the fixture carries fund context; a
-        // stock never has one.
         assert!(f.is_fund || !part1.contains("\nFUND\n"), "{}", f.symbol);
-        // Part 1 instructs nothing: no "Return", no "you", no numbered task item.
         assert!(!part1.contains("Return "), "{}: Part 1 instructs\n{part1}", f.symbol);
         assert!(!part1.to_lowercase().contains("your "), "{}: Part 1 addresses the model\n{part1}", f.symbol);
-        // Part 2: the document's items in order, each naming a Part 1 section,
-        // the length band, and no JSON shape.
         let mut last = 0;
         for item in [
             "\n1. The thesis — ", "\n2. The key drivers — ", "\n3. The bear, base and bull scenarios — ",
@@ -1025,10 +956,8 @@ fn attempt_6_thesis_messages_are_two_parts_with_no_app_concept() {
             assert!(hits.is_empty(), "{} {label} prompt carries {hits:?}\n{text}", f.symbol);
         }
         assert_no_routing_words(&f.symbol, &user);
-        // The request pair: the thesis request carries no grammar under
-        // thinking; the appendix request continues the conversation — the same
-        // system and user messages, the document as the assistant's turn, the
-        // transcription ask — under the nullable grammar with thinking off.
+        // The appendix request continues the thesis conversation, the document
+        // as the assistant's turn.
         let thesis = pipeline::thesis_request("r", &input);
         assert!(thesis.format_schema.is_none() && thesis.think == Some(true), "{}", f.symbol);
         assert_eq!(thesis.messages.len(), 2);
@@ -1046,14 +975,9 @@ fn attempt_6_thesis_messages_are_two_parts_with_no_app_concept() {
     }
 }
 
-/// Every action message on the fixed set is two marked parts in order, Part 1
-/// the input sections and no instruction, Part 2 the two items and the return
-/// shape — and neither part, nor the system prompt, carries a banned word
-/// (`portfolio-v41`). The analyst prose — the summary, the target rationale,
-/// the thesis and the scenario conditions — is blanked for the lexicon scan
-/// (ruled 2026-09-17, F3): the persisted v35 rationale legitimately says "the
-/// engine's base case", and the pin tests the app's own sentences; the live
-/// harness prints prose hits as a diagnostic.
+/// The analyst prose is blanked for the lexicon scan: the persisted rationale
+/// legitimately says "the engine's base case", and the pin tests the app's own
+/// sentences; the live harness prints prose hits as a diagnostic.
 #[test]
 fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
     for f in fixtures() {
@@ -1074,9 +998,6 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
             .split_once("\n======== PART 2: TASK ========\n")
             .unwrap_or_else(|| panic!("{}: no Part 2 marker\n{user}", f.symbol));
         assert!(part1.starts_with(&format!("======== PART 1: INPUTS ========\nHOLDING\n{} (", f.symbol)), "{}: {part1}", f.symbol);
-        // The sections in the docs' order (`portfolio-v71`): POSITION, VERDICT,
-        // one COMPUTED heading with its labelled sub-blocks, SUPPORTED ACTIONS
-        // and the profile, each once.
         let mut last = 0;
         for section in [
             "POSITION\n", "VERDICT\n", "COMPUTED\n", "COMPUTED ACTION\n", "GRADE\n",
@@ -1093,10 +1014,8 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
         assert!(part1.contains("prorated to three months"));
         assert!(part1.contains("- three-year: bear ") && part1.contains("extrapolation"), "{}", f.symbol);
         assert!(part2.contains("Name the returns you weighed by their values; do not describe them by their relation to another figure."));
-        // VERDICT: the gloss, then the appendix's conviction and prices — the
-        // fixture's one expected price at twelve months, none at the other
-        // horizons — then the thesis document verbatim; the same price rides
-        // the twelve-month band line and none the other two (ruled 2026-10-08).
+        // The fixture's one expected price is at twelve months, so the other
+        // two band lines read "analyst none".
         let a = &graded.appendix;
         let move_12 = (a.expected_price_12m.unwrap() / f.spot - 1.0) * 100.0;
         assert!(
@@ -1116,13 +1035,11 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
             f.symbol
         );
         assert_eq!(part1.matches("; analyst none. Method: ").count(), 2, "{}: {part1}", f.symbol);
-        // The hurdle as numbers: the three tested returns and the rate, no state word.
         let h = &f.engine_output.hurdle;
         assert!(part1.contains(&format!(
             "\nbear {:+.1}% / base {:+.1}% / bull {:+.1}%; hurdle {:.1}%.\n",
             h.tr_bear.unwrap() * 100.0, h.tr_base.unwrap() * 100.0, h.tr_bull.unwrap() * 100.0, h.hurdle_rate.unwrap() * 100.0
         )), "{}: {part1}", f.symbol);
-        // Part 1 instructs nothing; Part 2 carries the two items and the shape.
         assert!(!part1.contains("Return "), "{}: Part 1 instructs\n{part1}", f.symbol);
         for item in ["1. action — one rung for this holding", "2. rationale — one sentence", "RETURN SHAPE (every value is a placeholder)"] {
             assert!(part2.contains(item), "{}: Part 2 lacks {item}\n{part2}", f.symbol);
@@ -1137,8 +1054,6 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
         ] {
             assert!(!user.contains(absent), "{}: `{absent}`\n{user}", f.symbol);
         }
-        // The lexicon over the app's own sentences: the analyst prose — the
-        // thesis document — blanked.
         let mut blank = (**graded).clone();
         blank.thesis_document.clear();
         let blanked = render(&blank);
@@ -1149,7 +1064,6 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
         assert_no_routing_words(&f.symbol, &user);
         let (blank_part1, _) = blanked.split_once("\n======== PART 2: TASK ========\n").unwrap();
         assert!(!blank_part1.to_lowercase().contains("your "), "{}: Part 1 addresses the model\n{blank_part1}", f.symbol);
-        // The shape is JSON with exactly the declared keys; the system prompt names them.
         let shape_line = part2.lines().find(|l| l.starts_with('{')).expect("a shape line");
         let shape: serde_json::Value = serde_json::from_str(shape_line).expect("the shape parses");
         let mut keys: Vec<&str> = shape.as_object().unwrap().keys().map(String::as_str).collect();
@@ -1163,13 +1077,8 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
     }
 }
 
-/// The role/risk thesis-document message on the synthetic bond fund, debut and
-/// continuity, is two marked parts in order with no app concept: Part 1 the
-/// input sections in the doc's order and no instruction, Part 2 the document's
-/// items with no prices and no conviction and no JSON shape; each value once;
-/// the banned lexicon absent (the stub's prose and the hand-written research
-/// carry none, so the whole message is scanned); the system prompt the role
-/// line and the two-part frame.
+/// The stub's prose and the hand-written research carry no banned word, so the
+/// whole message is scanned, nothing blanked.
 #[test]
 fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
     let fx = synthetic_role_risk_fixture();
@@ -1213,8 +1122,6 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
         assert!(part1.contains("\nEVIDENCE GAPS\nno duration, credit or yield-curve data for this fund\n"), "{label}: {part1}");
         assert!(part1.contains("\nRISK PROFILE\nAnnualized realized volatility: "), "{label}: {part1}");
         assert!(part1.contains("\nANALYSIS\nThe Vanguard Total Bond Market ETF tracks") || !debut, "{label}: {part1}");
-        // The fund's reported lines under FETCHED VALUES, as the provider
-        // returns them.
         assert!(part1.contains("Fund: asset class Fixed Income; expense ratio 0.0003 (0.03%/yr); assets under management 340.0B; NAV 72.41.\n"), "{label}: {part1}");
         assert!(part1.contains("Country weights: United States 94.0%, Supranational 2.0%, Canada 1.0%.\n"), "{label}: {part1}");
         assert_eq!(part1.matches("daily realized return volatility: ").count(), 1, "{label}: the daily volatility renders once\n{part1}");
@@ -1260,8 +1167,6 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
              covers, in order, and how to return it."
         );
     }
-    // The continuity specifics: the prior document verbatim under its date,
-    // the stub's role read opening it; no split line without a split.
     assert!(
         cont_user.contains("\nPRIOR THESIS (written 2026-09-03)\nRole: bond fund supplying United States exposure; held for its portfolio role.\n"),
         "{cont_user}"
@@ -1270,18 +1175,12 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
     assert!(!debut_user.contains("PRIOR THESIS"), "{debut_user}");
 }
 
-/// The self-review message on a continuity run, on every branch the harness
-/// carries — each priced fixture (stock and priced fund) over its
-/// hand-written prior, and the synthetic role/risk fund over the pipeline's
-/// own second run: two marked parts, Part 1 in the docs' page order with no
-/// instruction, Part 2 the six items naming only sections Part 1 renders and
-/// the length band, and no banned word anywhere (`docs/portfolio-workflow.md`
-/// §Step 6e).
+/// The self-review message on every branch the harness carries
+/// (`docs/portfolio-workflow.md` §Step 6e).
 #[test]
 fn continuity_review_messages_are_two_parts_with_no_app_concept() {
-    // Each message beside the model-authored prose it carries verbatim (the
-    // prior document, the analysis), blanked before the lexicon scan — the
-    // scan reads the app's own sentences.
+    // Each message with the model-authored prose it carries verbatim, blanked
+    // before the lexicon scan.
     let mut messages: Vec<(String, bool, String, String, Vec<String>)> = Vec::new();
     for f in fixtures() {
         let VerdictDisposition::Priced(_) = &f.disposition else { continue };
@@ -1381,11 +1280,6 @@ fn continuity_review_messages_are_two_parts_with_no_app_concept() {
     assert!(banned_hits(&app_text).is_empty(), "{:?}\n{app_text}", banned_hits(&app_text));
 }
 
-/// The action message on the synthetic role/risk verdict is the v41 packet's
-/// role/risk branch: two parts, the branch's sections, the reduced set as one
-/// data line, no banned word over the app's own sentences (the analyst prose
-/// blanked), the shape's keys (`portfolio-v42`, closing the v41 record's
-/// offline-only limit on this branch).
 #[test]
 fn synthetic_role_risk_action_message_is_two_parts_with_no_app_concept() {
     let fx = synthetic_role_risk_fixture();
@@ -1404,8 +1298,6 @@ fn synthetic_role_risk_action_message_is_two_parts_with_no_app_concept() {
         .split_once("\n======== PART 2: TASK ========\n")
         .unwrap_or_else(|| panic!("no Part 2 marker\n{user}"));
     assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\nBND ("), "{part1}");
-    // The branch's own sections stay top-level, POSITION first after the
-    // header, no COMPUTED heading (`portfolio-v71`, ruled 2026-10-08).
     let mut last = 0;
     for section in [
         "POSITION\n", "CLASS\n", "EXPOSURE TILT\n", "RISK PROFILE\n",
@@ -1431,8 +1323,6 @@ fn synthetic_role_risk_action_message_is_two_parts_with_no_app_concept() {
         assert!(part2.contains(item), "Part 2 lacks {item}\n{part2}");
     }
     assert!(!user.contains("CAPITAL EFFICIENCY") && !user.contains("PRICE TARGETS"), "{user}");
-    // The role/risk VERDICT carries the document alone — no conviction, no
-    // expected price line.
     assert!(part1.contains("\nVERDICT\nAn analyst's read of the holding's data and research: the thesis document.\nThesis document:\nRole: "), "{part1}");
     assert!(!part1.contains("Conviction:") && !part1.contains("Expected share price"), "{part1}");
     let mut blank = rr.clone();
@@ -1452,11 +1342,9 @@ fn synthetic_role_risk_action_message_is_two_parts_with_no_app_concept() {
     assert_eq!(keys, declared);
 }
 
-/// The research messages the harness renders: the gathering and synthesis
-/// passes on TSLA's first stock topic and the synthetic fund's
-/// exposure-profile topic, over the pipeline's own holding-constant brief
-/// (`pipeline::research_brief`) and hand-written leads, write-ups and pages
-/// (`research::samples`) — the prompts' shape, never a run's research.
+/// The research messages the harness renders, over the pipeline's own brief
+/// and hand-written leads, write-ups and pages (`research::samples`) — the
+/// prompts' shape, never a run's research.
 fn research_samples() -> Vec<super::research::samples::Sample> {
     use super::research::samples;
     let f = fixtures().into_iter().find(|f| f.symbol == "TSLA").expect("TSLA");
@@ -1490,15 +1378,6 @@ fn research_samples() -> Vec<super::research::samples::Sample> {
     out
 }
 
-/// Every research message on the sample passes is two marked parts in order
-/// with no app concept: Part 1 the input sections — the dated holding header,
-/// FETCHED VALUES, on a gathering pass the leads and on a continuity run the
-/// prior thesis document, the tier scale stated on a synthesis pass (on a
-/// gathering pass it rides the tool descriptions) — and no instruction; Part
-/// 2 the task — on a gathering pass the per-reply bound and the stopping
-/// rule, on a synthesis pass the write-up with its length band and no return
-/// shape — and neither part, nor the system prompt, carries a banned word or
-/// a routing word; the follow-up ask is the one word `none` or the question.
 /// The gathering brief less its PRIOR THESIS block: the prior document is the
 /// model's own text, rendered verbatim by contract, so the lexicon checks read
 /// the app's text around it.
@@ -1520,8 +1399,7 @@ fn without_prior_document(user: &str) -> String {
 fn research_messages_are_two_parts_with_no_app_concept() {
     let samples = research_samples();
     assert_eq!(samples.len(), 10, "five gathering, three synthesis, the ask, one fund gathering");
-    // The tool descriptions are prompt text too (`portfolio-v50`): they state
-    // the tier scale and the page header's fields, and carry no banned word.
+    // The tool descriptions are prompt text too.
     let tools = super::research::research_tools().to_string();
     assert!(
         tools.contains("The source tier runs from 0 to 5: 0 is a primary source") && tools.contains("extraction quality"),
@@ -1547,16 +1425,14 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             assert!(!s.user.contains(gone), "{}: {gone} survives\n{}", s.label, s.user);
         }
         if s.label.starts_with("gathering") {
-            // `portfolio-v50`: Part 1 is inputs only — the tool results' fields are
-            // glossed on the tool descriptions, not under a heading in Part 1.
+            // The tool results' fields are glossed on the tool descriptions,
+            // not under a heading in Part 1.
             assert!(
                 !part1.contains("TOOL RESULTS") && !part1.contains("0 is a primary source"),
                 "{}: a tool-results legend in Part 1\n{part1}",
                 s.label
             );
             assert!(s.tools.is_some(), "{}", s.label);
-            // The holding-constant blocks lead: FETCHED VALUES before NEWS LEADS,
-            // and the topic's own text after them.
             let at = |section: &str| part1.find(section).unwrap_or_else(|| panic!("{}: {section}", s.label));
             assert!(at("\nFETCHED VALUES\n") < at("\nNEWS LEADS\n") && at("\nNEWS LEADS\n") < at("\nTOPIC\n"), "{}: {part1}", s.label);
         } else {
@@ -1579,8 +1455,6 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             );
             assert!(part1.contains("=== S1: "), "{}: {part1}", s.label);
             assert!(!part1.contains("\nNEWS LEADS\n"), "{}: a synthesis carries no leads", s.label);
-            // The write-up task: plain text, the length band, and the source
-            // clause naming FETCHED VALUES since the brief carries it.
             assert!(part2.contains("as plain text — no code fence, no JSON, no heading before the first line"), "{}: {part2}", s.label);
             assert!(part2.contains("The write-up runs 400 to 900 words."), "{}: {part2}", s.label);
             assert!(part2.contains("or FETCHED VALUES where the figure comes from there"), "{}: {part2}", s.label);
@@ -1719,9 +1593,6 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             assert!(part1.contains("\nWRITE-UPS SO FAR\nThis run's write-ups on the holding, each under its topic.\n"), "{}: {part1}", s.label);
         }
         if s.label.contains("the follow-up ask") {
-            // The conversation's second message: the write-up echoed as the
-            // assistant's turn, then the ask; the reply is read as `none` or
-            // the question, and the ask names no app concept.
             assert_eq!(s.appended.len(), 2, "{}", s.label);
             assert_eq!(s.appended[0].role, "assistant");
             assert_eq!(s.appended[1].role, "user");
@@ -1740,7 +1611,6 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             s.user
         );
     }
-    // The tool results carry no instruction either.
     for (label, text) in super::research::samples::tool_results(false) {
         assert!(
             !text.contains("Work with what you have") && !text.contains("contributes no evidence"),
@@ -1809,10 +1679,6 @@ fn fixed_evidence_prompt_dump() {
         out.push_str(&fence(&diff_lines(&list, &cost)));
         n += 1;
     }
-    // The synthetic role/risk case (`portfolio-v42`): the system prompt, the
-    // debut message with the hand-written research, the continuity message the
-    // pipeline renders on a stub second run, and the action message on the
-    // stub's verdict.
     let fx = synthetic_role_risk_fixture();
     let debut = role_risk_user_prompt(&synthetic_role_risk_input(&fx));
     let (cont_system, cont) = synthetic_role_risk_continuity_messages();
@@ -1834,10 +1700,6 @@ fn fixed_evidence_prompt_dump() {
     out.push_str(&fence(&cont));
     out.push_str(&format!("### {n}d. Action message on the stub's verdict ({} chars)\n\n", action.len()));
     out.push_str(&fence(&action));
-    // The research messages: the gathering and synthesis passes rendered on
-    // TSLA's first stock topic and the synthetic fund's exposure-profile topic
-    // over hand-written leads, write-ups and pages, then what a gathering
-    // turn gets back.
     let n = n + 1;
     out.push_str(&format!(
         "## {n}. Research messages (TSLA's competitive-position topic and the SYNTHETIC fund's exposure-profile topic; hand-written leads, write-ups and pages)\n\n"

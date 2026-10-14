@@ -1,17 +1,8 @@
 //! The deterministic holdings-change diff (`docs/portfolio-workflow.md` §Step 4;
-//! `docs/portfolio-analysis.md` §Holdings change tracking). Each run persists the
-//! holdings snapshot it ran against ([`crate::portfolio::PortfolioRun::holdings`]); the
-//! next run diffs the current Schwab pull against that prior snapshot **in the
-//! application layer, before any model stage** — the same compute-don't-guess boundary
-//! the rest of the pipeline holds. Every current position is tagged
-//! new / increased / decreased / unchanged, and a symbol present last run but absent
-//! now is an exited position surfaced in the roll-up.
-//!
-//! Positions match across runs by **symbol only** (case-insensitive): a `Position`
-//! carries no CUSIP or lot id, so symbol is the sole stable identity (matching
-//! [`crate::portfolio::dossier::prior_verdict_for`]'s lookup). Classification keys off
-//! **quantity** — the clean signal for what the user did — with a small tolerance so a
-//! floating-point re-serialization of an unchanged position doesn't read as a trim.
+//! `docs/portfolio-analysis.md` §Holdings change tracking): the current Schwab
+//! pull against the prior run's persisted snapshot, in the application layer
+//! before any model stage. Positions match across runs by symbol only
+//! (case-insensitive), since a `Position` carries no CUSIP or lot id.
 
 use std::collections::{HashMap, HashSet};
 
@@ -19,9 +10,8 @@ use crate::portfolio::{BasisDirection, BasisMove, ExitedPosition, PositionChange
 use crate::schwab::{Holdings, Position};
 
 /// Relative tolerance (against the larger of the prior quantity and 1.0) for treating
-/// two quantities as unchanged, so fractional-share and unit-quantity noise doesn't
-/// masquerade as an add/trim. A calibratable starting value, like the engine's
-/// constants — pinned here rather than frozen.
+/// two quantities as unchanged, so a floating-point re-serialization of an unchanged
+/// position doesn't read as an add/trim.
 pub const QUANTITY_EPSILON: f64 = 1e-6;
 
 /// Relative tolerance (against the prior average cost) inside which an increase
@@ -29,21 +19,18 @@ pub const QUANTITY_EPSILON: f64 = 1e-6;
 /// reads as no basis move rather than a rounding-noise direction.
 pub const BASIS_EPSILON: f64 = 1e-9;
 
-/// The result of diffing the current holdings against the prior run's snapshot: a
-/// per-current-position delta (keyed by uppercased symbol) plus the exited positions.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HoldingsDiff {
     /// Per current position, keyed by uppercased symbol.
     deltas: HashMap<String, PositionDelta>,
     /// Symbols present in the prior snapshot but absent now, sorted by symbol for a
-    /// deterministic order (the underlying map iteration is not ordered).
+    /// deterministic order.
     pub exited: Vec<ExitedPosition>,
 }
 
 impl HoldingsDiff {
-    /// The delta for one current position by symbol (case-insensitive). Falls back to a
-    /// `new` delta for a symbol not in the current holdings — defensive only, since
-    /// every current position is inserted when the diff is built.
+    /// Case-insensitive. The `new` fallback for a symbol not in the current holdings
+    /// is defensive only: every current position is inserted when the diff is built.
     pub fn delta_for(&self, symbol: &str) -> PositionDelta {
         self.deltas
             .get(&symbol.to_ascii_uppercase())
@@ -52,9 +39,8 @@ impl HoldingsDiff {
     }
 }
 
-/// Diff the current holdings against the prior run's snapshot. With no prior snapshot
-/// (the first run, or an unreadable prior run) every position is `new` and nothing is
-/// exited.
+/// With no prior snapshot (the first run, or an unreadable prior run) every position
+/// is `new` and nothing is exited.
 pub fn diff_holdings(prior: Option<&Holdings>, current: &Holdings) -> HoldingsDiff {
     let prior_positions = prior.map(|h| h.positions.as_slice()).unwrap_or(&[]);
     let prior_by_symbol: HashMap<String, &crate::schwab::Position> = prior_positions
@@ -97,21 +83,12 @@ pub fn diff_holdings(prior: Option<&Holdings>, current: &Holdings) -> HoldingsDi
     HoldingsDiff { deltas, exited }
 }
 
-/// Classify a quantity move as increased / decreased / unchanged, treating a change
-/// within [`QUANTITY_EPSILON`] (relative to the larger of the prior size and 1.0) as
-/// unchanged.
-///
-/// A **same-sign** move compares position *size* (absolute quantity), so a short reads
-/// as "what the user did": adding to a short (−50 → −100) is an increase and buying part
-/// of it back (−100 → −50) is a decrease. For a long position (the equity slice's case)
-/// this is identical to comparing the raw quantities.
-///
-/// A **sign flip** — the live source reports one net `quantity = longQuantity −
-/// shortQuantity` ([`crate::schwab`]), so a symbol can go net-long → net-short between
-/// pulls — is a material reversal, **never** unchanged even at equal magnitude. Its
-/// direction is read from the signed swing (net-long → net-short is a decrease in long
-/// exposure), and the dossier/prompt surface the full `prior → now` quantities so the
-/// reversal is legible.
+/// A change within [`QUANTITY_EPSILON`] (relative to the larger of the prior size
+/// and 1.0) is unchanged. A same-sign move compares position size, so adding to a
+/// short (−50 → −100) is an increase. A sign flip — the live source reports one net
+/// `quantity = longQuantity − shortQuantity` ([`crate::schwab`]) — is a material
+/// reversal, never unchanged even at equal magnitude; its direction reads from the
+/// signed swing (net-long → net-short is a decrease in long exposure).
 fn classify(prior_qty: f64, current_qty: f64) -> PositionChange {
     let scale = prior_qty.abs().max(1.0);
     let flipped = prior_qty != 0.0
@@ -132,12 +109,10 @@ fn classify(prior_qty: f64, current_qty: f64) -> PositionChange {
 }
 
 /// The paid-up-versus-averaged-down read (`docs/portfolio-analysis.md` §Holdings
-/// change tracking): on an **increase** alone, whether the average cost per share
-/// — cost basis ÷ quantity — rose (paid up) or fell (averaged down) between the
-/// prior pull and this one. `None` on every other change, on a short or a zero or
-/// negative basis on either pull, inside [`BASIS_EPSILON`], and on a class whose
-/// derived basis leaves a contract or par multiplier unapplied (only a stock or a
-/// fund reads).
+/// change tracking): on an increase alone, whether the average cost per share rose
+/// or fell between pulls. `None` on every other change, on a short or a non-positive
+/// basis on either pull, inside [`BASIS_EPSILON`], and on a class whose derived
+/// basis leaves a contract or par multiplier unapplied.
 pub fn basis_move(delta: &PositionDelta, current: &Position) -> Option<BasisMove> {
     if delta.change != PositionChange::Increased || !current.asset_class.is_gradeable() {
         return None;
@@ -208,7 +183,6 @@ mod tests {
         assert_eq!(diff.delta_for("AAPL").change, PositionChange::Increased);
         assert_eq!(diff.delta_for("MSFT").change, PositionChange::Decreased);
         assert_eq!(diff.delta_for("GOOG").change, PositionChange::Unchanged);
-        // The prior quantity/cost basis ride along for an existing position.
         assert_eq!(diff.delta_for("AAPL").prior_quantity, Some(100.0));
         assert_eq!(diff.delta_for("AAPL").prior_cost_basis, Some(10_000.0));
         assert!(diff.exited.is_empty());
@@ -232,15 +206,11 @@ mod tests {
         assert_eq!(diff.exited.len(), 1);
         assert_eq!(diff.exited[0].symbol, "MSFT");
         assert_eq!(diff.exited[0].prior_quantity, 50.0);
-        // The surviving position is not exited and reads unchanged.
         assert_eq!(diff.delta_for("AAPL").change, PositionChange::Unchanged);
     }
 
     #[test]
     fn short_positions_classify_by_size_not_signed_delta() {
-        // A short position: adding to it (more negative) is an increase; buying part of
-        // it back (toward zero) is a decrease — the opposite of what the raw signed
-        // delta would say.
         let prior = holdings(vec![pos("SQQQ", -100.0)]);
         let bigger_short = holdings(vec![pos("SQQQ", -150.0)]);
         let smaller_short = holdings(vec![pos("SQQQ", -40.0)]);
@@ -257,8 +227,7 @@ mod tests {
     #[test]
     fn a_sign_flip_is_a_change_not_unchanged() {
         // The live source reports one net quantity (long − short), so a symbol can flip
-        // from net long to net short between pulls at equal magnitude. That reversal must
-        // not read as unchanged — the abs-magnitude compare alone would call it so.
+        // sign between pulls at equal magnitude.
         let long_then_short = diff_holdings(
             Some(&holdings(vec![pos("XYZ", 100.0)])),
             &holdings(vec![pos("XYZ", -100.0)]),

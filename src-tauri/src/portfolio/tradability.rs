@@ -1,16 +1,8 @@
-//! The **tradability flag** — the shared engine's liquidity read
+//! The tradability flag — the shared engine's liquidity read
 //! (`docs/trade-opportunities.md` §Starting parameters, the tradability flag row;
-//! `docs/trade-opportunities-workflow.md` §Step 5c). Two legs, each banded on its
-//! own input: **Amihud illiquidity** (the mean absolute daily return per dollar
-//! traded) over the trailing quarter of sessions, and **days-to-cover** as FINRA
-//! serves it. The worse leg sets the band, and the band sets the entry gate's
-//! **liquidity haircut**, so a small or illiquid name is flagged and discounted
-//! rather than silently excluded. A leg whose input is missing cannot trigger —
-//! the risk tier's missing-input rule — and a name with neither input reads
-//! unflagged with a logged gap, never a fabricated flag.
-//!
-//! Pure over the dated bars, the FINRA short-interest read and the as-of session,
-//! so every rule is unit-testable offline.
+//! `docs/trade-opportunities-workflow.md` §Step 5c): Amihud illiquidity and
+//! FINRA days-to-cover, each banded, the worse leg setting the band and the
+//! band the entry gate's haircut. A leg whose input is missing cannot trigger.
 
 use serde::{Deserialize, Serialize};
 
@@ -19,33 +11,28 @@ use super::factors::{shift, PRICE_PROXIMITY_DAYS};
 use crate::finra::ShortInterestRead;
 
 // ---------------------------------------------------------------------------
-// Calibration surface — drafted or sourced as labelled below, calibratable
-// (`docs/trade-opportunities.md` §Starting parameters, the tradability flag row).
+// Calibration surface (`docs/trade-opportunities.md` §Starting parameters, the
+// tradability flag row)
 // ---------------------------------------------------------------------------
 
-/// The trailing daily returns the Amihud read averages over — a quarter of
-/// sessions. Drafted: Amihud's original measure is annual; a quarter keeps the
-/// read current.
+/// The trailing daily returns the Amihud read averages over, a quarter of
+/// sessions (Amihud's original measure is annual).
 pub const AMIHUD_SESSIONS: usize = 63;
 
 /// The fewest positive-volume sessions an Amihud read stands on — Amihud's
-/// 200-of-252 admission ratio scaled to the quarter (drafted). The same floor
-/// admits the median dollar volume, counted over the sessions that served a
-/// volume.
+/// 200-of-252 admission ratio scaled to the quarter. The same floor admits the
+/// median dollar volume, counted over the sessions that served a volume.
 pub const AMIHUD_MIN_VOLUME_DAYS: usize = 50;
 
 /// Amihud illiquidity (×10⁶: decimal return per $1M traded) at or above which
-/// the leg flags, and at or above which it is severe. The flag sits at the 75th
-/// percentile of the 2020–25 CRSP distribution (Aldridge, arXiv 2607.01377 —
-/// about $0.5M a day at a typical daily move), the severe edge near its 87th
-/// (about $50k a day); the distribution is sourced, the cut-points drafted.
+/// the leg flags, and is severe — the 75th and about the 87th percentiles of
+/// the 2020–25 CRSP distribution (Aldridge, arXiv 2607.01377).
 pub const AMIHUD_FLAGGED: f64 = 0.05;
 pub const AMIHUD_SEVERE: f64 = 0.5;
 
-/// FINRA's served days-to-cover at or above which the leg flags, and at or above
-/// which it is severe. Drafted: the stock-level average runs about 5.5–8 days
-/// (Hong, Li, Ni, Scheinkman and Yan), so the leg flags the outlier, not the
-/// typical name.
+/// FINRA's served days-to-cover at or above which the leg flags, and is severe;
+/// the stock-level average runs about 5.5–8 days (Hong, Li, Ni, Scheinkman and
+/// Yan), so the leg flags the outlier.
 pub const DAYS_TO_COVER_FLAGGED: f64 = 10.0;
 pub const DAYS_TO_COVER_SEVERE: f64 = 20.0;
 
@@ -84,8 +71,6 @@ impl TradabilityBand {
     }
 }
 
-/// The tradability read: both legs' inputs, the band they set and its haircut,
-/// with a typed gap for each leg that could not be read.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TradabilityRead {
     /// Amihud illiquidity ×10⁶ over the trailing [`AMIHUD_SESSIONS`] returns.
@@ -95,9 +80,7 @@ pub struct TradabilityRead {
     /// The median daily dollar volume (close × volume) over the same window —
     /// reported, never banded.
     pub median_dollar_volume: Option<f64>,
-    /// FINRA's served days-to-cover.
     pub days_to_cover: Option<f64>,
-    /// The short-interest row's settlement date, where one was read.
     pub short_interest_settlement: Option<String>,
     pub amihud_band: Option<TradabilityBand>,
     pub days_to_cover_band: Option<TradabilityBand>,
@@ -172,7 +155,6 @@ pub fn tradability(
     }
 }
 
-/// The trailing window's liquidity reads.
 #[derive(Debug, Default)]
 struct LiquidityWindow {
     /// Amihud illiquidity ×10⁶.
@@ -233,8 +215,8 @@ fn liquidity_window(bars: &[DailyBar], as_of: &str) -> Result<LiquidityWindow, S
     })
 }
 
-/// The bars with each session once, in date order — the last row served for a
-/// duplicated date wins (the factor reads' [`super::factors::dedupe_closes`] rule).
+/// Each session once, in date order; the last row served for a duplicated date
+/// wins ([`super::factors::dedupe_closes`]'s rule).
 fn dedupe_bars(bars: &[DailyBar]) -> Vec<DailyBar> {
     let mut sorted = bars.to_vec();
     sorted.sort_by(|a, b| a.date.cmp(&b.date));
@@ -376,7 +358,7 @@ mod tests {
 
     #[test]
     fn a_missing_leg_cannot_trigger_and_both_missing_reads_unflagged_with_a_gap() {
-        // Only days-to-cover read: it alone sets the band.
+        // Only days-to-cover read.
         let read = tradability(&[], Some(&short(Some(DAYS_TO_COVER_SEVERE))), AS_OF);
         assert_eq!(read.amihud, None);
         assert_eq!(read.band, TradabilityBand::Severe);
@@ -416,7 +398,6 @@ mod tests {
         // The zero-volume sessions still count toward the median's floor
         // (62 served volumes), so the median reads.
         assert!(read.median_dollar_volume.is_some());
-        // One more positive-volume session clears the floor.
         series[20].volume = Some(10_000.0);
         series[1].volume = Some(10_000.0);
         let read = tradability(&series, None, AS_OF);

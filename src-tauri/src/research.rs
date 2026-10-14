@@ -1,19 +1,7 @@
-//! Research-folder filesystem surface: list and delete user-supplied documents
-//! in the research inbox and archive.
-//!
-//! Both folders live under the app data directory (`docs/research-documents.md`):
-//! the user drops PDFs/notes into the inbox for the pipeline to consider on the
-//! next run, and successfully-processed documents are moved to the archive. The two share
-//! this deterministic, Tauri-free core — it reads directory entries and deletes a
-//! single file by name — so it can be driven directly by unit tests against temp
-//! dirs. The caller passes whichever folder it means.
-//!
-//! Job-start parsing and the move-to-archive step (`docs/report-workflow.md`
-//! §Step 6) live in `document_parser` and the pipeline's inbox stage; this module
-//! stays the listing/deletion core (§User Permissions — delete yes from either
-//! folder, manual archive no). The parse-failure error state the panel shows is
-//! joined onto the listing by [`annotate_parse_failures`], from the
-//! `research_parse_failures` table the inbox stage writes.
+//! Research-folder filesystem surface: list and delete user-supplied documents in the
+//! research inbox and archive (`docs/research-documents.md`). A Tauri-free core the
+//! commands drive with whichever folder they mean; job-start parsing and the
+//! move-to-archive step live in `document_parser` and the pipeline's inbox stage.
 
 use std::path::{Component, Path};
 
@@ -22,39 +10,32 @@ use serde::Serialize;
 
 use crate::storage::ParseFailureRow;
 
-/// Formats accepted as professional research sources
-/// (`docs/research-documents.md` §Research Inbox), as lowercased extensions.
-/// Files with any other extension are still listed but flagged unsupported.
+/// Formats accepted as research sources (`docs/research-documents.md` §Research Inbox),
+/// as lowercased extensions; any other extension is still listed but flagged unsupported.
 const SUPPORTED_EXTENSIONS: &[&str] =
     &["pdf", "md", "markdown", "txt", "csv", "json", "html", "htm"];
 
-/// One file in a research folder, as the UI lists it. The frontend mirror is
-/// `ResearchDocument` in `src/types.ts`.
+/// One file in a research folder; mirrors `ResearchDocument` in `src/types.ts`.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ResearchDocument {
-    /// Bare file name including extension — never a path, since the file lives
-    /// directly in the folder. This is also the key the delete command takes back.
+    /// Bare file name including extension, never a path; also the key the delete
+    /// command takes back.
     pub name: String,
     /// Lowercased extension, or an empty string when the file has none.
     pub format: String,
-    /// Whether `format` is one the pipeline can parse.
     pub supported: bool,
     pub size_bytes: u64,
-    /// Last-modified time as an RFC3339 UTC string, or `None` if the platform
-    /// could not report one.
+    /// RFC3339 UTC, or `None` if the platform could not report one.
     pub modified: Option<String>,
-    /// Why the last job pass could not parse this file, when it couldn't —
-    /// the panel renders the row in an error state so the user can fix or
-    /// delete it (`docs/research-documents.md §Parse Failures`). Populated only
-    /// for the inbox listing, by [`annotate_parse_failures`]; `None` here.
+    /// Why the last job pass could not parse this file
+    /// (`docs/research-documents.md §Parse Failures`). Populated only for the inbox
+    /// listing, by [`annotate_parse_failures`]; `None` here.
     pub parse_error: Option<String>,
 }
 
-/// List the files directly in `dir`, most-recently-modified first. A missing
-/// directory lists as empty (the folder is created lazily, on first reveal), so a
-/// fresh install shows an empty folder rather than an error. Sub-directories and
-/// dotfiles (`.DS_Store` and friends) are ignored — each research folder is a flat
-/// drop of documents.
+/// List the files directly in `dir`, most-recently-modified first. A missing directory
+/// lists as empty (the folder is created lazily, on first reveal). Sub-directories and
+/// dotfiles are ignored: each research folder is a flat drop of documents.
 pub fn list_folder(dir: &Path) -> Result<Vec<ResearchDocument>> {
     let mut docs = Vec::new();
     let entries = match std::fs::read_dir(dir) {
@@ -89,8 +70,8 @@ pub fn list_folder(dir: &Path) -> Result<Vec<ResearchDocument>> {
         });
     }
 
-    // Newest first; entries without a modified time (None < Some) sort last,
-    // with a stable name tiebreak so equal-mtime files have a deterministic order.
+    // Newest first; entries without a modified time (None < Some) sort last, with a name
+    // tiebreak so equal-mtime files have a deterministic order.
     docs.sort_by(|a, b| {
         b.modified
             .cmp(&a.modified)
@@ -99,18 +80,16 @@ pub fn list_folder(dir: &Path) -> Result<Vec<ResearchDocument>> {
     Ok(docs)
 }
 
-/// A file's mtime as an RFC3339 UTC string, or `None` when the platform can't
-/// report one. The single derivation shared by the listing and the parse stage,
-/// so the failure-row identity match below compares like with like.
+/// The single mtime derivation shared by the listing and the parse stage, so the
+/// parse-failure identity match compares like with like.
 pub fn modified_rfc3339(meta: &std::fs::Metadata) -> Option<String> {
     meta.modified()
         .ok()
         .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
 }
 
-/// Join the recorded parse failures onto an inbox listing: a row gets its error
-/// state only while the file on disk is identity-identical (name + size +
-/// mtime) to the one that failed — an edited or replaced file reads as a fresh
+/// A row gets its error state only while the file on disk is identity-identical (name +
+/// size + mtime) to the one that failed: an edited or replaced file reads as a fresh
 /// document until the next job pass re-attempts it.
 pub fn annotate_parse_failures(docs: &mut [ResearchDocument], failures: &[ParseFailureRow]) {
     for doc in docs {
@@ -123,11 +102,9 @@ pub fn annotate_parse_failures(docs: &mut [ResearchDocument], failures: &[ParseF
     }
 }
 
-/// Delete one document from `dir` by file name (`docs/research-documents.md`
-/// §User Permissions — the user may delete from either folder). `name` must be a
-/// single bare file name: any path separator or parent reference is rejected
-/// before the filesystem is touched, so a crafted name can never escape the
-/// folder.
+/// Delete one document from `dir` by bare file name (`docs/research-documents.md §User
+/// Permissions`). Any path separator or parent reference is rejected before the
+/// filesystem is touched, so a crafted name can never escape the folder.
 pub fn delete_folder_document(dir: &Path, name: &str) -> Result<()> {
     validate_bare_name(name)?;
     let target = dir.join(name);
@@ -140,9 +117,8 @@ pub fn delete_folder_document(dir: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reject anything that is not a single, normal path component: empty, `.`,
-/// `..`, a name containing a path separator, or any non-`Normal` component a
-/// platform might parse out (a drive prefix, a root).
+/// Reject anything that is not a single `Normal` path component, including a drive
+/// prefix or root a platform might parse out.
 fn validate_bare_name(name: &str) -> Result<()> {
     if name.is_empty() {
         bail!("research document name is empty");

@@ -1,25 +1,8 @@
 //! Step-6d consolidation (`docs/portfolio-workflow.md` §Step 6d;
 //! `docs/web-research.md §The research loop and context management`;
-//! `docs/configuration.md §Research Context Management`).
-//!
-//! After a holding's research the orchestrator sizes the **analysis prompt**
-//! — the holding header, FETCHED VALUES, on a continuity run PRIOR ANALYSIS,
-//! then this run's write-ups — against the call's input budget. Within budget
-//! the write-ups go in as written. Over it, the write-ups are **distilled**
-//! first, in one of two shapes chosen deterministically from size and never
-//! by the model: the merged write-ups in one call, or — where the merged
-//! write-ups outgrow the widest issuable budget once rendered — each write-up
-//! first and then the merge of those outputs. The prior analysis is never
-//! distilled. Then the reasoner writes the holding's **analysis**, the only
-//! research artifact the next run reads; the write-ups persist on the audit
-//! as written, and the chosen shape with its call count persists beside them.
-//! A holding whose loop produced no write-up spends no analysis call: the
-//! prior analysis stands verbatim, or the one no-write-up sentence on a debut
-//! (ruled 2026-10-08).
-//!
-//! The prompts are rendered here, pure; the calls go through the analyst
-//! seam ([`crate::portfolio::pipeline::HoldingAnalyst`]), whose live
-//! implementation sizes each rendered distillation prompt once more at issue.
+//! `docs/configuration.md §Research Context Management`): the deterministic
+//! distillation-shape choice, the rendered prompts, and the orchestration
+//! over the analyst seam ([`crate::portfolio::pipeline::HoldingAnalyst`]).
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -29,8 +12,7 @@ use crate::portfolio::research::{HoldingBrief, HoldingResearch};
 use crate::portfolio::AnalysisRecord;
 
 // ---------------------------------------------------------------------------
-// Constants (drafted, calibratable — `docs/configuration.md §Research Context
-// Management`: generous, conservative defaults)
+// Calibratable constants (`docs/configuration.md §Research Context Management`)
 // ---------------------------------------------------------------------------
 
 /// Fraction of a call's input budget above which the orchestrator takes the
@@ -41,17 +23,15 @@ pub const OVERFLOW_THRESHOLD: f64 = 0.6;
 /// Rough chars-per-token for sizing a call's input budget off its `num_ctx`.
 pub const CHARS_PER_TOKEN: f64 = 3.0;
 
-/// The input budget for one call, derived from the resolved `num_ctx`.
 pub fn input_budget_chars(num_ctx: u32) -> usize {
     (f64::from(num_ctx) * CHARS_PER_TOKEN * OVERFLOW_THRESHOLD) as usize
 }
 
-/// The one sentence that stands as a debut holding's analysis when its loop
-/// produced no write-up — no call is spent over nothing.
+/// Stands as a debut holding's analysis when its loop produced no write-up, so
+/// no call is spent over nothing.
 pub const NO_WRITE_UP_SENTENCE: &str = "No research write-up this run.";
 
-/// The disconfirming pass's heading under WRITE-UPS, the title it carries
-/// everywhere the write-ups render together (the bridge of task 1 set it).
+/// The disconfirming pass's heading wherever the write-ups render together.
 pub const CONTRARY_TITLE: &str = "Contrary evidence";
 
 /// The disconfirming pass's key, for its per-write-up stage label.
@@ -61,9 +41,8 @@ pub const CONTRARY_KEY: &str = "disconfirming";
 // The persisted record
 // ---------------------------------------------------------------------------
 
-/// The shape consolidation chose for a holding (`docs/portfolio-workflow.md`
-/// §Step 6d), persisted on the research audit record so a distillation is
-/// never silent.
+/// The shape consolidation chose (`docs/portfolio-workflow.md` §Step 6d),
+/// persisted on the research audit record so a distillation is never silent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DistillationShape {
@@ -75,10 +54,10 @@ pub enum DistillationShape {
     PerWriteUp,
 }
 
-/// The shape with the distillation calls it spent — one on the merged shape,
-/// the write-ups plus one on the per-write-up shape, none otherwise. The
-/// expanded re-attempt a length stop earns is a retry of one of these calls,
-/// not a call of the shape, and rides the tracker and the model ids instead.
+/// The shape with the distillation calls it spent: one on the merged shape,
+/// the write-ups plus one on the per-write-up shape, none otherwise. A length
+/// stop's expanded re-attempt is a retry of one of these calls, not a call of
+/// the shape, and rides the tracker instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DistillationRecord {
     pub shape: DistillationShape,
@@ -86,7 +65,6 @@ pub struct DistillationRecord {
 }
 
 impl DistillationRecord {
-    /// No distillation: the analysis prompt fit, or no write-up existed.
     pub fn none() -> Self {
         Self { shape: DistillationShape::None, calls: 0 }
     }
@@ -96,8 +74,8 @@ impl DistillationRecord {
 // The inputs the seam's two calls read
 // ---------------------------------------------------------------------------
 
-/// One write-up as consolidation handles it: the topic's key (its stage
-/// label), its title (its heading) and its text.
+/// One write-up: the topic's key (its stage label), its title (its heading)
+/// and its text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteUp {
     pub key: String,
@@ -105,9 +83,9 @@ pub struct WriteUp {
     pub text: String,
 }
 
-/// This run's write-ups in the order every message carries them — the topics
+/// This run's write-ups in the order every message carries them: the topics
 /// that wrote one, in agenda order, then the disconfirming pass's under
-/// [`CONTRARY_TITLE`]. A topic with no write-up contributes nothing.
+/// [`CONTRARY_TITLE`].
 pub fn write_ups_of(research: &HoldingResearch) -> Vec<WriteUp> {
     let mut out: Vec<WriteUp> = research
         .topics
@@ -130,7 +108,6 @@ pub fn write_ups_of(research: &HoldingResearch) -> Vec<WriteUp> {
     out
 }
 
-/// What one distillation call distills.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DistillSubject<'a> {
     /// The merged shape: every write-up, each under its topic's heading.
@@ -142,37 +119,31 @@ pub enum DistillSubject<'a> {
     MergedDistillates(&'a [WriteUp]),
 }
 
-/// What one distillation call reads: the holding header, its subject and the
-/// stage label the call issues under.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DistillInput<'a> {
     pub header: &'a str,
     pub subject: DistillSubject<'a>,
+    /// The stage label the call issues under.
     pub stage: String,
 }
 
-/// The WRITE-UPS block of the analysis message: the write-ups as written, or
-/// their distillate.
+/// The WRITE-UPS block of the analysis message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteUps<'a> {
     AsWritten(&'a [WriteUp]),
     Distilled(&'a str),
 }
 
-/// What the analysis call reads: the holding-constant brief (its header and
-/// FETCHED VALUES — the bytes the gathering and synthesis messages share),
-/// the rendered PRIOR ANALYSIS section on a continuity run (empty on a
-/// debut), and the WRITE-UPS block.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnalysisInput<'a> {
     pub symbol: &'a str,
     pub brief: &'a HoldingBrief,
+    /// The rendered PRIOR ANALYSIS section; empty on a debut.
     pub prior_analysis: &'a str,
     pub write_ups: WriteUps<'a>,
 }
 
 impl AnalysisInput<'_> {
-    /// The stage label the analysis call issues under.
     pub fn stage(&self) -> String {
         format!("analysis {}", self.symbol)
     }
@@ -182,9 +153,8 @@ impl AnalysisInput<'_> {
 // The rendered prompts
 // ---------------------------------------------------------------------------
 
-/// One rendered two-message prompt: the role-line system message and the
-/// two-part user message. The adapter seam sizes both messages at issue
-/// (`pipeline::distill_route`), the same measure the budget check uses here.
+/// One rendered two-message prompt. The adapter seam (`pipeline::distill_route`)
+/// sizes it at issue by the same measure as [`DistillPrompt::chars`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DistillPrompt {
     pub system: String,
@@ -192,22 +162,18 @@ pub struct DistillPrompt {
 }
 
 impl DistillPrompt {
-    /// The rendered prompt's size as the issue guard measures it — both
-    /// messages, in chars.
+    /// Both messages, in chars — the measure the issue guard uses.
     pub fn chars(&self) -> usize {
         self.system.chars().count() + self.user.chars().count()
     }
 }
 
-/// The analysis prompt, the same two-message shape.
 pub type AnalysisPrompt = DistillPrompt;
 
 const PART_1: &str = "======== PART 1: INPUTS ========\n";
 const PART_2: &str = "\n======== PART 2: TASK ========\n\n";
 const PLAIN: &str = "as plain text — no code fence, no JSON, no heading before the first line";
 
-/// The write-ups each under their heading — the block every message that
-/// carries several write-ups renders, after its own gloss line.
 fn write_ups_block(write_ups: &[WriteUp]) -> String {
     let mut out = String::new();
     for w in write_ups {
@@ -216,14 +182,8 @@ fn write_ups_block(write_ups: &[WriteUp]) -> String {
     out
 }
 
-/// The distillation prompt (`docs/portfolio-workflow.md` §Step 6d): the
-/// holding header, then the write-ups to distill — the merged write-ups, or
-/// one write-up on a per-write-up call, or the per-write-up outputs on the
-/// merge call — each under its topic's heading; then the task: a shorter
-/// document that keeps every dated figure with its source, every disagreement
-/// between pages and every open question, within the distillation's length
-/// band (`docs/portfolio-analysis.md` §Starting parameters). Consolidation,
-/// not new reasoning.
+/// The distillation prompt (`docs/portfolio-workflow.md` §Step 6d); its length
+/// band is in `docs/portfolio-analysis.md` §Starting parameters.
 pub fn distillation_prompt(input: &DistillInput<'_>) -> DistillPrompt {
     let system = "You are an investment analyst shortening research write-ups on one holding for \
 a portfolio review. Part 1 of the message gives the inputs. Part 2 says what the document keeps \
@@ -270,17 +230,7 @@ and how to return it."
     DistillPrompt { system, user }
 }
 
-/// The analysis prompt (`docs/portfolio-workflow.md` §Step 6d). Part 1, in
-/// page order: the holding header, FETCHED VALUES (the brief's bytes), on a
-/// continuity run PRIOR ANALYSIS, then WRITE-UPS — this run's write-ups each
-/// under its topic's heading, the disconfirming pass's last, or their
-/// distillate as one document. Part 2 asks for the analysis: one document
-/// consolidating what this run's research established on the holding, each
-/// dated figure with its source, where sources disagree, what stays
-/// unanswered, and on a continuity run what the prior analysis said that this
-/// run's research confirms, revises or leaves untouched, a topic with no
-/// write-up this run keeping what the prior analysis says about it, within
-/// the analysis's length band.
+/// The analysis prompt (`docs/portfolio-workflow.md` §Step 6d).
 pub fn analysis_prompt(input: &AnalysisInput<'_>) -> AnalysisPrompt {
     let system = "You are an investment analyst consolidating one holding's research for a \
 portfolio review. Part 1 of the message gives the inputs. Part 2 says what the analysis covers \
@@ -336,8 +286,7 @@ and how to return it."
 /// The two budgets the shape choice reads, in chars of rendered prompt: the
 /// analysis call's, and the widest a distillation call can issue at (the
 /// resident reasoner's — `docs/local-models.md §The local-model adapter seam`).
-/// On the live roster both are the reasoner's interpretation context under
-/// the overflow threshold; tests set them small to walk the shapes.
+/// Live, both are the reasoner's; tests set them small to walk the shapes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConsolidationBudgets {
     pub analysis: usize,
@@ -345,9 +294,6 @@ pub struct ConsolidationBudgets {
 }
 
 impl ConsolidationBudgets {
-    /// The live budgets: the analysis call issues on the reasoner at
-    /// [`NUM_CTX_INTERPRET`], and the widest distillation rung is the same
-    /// context.
     pub fn live() -> Self {
         let chars = input_budget_chars(NUM_CTX_INTERPRET);
         Self { analysis: chars, widest: chars }
@@ -355,10 +301,7 @@ impl ConsolidationBudgets {
 }
 
 /// The deterministic shape choice (`docs/web-research.md §The research loop
-/// and context management`): the write-ups as written where the analysis
-/// prompt fits; the merged write-ups distilled where it does not and the
-/// merged distillation prompt fits the widest issuable budget; each write-up
-/// first otherwise. The smaller shape is never taken for a prompt the
+/// and context management`); the smaller shape is never taken for a prompt the
 /// reasoner could serve.
 pub fn choose_shape(
     analysis_chars: usize,
@@ -374,28 +317,24 @@ pub fn choose_shape(
     }
 }
 
-/// The analysis consolidation produced: this run's, written by the analysis
-/// call — or the one no-write-up sentence on a debut — which the pipeline
-/// stamps with this run's date and anchor bar; or the prior record carried
-/// whole, its own date and anchor with it, where the loop wrote nothing.
+/// This run's analysis, which the pipeline stamps with this run's date and
+/// anchor bar; or the prior record carried whole, its own date and anchor with
+/// it, where the loop wrote nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Consolidated {
     Written(String),
     Carried(AnalysisRecord),
 }
 
-/// What consolidation returns: the holding's analysis and the record of how
-/// it was reached.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Consolidation {
     pub analysis: Consolidated,
     pub distillation: DistillationRecord,
 }
 
-/// The refusal an analysis prompt over its budget takes before issue — an
-/// unclassified failure, never retried, since the outcome is deterministic
-/// and the prior analysis is never distilled, so no smaller shape remains
-/// (`docs/local-models.md §The local-model adapter seam`).
+/// The refusal an over-budget analysis prompt takes before issue: unclassified
+/// and never retried, since the outcome is deterministic and the prior analysis
+/// is never distilled (`docs/local-models.md §The local-model adapter seam`).
 fn ensure_analysis_fits(stage: &str, chars: usize, budgets: &ConsolidationBudgets, when: &str) -> Result<()> {
     anyhow::ensure!(
         chars <= budgets.analysis,
@@ -406,10 +345,9 @@ fn ensure_analysis_fits(stage: &str, chars: usize, budgets: &ConsolidationBudget
     Ok(())
 }
 
-/// Run Step 6d for one holding over the loop's output. `prior_analysis` is
-/// the prior run's analysis record where one exists (the no-write-up
-/// fallback); `prior_analysis_section` the rendered PRIOR ANALYSIS block the
-/// analysis message carries (empty on a debut).
+/// Run Step 6d for one holding. `prior_analysis` is the prior run's record (the
+/// no-write-up fallback); `prior_analysis_section` the rendered PRIOR ANALYSIS
+/// block (empty on a debut).
 pub fn consolidate(
     model: &dyn HoldingAnalyst,
     symbol: &str,
@@ -421,8 +359,7 @@ pub fn consolidate(
 ) -> Result<Consolidation> {
     let write_ups = write_ups_of(research);
     if write_ups.is_empty() {
-        // No write-up this run: no call over nothing — the prior analysis
-        // stands, carried whole, else the one sentence (ruled 2026-10-08).
+        // No write-up: no call is spent over nothing.
         return Ok(Consolidation {
             analysis: match prior_analysis {
                 Some(record) => Consolidated::Carried(record.clone()),
@@ -450,9 +387,8 @@ pub fn consolidate(
         budgets,
     );
     if shape != DistillationShape::None {
-        // Before any distillation call is spent: a prompt that would not fit
-        // with no write-up at all — the header, FETCHED VALUES and the prior
-        // analysis alone — cannot be shortened into budget.
+        // A prompt that would not fit with no write-up at all cannot be
+        // shortened into budget, so refuse before any distillation call is spent.
         let floor = AnalysisInput { write_ups: WriteUps::Distilled(""), ..as_written.clone() };
         ensure_analysis_fits(&stage, analysis_prompt(&floor).chars(), budgets, "with no write-up")?;
     }
@@ -493,8 +429,7 @@ pub fn consolidate(
                     stage: format!("distill {symbol} merge"),
                 })
                 .context("distilling the merge of the per-write-up outputs")?;
-            // The write-ups plus the merge: an agenda holds under ten topics,
-            // so the count never nears the type's range.
+            // An agenda holds under ten topics, so the cast never nears u32's range.
             (text, write_ups.len() as u32 + 1)
         }
     };
@@ -504,8 +439,8 @@ pub fn consolidate(
         prior_analysis: prior_analysis_section,
         write_ups: WriteUps::Distilled(&distillate),
     };
-    // The final prompt is sized once more with the distillate in: still over
-    // the budget, it is refused rather than issued into silent truncation.
+    // Still over budget with the distillate in, the prompt is refused rather
+    // than issued into silent truncation.
     ensure_analysis_fits(&stage, analysis_prompt(&over_distillate).chars(), budgets, "after distillation")?;
     let analysis = model
         .analyze(&over_distillate)
@@ -520,9 +455,8 @@ pub fn consolidate(
 // The offline stub's renders
 // ---------------------------------------------------------------------------
 
-/// The offline stub's analysis: the write-ups as written under their titles,
-/// the contrary pass last — or the distillate as handed — so a scripted
-/// research run still yields the ANALYSIS the thesis document reads with no
+/// The offline stub's analysis: the write-ups under their titles, or the
+/// distillate as handed, so a scripted run still yields an ANALYSIS with no
 /// model call.
 pub fn stub_analysis(input: &AnalysisInput<'_>) -> String {
     match input.write_ups {
@@ -531,9 +465,8 @@ pub fn stub_analysis(input: &AnalysisInput<'_>) -> String {
     }
 }
 
-/// The offline stub's distillate: each subject text cut to half its chars at
-/// a character boundary, under its title where several render — a
-/// deterministic stand-in for the model's shorter document.
+/// The offline stub's distillate: each subject text cut to half its chars at a
+/// character boundary, under its title where several render.
 pub fn stub_distillate(input: &DistillInput<'_>) -> String {
     fn half(text: &str) -> String {
         let text = text.trim();
@@ -587,9 +520,7 @@ mod tests {
         }
     }
 
-    /// A scripted analyst that records every consolidation call it takes and
-    /// answers each with a fixed text, so the shapes and their call counts
-    /// pin offline.
+    /// Records every consolidation call and answers each with a fixed text.
     #[derive(Default)]
     struct Scripted {
         calls: RefCell<Vec<(String, String)>>,
@@ -683,8 +614,7 @@ mod tests {
         assert!(part2.ends_with("\n\nThe analysis runs 900 to 1,800 words.\n"), "{part2}");
         assert_eq!(p.chars(), p.system.chars().count() + p.user.chars().count());
 
-        // A debut: no PRIOR ANALYSIS section and no continuity clause; the
-        // distillate renders as one document under its own gloss.
+        // A debut, over the distillate.
         let d = analysis_prompt(&AnalysisInput {
             symbol: "WID",
             brief: &b,
@@ -778,10 +708,6 @@ mod tests {
 
     #[test]
     fn consolidation_refuses_an_analysis_prompt_still_over_budget_before_issue() {
-        // The final prompt is sized once more with the distillate in; still
-        // over the analysis budget it is refused before issue, unclassified,
-        // after the distillation it spent. A prompt that would not fit with
-        // no write-up at all is refused before any distillation call.
         let b = brief();
         let r = research();
         let ws = write_ups_of(&r);
@@ -854,7 +780,7 @@ mod tests {
         })
         .chars();
 
-        // Within budget: the write-ups as written, one analysis call, no shape.
+        // Within budget: no shape.
         let model = Scripted::default();
         let out = consolidate(
             &model,
@@ -873,9 +799,8 @@ mod tests {
         assert_eq!(calls[0].0, "analysis WID");
         assert!(calls[0].1.contains("\nContrary evidence\nNothing contradicts the share read.\n"), "{}", calls[0].1);
 
-        // One char over the analysis budget with the merged prompt within the
-        // widest: the merged shape, one distillation call, then the analysis
-        // over the distillate.
+        // One char over the analysis budget, the merged prompt within the
+        // widest: the merged shape.
         let model = Scripted::default();
         let out = consolidate(
             &model,
@@ -894,9 +819,8 @@ mod tests {
         assert!(calls[1].1.contains("\nWRITE-UPS\nThis run's research on the holding, the topics' write-ups shortened into one document.\n\ndistillate of distill WID\n"), "{}", calls[1].1);
         assert!(!calls[1].1.contains("Share held."), "the analysis reads the distillate, not the write-ups: {}", calls[1].1);
 
-        // The merged prompt over the widest budget: each write-up first, the
-        // contrary pass among them, then the merge of the outputs, then the
-        // analysis — write-ups + 1 distillation calls.
+        // The merged prompt over the widest budget: the per-write-up shape,
+        // write-ups + 1 distillation calls.
         let model = Scripted::default();
         let prior = AnalysisRecord {
             text: "The prior analysis.".into(),
@@ -938,8 +862,6 @@ mod tests {
         assert!(calls[0].1.contains("\nWRITE-UP\nOne of this run's write-ups on the holding, under its topic.\n\nCompetitive / business position\nShare held.\n"), "{}", calls[0].1);
         assert!(calls[3].1.contains("each already shortened, each under its topic, the contrary-evidence pass last.\n\nCompetitive / business position\ndistillate of distill WID competitive-position\n"), "{}", calls[3].1);
         assert!(calls[3].1.contains("\nContrary evidence\ndistillate of distill WID disconfirming\n"), "{}", calls[3].1);
-        // The analysis message carries PRIOR ANALYSIS, never distilled, and
-        // the merge's distillate.
         assert!(calls[4].1.contains("\nPRIOR ANALYSIS (written 2026-08-01)\nThe prior analysis.\n"), "{}", calls[4].1);
         assert!(calls[4].1.contains("\n\ndistillate of distill WID merge\n"), "{}", calls[4].1);
         assert!(calls[4].1.contains("what the analysis under PRIOR ANALYSIS said"), "{}", calls[4].1);

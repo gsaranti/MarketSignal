@@ -1,19 +1,8 @@
-//! Demo-run mode — dev-only, feature `demo-run`.
-//!
-//! Runs the *real* pipeline (`jobs::run_job`) end to end against paced, streaming
-//! stand-ins, so the run tracker and report rendering can be exercised with **zero
-//! network, keys, or cost**. Compiled only under the `demo-run` feature, which is
-//! not in `default` and not enabled by `tauri build` — so neither this module nor
-//! its mock content ever reaches the shipped binary. Triggered by setting
-//! `MARKET_SIGNAL_DEMO=1` in a build that enabled the feature (see `lib.rs`).
-//!
-//! Each stage here is a thin, ctx-aware decorator: it emits the per-request tracker
-//! rows and streams tokens/thinking with small pauses (so the motion — the progress
-//! fill, the breathe, the streamed text — is actually watchable), then **delegates
-//! to the existing offline stubs** for the real return data. Delegating means the
-//! coverage floor still passes and no domain return types are reconstructed here;
-//! the only new behavior is emission + pacing. Cancellation is polled throughout so
-//! a demo run also exercises the Cancel button.
+//! Demo-run mode, dev-only under the `demo-run` feature (not in `default`, so
+//! never in the shipped binary; triggered by `MARKET_SIGNAL_DEMO=1`). Runs the
+//! real pipeline against paced, streaming stand-ins with zero network, keys or
+//! cost; each stage emits tracker rows and streams text, then delegates to the
+//! offline stubs for the return data so the coverage floor still passes.
 
 use std::sync::Arc;
 use std::thread::sleep;
@@ -32,8 +21,7 @@ use crate::progress::RunContext;
 use crate::research_executor::{SearchBackend, StubSearchBackend};
 use crate::research_router::{ResearchPlan, ResearchRouter, RouterInput, StubResearchRouter};
 
-/// Pause between emissions so the tracker animates at a human pace; short-circuits
-/// the moment a cancel is requested so the run stops promptly.
+/// Pauses so the tracker animates at a human pace.
 fn paced(ctx: &RunContext, ms: u64) {
     if ctx.is_cancelled() {
         return;
@@ -41,9 +29,8 @@ fn paced(ctx: &RunContext, ms: u64) {
     sleep(Duration::from_millis(ms));
 }
 
-/// Stream a block of text through `emit` word-by-word with a small per-word pause,
-/// bailing on cancel. Used for both the main-agent report/reasoning and the analyst
-/// reasoning, so the streamed panes fill the way the live adapters drive them.
+/// Streams `text` word by word so the panes fill the way the live adapters
+/// drive them.
 fn stream(ctx: &RunContext, text: &str, per_word_ms: u64, mut emit: impl FnMut(&str)) {
     for word in text.split_inclusive(' ') {
         if ctx.is_cancelled() {
@@ -56,8 +43,7 @@ fn stream(ctx: &RunContext, text: &str, per_word_ms: u64, mut emit: impl FnMut(&
 
 // --- Baseline scan (Step 3) -------------------------------------------------
 
-/// Representative baseline rows, grouped "baseline" so the tracker files them under
-/// the baseline step (mirrors `App.vue`'s request-group routing).
+/// Grouped `baseline` so the tracker files them under the baseline step.
 const BASELINE_ROWS: &[(&str, &str)] = &[
     ("FMP", "Index levels (Dow / S&P / Nasdaq)"),
     ("FMP", "VIX & sector performance"),
@@ -79,15 +65,14 @@ impl MarketDataSource for DemoMarketDataSource {
             self.ctx
                 .request_finished(*provider, "baseline", *name, *name, "ok", None);
         }
-        // Delegate for the data so the coverage floor passes, as in the test runs.
+        // Delegate for the data so the coverage floor passes.
         StubMarketDataSource.baseline_scan(cadence)
     }
 }
 
 // --- Research half (Steps 7–11) ---------------------------------------------
 
-/// News-gather rows, including a failed GDELT sweep (the fail-soft case the tracker
-/// renders in accent-text) and the supplementary FMP Articles feed.
+/// Includes a failed GDELT sweep so the tracker's fail-soft rendering shows.
 const NEWS_ROWS: &[(&str, &str, bool)] = &[
     ("TAVILY", "US stock market policy and politics", true),
     ("TAVILY", "geopolitics affecting global markets", true),
@@ -228,8 +213,7 @@ pub struct DemoMainAgent {
 
 impl MainAgent for DemoMainAgent {
     fn generate(&self, input: MainAgentInput) -> anyhow::Result<MainAgentOutput> {
-        // Stream the extended-thinking pane first, then the report body, mirroring how
-        // the live adapter drives the two channels.
+        // Thinking first, then the report body, as the live adapter drives them.
         stream(&self.ctx, MAIN_THINKING, 16, |w| self.ctx.agent_thinking(w));
         let out = StubMainAgent.generate(input)?;
         stream(&self.ctx, &out.markdown, 11, |w| self.ctx.agent_token(w));

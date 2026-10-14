@@ -1,36 +1,28 @@
-//! The loop-time listing-resolution guard (`docs/portfolio-analysis.md` §Asset
-//! eligibility): Schwab's asset type says *equity*, not *US-listed equity*, while
-//! the suite's data plan is US-only — so a stock's Schwab instrument identity must
-//! resolve to a canonical FMP symbol whose profile identity cross-checks against
-//! Schwab's before the pipeline may grade it. A wrong-issuer FMP mapping (an OTC
-//! ticker collision) would otherwise grade the wrong company's financials, invisibly
-//! to the run's own checks. The rules here are pure over an already-fetched profile
-//! lookup; the fetch lives in the job (one fail-soft call per fresh-passed stock,
-//! shared with the outcome episodes' entry-stamped sector identity).
+//! The listing-resolution guard (`docs/portfolio-analysis.md` §Asset
+//! eligibility): a stock's Schwab identity must resolve to a canonical FMP
+//! symbol whose profile cross-checks against Schwab's before the pipeline may
+//! grade it, so an OTC ticker collision never grades the wrong issuer. The rules
+//! are pure over an already-fetched profile lookup; the fetch lives in the job.
 
-/// The identity fields read off one FMP `/profile` body — the guard's cross-check
-/// surface plus the sector label, one fetch feeding both consumers. Blank or absent
-/// fields are `None` (the guard types them unverifiable, never a mismatch).
+/// The identity fields read off one FMP `/profile` body. Blank or absent fields
+/// are `None`, which the guard types unverifiable, never a mismatch.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProfileIdentity {
-    /// The quote denomination and depositary-receipt classification, independent
-    /// of the issuer's listing venue and financial-statement denomination.
+    /// The quote denomination, independent of the listing venue and the
+    /// financial-statement denomination.
     pub currency: Option<String>,
     pub is_adr: Option<bool>,
     pub company_name: Option<String>,
-    /// Corporate website from the same profile read; an IR eligibility hint,
-    /// never evidence that two documents are equivalent.
+    /// An IR eligibility hint, never evidence that two documents are equivalent.
     pub website: Option<String>,
     pub exchange: Option<String>,
     pub sector: Option<String>,
     /// The FMP industry label — the commodity context's gold-linkage key
-    /// (an industry naming gold / precious metals, not the whole Basic
-    /// Materials sector — `docs/data-sources.md §Portfolio Analysis —
-    /// endpoint surface`, the `GCUSD` row).
+    /// (`docs/data-sources.md §Portfolio Analysis — endpoint surface`, the
+    /// `GCUSD` row).
     pub industry: Option<String>,
-    /// The provider's served beta — the shared engine's low-beta factor and the
-    /// value-creation read's cost-of-equity input (`portfolio::factors`,
-    /// `portfolio::value_creation`). `None` where the profile omits it or serves
+    /// The provider's served beta (`portfolio::factors`,
+    /// `portfolio::value_creation`); `None` where the profile omits it or serves
     /// a non-numeric value.
     pub beta: Option<f64>,
 }
@@ -46,41 +38,34 @@ pub enum ProfileLookup {
     Unverified(String),
 }
 
-/// The guard's routing outcome for one stock, computed at gather time and routed by
-/// `analyze_holding` beside the asset-class and net-short gates.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ListingResolution {
-    /// A resolved, matching US listing with no unsupported unit signal — the full
-    /// pipeline runs.
+    /// A resolved, matching US listing with no unsupported unit signal.
     SupportedUs,
     /// No verified mapping from provider amounts to the listed USD share.
     UnsupportedUnits { detail: String },
-    /// No canonical FMP resolution — not-rated (unsupported listing), a structural
-    /// can't-grade.
+    /// No canonical FMP resolution — not-rated (unsupported listing).
     Unresolved,
-    /// Resolved, but the primary listing is outside the US exchange set (a foreign
-    /// ordinary, an OTC/PNK quote) — not-rated (unsupported listing).
+    /// Resolved, but the primary listing is outside the US exchange set — not-rated
+    /// (unsupported listing).
     NonUs { exchange: String },
     /// Resolved on a US exchange, but the issuer identity conflicts with Schwab's —
-    /// the evidence floor's conflicting-identity arm (`insufficient-evidence`,
-    /// possibly transient).
+    /// the evidence floor's conflicting-identity arm (`insufficient-evidence`).
     Conflict { fmp_name: String },
-    /// The guard could not verify (profile gap, or a resolved profile whose
-    /// exchange / name is unreadable, or a name comparison with nothing to compare)
-    /// — the holding proceeds with a recorded degraded input.
+    /// The guard could not verify; the holding proceeds with a recorded degraded
+    /// input.
     Unverified { detail: String },
 }
 
-/// The exchanges the guard accepts as a US primary listing. Deliberately excludes
-/// OTC/PNK: a foreign ordinary or unsponsored ADR quotes there without SEC filings,
-/// and that venue is where ticker collisions concentrate — the cost (a US microcap
-/// quoted only OTC is never graded) is the ruled trade (2026-08-05).
+/// Deliberately excludes OTC/PNK: a foreign ordinary or unsponsored ADR quotes
+/// there without SEC filings, and that venue is where ticker collisions
+/// concentrate; the cost is that a US microcap quoted only OTC is never graded.
 const US_EXCHANGES: [&str; 3] = ["NYSE", "NASDAQ", "AMEX"];
 
-/// Corporate-form and share-class tokens that carry no issuer identity — dropped
+/// Corporate-form and share-class tokens that carry no issuer identity, dropped
 /// before the name comparison so "Apple Inc" and "APPLE INC COM" compare on
 /// {APPLE} alone. Single-character tokens (share-class letters) are dropped by
-/// length. Drafted with the slice; extend as real Schwab descriptions surface.
+/// length. Extend as real Schwab descriptions surface.
 const NAME_STOPWORDS: [&str; 34] = [
     "INC",
     "INCORPORATED",
@@ -118,12 +103,10 @@ const NAME_STOPWORDS: [&str; 34] = [
     "NV",
 ];
 
-/// Uppercased identity-bearing tokens of an issuer name: apostrophes first
-/// collapse inside the word (`McDonald's` → `MCDONALDS`), then the name splits
-/// on remaining non-alphanumerics and drops corporate-form stopwords and
-/// single-character tokens. Joining the apostrophe is both more faithful to
-/// account descriptions that omit it and more conservative across unrelated
-/// names (`O'Reilly` no longer contributes a loose `REILLY` token).
+/// Uppercased identity-bearing tokens of an issuer name. Apostrophes collapse
+/// inside the word (`McDonald's` → `MCDONALDS`) before the split: that is
+/// faithful to account descriptions that omit them and more conservative across
+/// unrelated names (`O'Reilly` contributes no loose `REILLY` token).
 fn significant_tokens(name: &str) -> Vec<String> {
     let normalized: String = name
         .to_ascii_uppercase()
@@ -137,11 +120,10 @@ fn significant_tokens(name: &str) -> Vec<String> {
         .collect()
 }
 
-/// The conservative comparison: conflict **only** when the two names share zero
-/// significant tokens (the gross OTC-collision shape); a shared token is a match
-/// (so "American Airlines" vs "American Express" deliberately does not conflict —
-/// no spurious abstention), and an empty token set on either side is unverifiable,
-/// never a conflict.
+/// Conflict only when the two names share zero significant tokens (the gross
+/// OTC-collision shape); one shared token is a match, so "American Airlines" vs
+/// "American Express" deliberately does not conflict, and an empty token set on
+/// either side is unverifiable, never a conflict.
 enum NameComparison {
     Match,
     Conflict,
@@ -165,13 +147,11 @@ fn compare_names(schwab: &str, fmp: &str) -> NameComparison {
 enum DescriptionIdentity {
     /// At least one significant token beyond the ticker's own — a real name.
     Issuer,
-    /// Significant tokens, but every one is a ticker token: the ticker
-    /// repeated, or a ticker-plus-stopword shape like `"PSX COM"`. Weak
-    /// evidence — some issuers ARE named by their ticker (ASML), so the
-    /// guard tests this shape against the profile name rather than comparing
-    /// it as a name or skipping it outright. Token-set comparison (not raw
-    /// string equality) keeps a slash-class self-description (`"BRK/B"` for
-    /// `BRK/B`) in this family too.
+    /// Significant tokens, but every one is a ticker token: the ticker repeated,
+    /// or a ticker-plus-stopword shape like `"PSX COM"`. Some issuers are named
+    /// by their ticker (ASML), so the guard tests this shape against the profile
+    /// name rather than comparing it as a name or skipping it. Token-set
+    /// comparison keeps a slash-class self-description (`"BRK/B"`) here too.
     TickerOnly,
     /// Nothing significant at all — blank, whitespace, or corporate-form
     /// noise like `"COMMON STOCK"` that tokenizes to nothing.
@@ -191,12 +171,10 @@ fn description_identity(schwab_description: &str, symbol: &str) -> DescriptionId
     }
 }
 
-/// Whether an account description carries an issuer identity at all — the one
-/// definition, shared by the guard below and the interpretation prompt's issuer
-/// fallback so the two cannot drift apart. Identity is a significant token
-/// **beyond the ticker's own tokens** ([`DescriptionIdentity::Issuer`]), not
-/// merely non-emptiness: blank, noise, the ticker repeated, and the
-/// ticker-plus-stopword shape all name no issuer for a prompt header to show.
+/// Whether an account description carries an issuer identity: a significant
+/// token beyond the ticker's own ([`DescriptionIdentity::Issuer`]), not mere
+/// non-emptiness. The one definition, shared by the guard and the interpretation
+/// prompt's issuer fallback so the two cannot drift apart.
 pub fn describes_issuer(schwab_description: &str, symbol: &str) -> bool {
     matches!(
         description_identity(schwab_description, symbol),
@@ -204,14 +182,12 @@ pub fn describes_issuer(schwab_description: &str, symbol: &str) -> bool {
     )
 }
 
-/// Whether a **canonical-source** name (the FMP profile's `companyName`, the
-/// fund data's `name`) is displayable for `symbol`. Deliberately looser than
+/// Whether a canonical-source name (the FMP profile's `companyName`, the fund
+/// data's `name`) is displayable for `symbol`. Deliberately looser than
 /// [`describes_issuer`]: a canonical source's name field is an issuer name by
-/// construction, so a ticker-token-only *legal* name — "ASML Holding N.V.",
-/// "eBay Inc." — is real identity there, while the same token shape in an
-/// account description ("PSX COM") is noise. Only emptiness-after-tokenizing
-/// and the bare ticker are rejected (FMP's parser accepts any non-blank
-/// string, so those shapes do reach the fallback).
+/// construction, so a ticker-token-only legal name ("ASML Holding N.V.") is
+/// real identity there. Only emptiness-after-tokenizing and the bare ticker are
+/// rejected, since FMP's parser accepts any non-blank string.
 pub fn displayable_source_name(name: &str, symbol: &str) -> bool {
     let n = name.trim();
     !n.eq_ignore_ascii_case(symbol.trim()) && !significant_tokens(n).is_empty()
@@ -219,12 +195,9 @@ pub fn displayable_source_name(name: &str, symbol: &str) -> bool {
 
 /// Route one stock's profile lookup to its listing resolution. The exchange test
 /// runs before the name comparison and is independent of headquarters country.
-/// A Schwab description carrying no issuer
-/// identity ([`describes_issuer`]) has nothing to compare, so it reads unverifiable.
-/// Blank and noise-only descriptions reached the same `Unverified` outcome through
-/// `compare_names`'s empty-token arm before that check was hoisted; only the
-/// recorded detail changed. That arm stays live for the mirror case — a *profile*
-/// name that tokenizes to nothing.
+/// A description carrying no issuer identity ([`describes_issuer`]) has nothing
+/// to compare, so it reads unverifiable; `compare_names`'s empty-token arm
+/// covers the mirror case, a profile name that tokenizes to nothing.
 pub fn resolve_listing(
     symbol: &str,
     schwab_description: &str,
@@ -278,14 +251,10 @@ pub fn resolve_listing(
                     detail: "account description carries no issuer name to cross-check"
                         .to_string(),
                 },
-                // The ticker is the description's only identity token. Some
-                // issuers are named by their ticker (ASML), so test the ticker
-                // itself against the profile name through the one shared
-                // comparison: a match verifies, and everything else reads
-                // unverifiable — deliberately never a conflict, since a
-                // "PSX COM" shape names no issuer to conflict with (attempt-1
-                // review sweep). TickerOnly guarantees non-empty ticker
-                // tokens, so the Unverifiable arm folds in harmlessly.
+                // Some issuers are named by their ticker (ASML), so the ticker
+                // itself is tested against the profile name: a match verifies,
+                // anything else reads unverifiable — never a conflict, since a
+                // "PSX COM" shape names no issuer to conflict with.
                 DescriptionIdentity::TickerOnly => match compare_names(symbol, fmp_name) {
                     NameComparison::Match => ListingResolution::SupportedUs,
                     NameComparison::Conflict | NameComparison::Unverifiable => {
@@ -329,8 +298,6 @@ mod tests {
 
     #[test]
     fn a_matching_us_listing_is_supported_despite_suffix_noise() {
-        // The plan's named pair: exact match is too strict; the suffix tokens carry
-        // no identity.
         assert_eq!(
             resolve_listing("AAPL", "APPLE INC COM", &profile("Apple Inc.", "NASDAQ")),
             ListingResolution::SupportedUs
@@ -383,8 +350,7 @@ mod tests {
 
     #[test]
     fn a_non_us_or_otc_primary_listing_is_unsupported() {
-        // A foreign ordinary quoted OTC (the doc's example case) and a foreign
-        // exchange both fall outside the allowlist — even with a matching name.
+        // Outside the allowlist even with a matching name.
         for exchange in ["PNK", "OTC", "LSE", "XETRA"] {
             assert_eq!(
                 resolve_listing(
@@ -420,7 +386,6 @@ mod tests {
 
     #[test]
     fn a_zero_shared_token_name_is_a_conflict_and_one_shared_token_is_not() {
-        // The gross OTC-collision shape: nothing in common.
         assert_eq!(
             resolve_listing(
                 "ACME",
@@ -431,8 +396,7 @@ mod tests {
                 fmp_name: "Zenith Mining Corp".to_string()
             }
         );
-        // The ruled conservative bound, pinned: one shared significant token is a
-        // match — no spurious abstention on near-collisions.
+        // One shared token is a match: no spurious abstention on near-collisions.
         assert_eq!(
             resolve_listing(
                 "AAL",
@@ -456,15 +420,13 @@ mod tests {
                 ListingResolution::SupportedUs,
                 "{symbol}: {schwab} vs {canonical}"
             );
-            // The comparison is symmetric with respect to which source keeps
-            // the punctuation.
+            // Symmetric with respect to which source keeps the punctuation.
             assert!(
                 matches!(compare_names(canonical, schwab), NameComparison::Match),
                 "{symbol}: reverse comparison"
             );
         }
 
-        // Joining cannot create the loose suffix token the old split did:
         // O'Reilly and an unrelated Reilly issuer remain a zero-token conflict.
         assert!(matches!(
             compare_names("O'Reilly Automotive", "Reilly Financial"),
@@ -484,14 +446,11 @@ mod tests {
         // A description that is all corporate-form noise tokenizes to nothing.
         let r = resolve_listing("XYZ", "COMMON STOCK", &profile("Xyz Industries Inc", "NYSE"));
         assert!(matches!(r, ListingResolution::Unverified { .. }), "{r:?}");
-        // Ticker-plus-stopword — the real account-description shape "PSX COM"
-        // tokenizes back to just the ticker, naming no issuer: it must read
-        // unverifiable, never make a good listing guard-terminal by comparing
-        // {PSX} against {PHILLIPS, 66} (attempt-1 review sweep).
+        // "PSX COM" tokenizes back to the ticker, so it must not go terminal by
+        // comparing {PSX} against {PHILLIPS, 66}.
         let r = resolve_listing("PSX", "PSX COM", &profile("Phillips 66", "NYSE"));
         assert!(matches!(r, ListingResolution::Unverified { .. }), "{r:?}");
-        // A resolved profile missing its exchange or name cannot be verified —
-        // and is never routed terminal.
+        // A resolved profile missing its exchange or name is never routed terminal.
         let no_exchange = ProfileLookup::Resolved(ProfileIdentity {
             website: None,
             currency: Some("USD".into()),
@@ -524,11 +483,8 @@ mod tests {
 
     #[test]
     fn describes_issuer_demands_a_token_beyond_the_ticker() {
-        // Identity-bearing shapes.
         assert!(describes_issuer("PHILLIPS 66", "PSX"));
         assert!(describes_issuer("Apple Inc.", "AAPL"));
-        // No-identity shapes: blank, noise, the ticker itself, and the
-        // ticker-plus-stopword account form.
         assert!(!describes_issuer("", "PSX"));
         assert!(!describes_issuer("COMMON STOCK", "PSX"));
         assert!(!describes_issuer("PSX", "PSX"));

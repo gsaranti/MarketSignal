@@ -1,13 +1,7 @@
 //! SQLite persistence for Portfolio Analysis runs (`docs/storage.md §Local Analysis
-//! Suite Storage`). House style mirrors [`crate::storage`]: free functions over
-//! `&rusqlite::Connection`, the table created by [`init_schema`] (called from
-//! `storage::init_schema` so any run path provisions it).
-//!
-//! A run is persisted whole as one JSON blob — the [`crate::portfolio::PortfolioRun`]
-//! carrying the holdings snapshot, the per-holding verdicts, the roll-up, and the
-//! audit record — plus the queryable columns the UI lists on (`created_at`). Per-job
-//! retention keeps the most recent [`crate::portfolio::PORTFOLIO_RUN_RETENTION`]
-//! runs, pruned independently of the report retention and of Trade Opportunities.
+//! Suite Storage`): free functions over `&rusqlite::Connection`, the tables
+//! created by [`init_schema`] (called from `storage::init_schema`). A run is
+//! persisted whole as one JSON blob plus the columns the UI lists on.
 
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -16,15 +10,8 @@ use serde::{Deserialize, Serialize};
 use crate::portfolio::{PortfolioRun, PORTFOLIO_RUN_RETENTION};
 use crate::schwab::Holdings;
 
-/// Create the Portfolio Analysis tables if absent. Idempotent, like the rest of
-/// `storage::init_schema`, which calls this. `holdings_pulls` is a single-row
-/// latest-only store (the `CHECK (id = 1)` pins it), matching its
-/// most-recent-pull-only semantics.
-///
-/// Both tables are exported by data portability: a new constraint here needs a
-/// matching import pre-check in `portability::import_archive` (see
-/// `storage::init_schema`'s coupling note). Today's mirror: `run_id` UNIQUE and
-/// the single-row `holdings_pulls` CHECK.
+/// Idempotent. A new constraint on an exported table needs a matching import
+/// pre-check in `portability::import_archive`.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS portfolio_runs (
@@ -43,12 +30,9 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // The quick check's between-run state (`docs/portfolio-analysis.md §The quick
-    // check`): a single latest row, deliberately separate from `portfolio_runs` —
-    // a quick check must never surface in the run history or become the next full
-    // run's diff baseline / carry source. Exported by data portability (format
-    // v2): its flags and evidence events are durable analytical state that does
-    // not regenerate on the next sweep.
+    // A single latest row, deliberately separate from `portfolio_runs`: a quick
+    // check must never surface in the run history or become the next full run's
+    // diff baseline (`docs/portfolio-analysis.md §The quick check`).
     conn.execute(
         "CREATE TABLE IF NOT EXISTS portfolio_quick_checks (
             id         INTEGER PRIMARY KEY CHECK (id = 1),
@@ -57,16 +41,11 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // The episode store (`docs/portfolio-analysis.md §Outcome learning`) —
-    // append-only price records, persisted **independent of the run retention**
-    // (a three-year horizon outlives any count-based window), and the checks
-    // written onto them once each. Both tables are insert-only: nothing here
-    // updates or deletes a row. The autoincrement ids are insertion order — an
-    // episode's is which one is a symbol's latest, a check's is run order — and
-    // `UNIQUE (episode_id, horizon)` holds a horizon to one check. Exported by
-    // data portability (format v20) with their ids; the id keys, the check's
-    // episode reference and the horizon uniqueness are mirrored by import
-    // pre-checks.
+    // The episode store (`docs/portfolio-analysis.md §Outcome learning`):
+    // insert-only, and persisted independent of the run retention, since a
+    // three-year horizon outlives any count-based window. The autoincrement ids
+    // are insertion order — an episode's names a symbol's latest, a check's is
+    // run order — and `UNIQUE (episode_id, horizon)` holds a horizon to one check.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS portfolio_episodes (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,11 +66,8 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
-    // The shared price-bar cache (`docs/storage.md §Local Analysis Suite Storage`)
-    // — split-adjusted daily closes keyed by symbol, the accuracy checks'
-    // refresh target. Exported by data portability (format v3) so an imported
-    // store keeps its series; the (symbol, date) primary key is mirrored by an
-    // import pre-check.
+    // The shared price-bar cache (`docs/storage.md §Local Analysis Suite
+    // Storage`): split-adjusted daily closes keyed by symbol.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS price_bars (
             symbol TEXT NOT NULL,
@@ -102,16 +78,11 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         [],
     )?;
     // The interrupted-run checkpoint store (`docs/portfolio-analysis.md §Failure
-    // posture` — per-holding checkpoint/resume): one header row — the pinned run
-    // identity, holdings pull, Step-5 shared context, version stamps, and the
-    // run-level accumulators — plus one row per completed holding. At most one
-    // interrupted run exists (the single global run slot); a new run discards
-    // the lot as it opens its own trail (a new run failing before that point —
-    // holdings pull, rate anchors — leaves the prior trail intact and still
-    // resumable) and a successful persist clears its own. Deliberately
-    // **excluded from the data-portability archive** (ruled 2026-08-21):
-    // transient machine-local operational state that expires at the resume
-    // window, not durable analytical data — so no import pre-check mirrors it.
+    // posture`): one header row plus one row per completed holding. At most one
+    // interrupted run exists; a new run discards the lot as it opens its own
+    // trail, and a successful persist clears its own. Deliberately excluded from
+    // the data-portability archive: transient machine-local state that expires
+    // at the resume window, so no import pre-check mirrors it.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS portfolio_checkpoints (
             run_id            TEXT PRIMARY KEY,
@@ -137,25 +108,19 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
 // ---- Interrupted-run checkpoints (`docs/portfolio-analysis.md §Failure posture`) --
 
 /// The pinned header a resume reopens (`docs/portfolio-analysis.md §Failure
-/// posture`): the interrupted run's identity, its original normalized holdings
-/// pull (held option positions included), the Step-5 shared context, the
-/// selective work-list and tail sweep, and the version stamps a resume must
-/// match — so completed and resumed holdings alike compute against one book and
-/// one run-level context, and the finished run is honestly stamped with the
-/// pinned pull's as-of time. Per-holding retrieval — the option-chain fetches
-/// included — is deliberately not pinned: it runs live at each holding's own
-/// analysis inside any run (`docs/portfolio-workflow.md` §Step 2), so a resumed
-/// holding's evidence is fresher than the pinned as-of by up to the resume
-/// window.
+/// posture`), so completed and resumed holdings alike compute against one book
+/// and one run-level context. Per-holding retrieval is deliberately not pinned:
+/// it runs live at each holding's own analysis (`docs/portfolio-workflow.md`
+/// §Step 2), so a resumed holding's evidence is fresher than the pinned as-of by
+/// up to the resume window.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointHeader {
     pub run_id: String,
-    /// The interrupted run's `created_at` — the pinned as-of the resume window
-    /// ages against.
+    /// The pinned as-of the resume window ages against.
     pub created_at: String,
-    /// The diff / carry baseline at run start (`latest_run`'s id then). Resume
-    /// refuses when the store's latest run has moved — any run that persisted
-    /// discarded prior checkpoints on its way, so a mismatch means stale state.
+    /// The diff / carry baseline at run start. Resume refuses when the store's
+    /// latest run has moved — any run that persisted discarded prior checkpoints
+    /// on its way, so a mismatch means stale state.
     pub prior_run_id: Option<String>,
     pub holdings: Holdings,
     pub rates: crate::portfolio::engine::RateAnchors,
@@ -168,15 +133,12 @@ pub struct CheckpointHeader {
     pub cboe_gap: Option<String>,
     pub short_interest_file: Option<crate::finra::ShortInterestFile>,
     pub finra_gap: Option<String>,
-    /// The run-level M&A feed (`mergers-acquisitions-latest`, the trailing
-    /// window, newest first) each held stock matches against at dossier
+    /// The run-level M&A feed each held stock matches against at dossier
     /// assembly, and the walk's gap where it failed or truncated.
     pub ma_deals: Vec<crate::portfolio::evidence::MaDeal>,
     pub ma_gap: Option<String>,
-    /// A selective run's work-list (uppercased); `None` = the whole book. A
-    /// selective re-analysis checkpoints identically.
+    /// A selective run's work-list (uppercased); `None` = the whole book.
     pub work_list: Option<Vec<String>>,
-    /// The selective tail sweep's states, pinned with the run.
     pub swept_tail: Vec<crate::portfolio::quick_check::HoldingQuickState>,
     /// Version stamps at run start — a resume refuses on any mismatch with the
     /// current binary / roster rather than mixing verdicts across contracts.
@@ -186,120 +148,30 @@ pub struct CheckpointHeader {
     pub pre_profit_parameter_version: String,
     /// The semantics of the selective carried-tail sweep pinned in this header.
     pub quick_check_parameter_version: String,
-    /// The evidence-floor rule the trail's completed holdings were floored under
+    /// The rule the trail's completed holdings were floored under
     /// ([`crate::portfolio::engine::EVIDENCE_FLOOR_VERSION`]).
     pub evidence_floor_version: String,
     /// The trail's own shape stamp ([`CHECKPOINT_FORMAT_VERSION`]), so a trail
-    /// written under another header or row shape is refused at the resume gate
-    /// with its reason rather than loud-skipping every row and offering a
-    /// resume that restores nothing (ruled 2026-08-29, Codex I18).
+    /// under another header or row shape is refused at the resume gate with its
+    /// reason rather than loud-skipping every row.
     pub checkpoint_format_version: String,
     pub model_ids: Vec<String>,
 }
 
 /// The checkpoint trail's shape and pinned-input stamp — what the header and
-/// each holding row persist. It moves whenever a slice changes the trail's
+/// each holding row persist. It moves whenever a change alters the trail's
 /// shape or the semantics of a pinned input restored by resume, and only then:
-/// what a completed holding's verdict, audit, and carried tail *mean* is stamped
-/// on the six version axes the header carries, which a slice changing those semantics is
-/// obliged to move (`docs/portfolio-analysis.md` §Failure posture, ruled
-/// 2026-08-29). History: `checkpoint-v1` — telemetry on the row, cumulative
-/// counters on the accumulators; `checkpoint-v2` — the deep-history and
-/// benchmark health on the row (Codex I17); `checkpoint-v3` — the admission
-/// stamp on the overlay's observation rows inside the row's audit (Codex
-/// I20); `checkpoint-v4` — the required reporting span on each observation
-/// row and derived execution miss (Review 2 N1); `checkpoint-v5` — the
-/// quick-check evaluation stamp on the selective tail sweep (Review 2 N3);
-/// `checkpoint-v6` — the raw fiscal-period consensus rows on a completed
-/// holding's quick basis (Review 2 M11); `checkpoint-v7` — cash-position
-/// reconciliation against each Schwab account's liquidation value (Review 2
-/// M21), so an older pinned holdings snapshot cannot resume under the corrected
-/// denominator semantics; `checkpoint-v8` — the Tavily-fallback route witness
-/// (`tavily_fallback_used`) removed from a completed holding's research audit
-/// with the local suite's move to SearXNG-only, so a v7 trail (which could carry
-/// a Tavily-researched holding) is refused at the resume gate rather than
-/// restoring a Tavily-researched holding under the SearXNG-only contract.
-/// v9 removes the priced verdict's unused structural flag.
-/// v10 renames the priced verdict's `price_target_rationale` to
-/// `model_target_rationale` with its meaning — the model explains its own
-/// target bands, not the engine's (fix list 3.1, `portfolio-v38`), so a v9
-/// trail's completed holdings, whose rationales explain the engine's target,
-/// cannot resume under the new field.
-///
-/// `checkpoint-v11` (`portfolio-v44`): the audit's persisted typed research
-/// fields lose `conflict_handling` and their confidences, and the forward
-/// assumption's `fact_type` / `affects` narrow to the engine's alternatives,
-/// so a v10 trail's audit rows cannot resume under the new shape.
-///
-/// `checkpoint-v12` (`portfolio-v45`): every ledger condition gains `label`
-/// and a quantitative condition's `statement` is app-rendered from its core,
-/// so a v11 trail's conditions cannot resume under the new shape.
-/// `checkpoint-v13`: complete physical-attempt observations with explicit
-/// app measurements and raw API counters; no v12 row can resume this shape.
-/// `checkpoint-v14`: claim retrieval, publication, and fact-period fields.
-/// `checkpoint-v15`: calendar-quarter values in persisted claim fact periods.
-/// `checkpoint-v16` (`portfolio-v65`): the persisted leading indicator loses
-/// the model-authored driver name (`confirms_driver`); the app resolves the
-/// name from `confirms_driver_id`.
-/// `checkpoint-v17` (`portfolio-v68`): the priced verdict's engine arm carries
-/// bands at three months, twelve months and three years, its own action rung
-/// and the authoring-time band relation, and no stand-in view; the ledger
-/// loses the band relation; the overlay's consequences lose the conviction
-/// ceiling; the run record carries no outcome records — no v16 row can resume
-/// this shape.
-/// `checkpoint-v18` (`portfolio-v69`, `pre-profit-v6`): the audit carries the
-/// soft forensic flags beside the hard-forensic record, and the overlay's
-/// execution leg is a typed `unscorable` in place of the attainment read — no
-/// v17 row can resume this shape.
-/// `checkpoint-v19` (`quick-check-v5`): the pinned tail sweep's per-holding
-/// states carry no condition evaluation states and no news-seed family — the
-/// quick check sweeps the two engine monitors alone — so no v18 header can
-/// resume this shape.
-/// `checkpoint-v20` (`portfolio-v70`): the verdict's model arm is the thesis
-/// document and its typed appendix — the ledger with its conditions, the
-/// what-changed audit, the self-assessment, the horizon outlook, the model
-/// sub-scores and the model's band levels leave the verdict and the audit,
-/// an abstention retains the prior thesis document on its own variant — so no
-/// v19 row can resume this shape.
-/// `checkpoint-v21` (`portfolio-v72`): the audit's research record is the
-/// write-ups as written with the disconfirming pass's, the typed page roster
-/// and the gaps — the combined findings, the seed layer, the seed decisions,
-/// the claim-derived sources, the distillation shape and the typed channels
-/// leave it — so no v20 row can resume this shape.
-/// `checkpoint-v22` (`portfolio-v73`): the audit carries the holding's
-/// analysis record (its text, its date and its anchor bar) beside its
-/// research record, and the record carries the consolidation's distillation
-/// shape with its call count — so no v21 row can resume this shape.
-/// `checkpoint-v23` (`portfolio-v74`): the header pins the run-level M&A feed
-/// (the deals of the trailing window and the walk's gap) beside the FINRA
-/// file, so a resumed run matches its holdings against the same feed — so no
-/// v22 header can resume this shape.
-/// `checkpoint-v24` (`portfolio-v75`): the audit carries the self-review's
-/// review and the accuracy read-through mark its thesis document read, and
-/// the fund exposure basis carries the fund's NAV — so no v23 row can resume
-/// this shape.
-/// `checkpoint-v25` (`portfolio-v75`): the Portfolio trail's final shape — the
-/// verdict carries the basis read beside its position change and the audit's
-/// pre-profit overlay carries no observation history — so no v24 row can
-/// resume this shape.
-/// `checkpoint-v26` (`portfolio-v77`): a priced stock's audit carries its
-/// factor composite and its verdict the grade basis — the metric class, the
-/// anchor row and the thin-own-history flag — so no v25 row can resume this
-/// shape.
+/// what a completed holding's verdict, audit and carried tail *mean* is stamped
+/// on the six version axes the header carries (`docs/portfolio-analysis.md`
+/// §Failure posture).
 pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v26";
 
-/// The run-level keyed identities the post-loop consumers read (episode
-/// sector identities, the commodity context's industry key, prompt-header
-/// names) — re-written beside each holding checkpoint so completed holdings'
-/// contributions survive a failure. Every entry is keyed by symbol, so a
-/// re-analysis overwrites its own entry and a resume can never count a
-/// holding twice. Nothing counted lives here: the data-health context-fit
-/// and fired-retry rows (ruled 2026-08-28, off Codex round 1) and the
-/// deep-history and benchmark health (Codex I17, 2026-08-29) ride each
-/// [`CheckpointHolding`], so the trail's contribution membership is its row
-/// membership by construction — a cumulative count re-written whole beside
-/// the next holding's write survived a dropped row and counted that holding
-/// again when it re-analyzed.
+/// The run-level keyed identities the post-loop consumers read, re-written
+/// beside each holding checkpoint so completed holdings' contributions survive
+/// a failure. Every entry is keyed by symbol, so a re-analysis overwrites its
+/// own entry and a resume can never count a holding twice. Nothing counted
+/// lives here: counts ride each [`CheckpointHolding`], so the trail's
+/// contribution membership is its row membership by construction.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CheckpointAccumulators {
     pub sector_by_symbol:
@@ -309,38 +181,30 @@ pub struct CheckpointAccumulators {
 }
 
 /// One completed holding's contribution to the run-level data-health counts,
-/// carried on its checkpoint row like its telemetry, so a resume rebuilds the
-/// counts from the rows it restored rather than seeding a cumulative counter
-/// — one re-written whole beside the next holding's write survived a dropped
-/// row and counted that holding again when it re-analyzed (Codex I17).
+/// carried on its checkpoint row so a resume rebuilds the counts from the rows
+/// it restored rather than seeding a cumulative counter — one re-written whole
+/// beside the next holding's write survived a dropped row and counted that
+/// holding again when it re-analyzed.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct HoldingHealth {
-    /// This holding's deep-history (FMP dated-EOD) fetch degraded — its anchor
-    /// window starved to the documented fallback.
+    /// The deep-history (FMP dated-EOD) fetch degraded, starving the anchor
+    /// window to its fallback.
     pub deep_history_failed: bool,
-    /// The sector-benchmark series this holding read as unavailable — off a
-    /// fresh failed fetch or the per-process memo alike, since its pre-flag
-    /// starved either way — so the run-level list rebuilt from the rows
-    /// deduplicates by benchmark whichever rows landed. `None` where no
+    /// The sector-benchmark series this holding read as unavailable, off a
+    /// fresh failed fetch or the per-process memo alike; the run-level list
+    /// rebuilt from the rows deduplicates by benchmark. `None` where no
     /// benchmark was read or the series resolved.
     pub benchmark_gap: Option<String>,
 }
 
-/// One completed holding's checkpoint — exactly what the loop pushed for it,
-/// plus the holding's own local-model telemetry — the prompt-size observations
-/// and fired bounded retries of its calls, in call order, drained from the
-/// analyst at its checkpoint boundary — and its data-health contribution
-/// ([`HoldingHealth`]). Riding the row rather than the
-/// accumulators makes the trail's telemetry membership its row membership by
-/// construction — a row that never landed (the fail-soft write failed) or no
-/// longer reads takes its calls with it, and that holding re-analyzes whole —
-/// so a resumed run's data-health read counts no call twice and omits only the
-/// superseded calls of holdings the resumed process re-analyzes — the
-/// interrupted holding's abandoned calls and a dropped row's originals
-/// (`docs/portfolio-analysis.md` §Failure posture, ruled 2026-08-28). No
-/// `serde(default)` on any field — a row under another shape takes the
-/// documented loud-skip at load and re-analyzes, and the format stamp refuses
-/// such a trail at the gate.
+/// One completed holding's checkpoint: what the loop pushed for it, plus its
+/// own local-model telemetry and its data-health contribution. Riding the row
+/// rather than the accumulators makes the trail's telemetry membership its row
+/// membership by construction — a row that never landed or no longer reads
+/// takes its calls with it, and that holding re-analyzes whole
+/// (`docs/portfolio-analysis.md` §Failure posture). No `serde(default)` on any
+/// field: a row under another shape takes the loud-skip at load and
+/// re-analyzes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CheckpointHolding {
     pub verdict: crate::portfolio::HoldingVerdict,
@@ -348,14 +212,10 @@ pub struct CheckpointHolding {
     /// This holding's rows of the data-health context-fit read
     /// (`build_data_health`).
     pub prompt_usage: Vec<crate::local_model::PromptUsage>,
-    /// This holding's rows of the data-health model-retry read.
     pub model_retries: Vec<crate::local_model::RetryEvent>,
-    /// This holding's deep-history and benchmark contribution to the
-    /// data-health counts.
     pub health: HoldingHealth,
 }
 
-/// A loaded checkpoint: header, accumulators, and the completed-holding rows.
 #[derive(Debug, Clone)]
 pub struct Checkpoint {
     pub header: CheckpointHeader,
@@ -363,7 +223,7 @@ pub struct Checkpoint {
     pub holdings: Vec<CheckpointHolding>,
 }
 
-/// Open (or reopen) the checkpoint header for a starting run. Fresh accumulators.
+/// Opens the trail for a starting run with fresh accumulators.
 pub fn save_checkpoint_header(conn: &Connection, header: &CheckpointHeader) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO portfolio_checkpoints
@@ -379,11 +239,10 @@ pub fn save_checkpoint_header(conn: &Connection, header: &CheckpointHeader) -> R
     Ok(())
 }
 
-/// Persist one completed holding's checkpoint row (idempotent per symbol — a
-/// resumed run re-checkpointing a symbol replaces its row) together with the
-/// refreshed run-level accumulators, in **one transaction**: a crash between
-/// the two writes could otherwise restore the verdict without its accumulator
-/// contribution, or the contribution without its row.
+/// Idempotent per symbol: a resumed run re-checkpointing a symbol replaces its
+/// row. The row and the refreshed accumulators land in one transaction, since a
+/// crash between the two writes could otherwise restore the verdict without its
+/// accumulator contribution, or the contribution without its row.
 pub fn save_checkpoint_progress(
     conn: &Connection,
     run_id: &str,
@@ -405,13 +264,11 @@ pub fn save_checkpoint_progress(
     Ok(())
 }
 
-/// Load the interrupted run's checkpoint, if one exists. At most one header row
-/// exists (a new run discards before opening its own); an unreadable header or
-/// row is loud-skipped — a corrupt checkpoint costs the resume offer, never an
-/// error surface (the intact new-run path is always available). A header
-/// stamped under another trail format loads alone — its accumulators and rows
-/// are not read, since the gate refuses the trail on the stamp — so a stale
-/// trail costs its refusal reason, never a loud-skip per row (Codex I18).
+/// An unreadable header or row is loud-skipped: a corrupt checkpoint costs the
+/// resume offer, never an error surface. A header stamped under another trail
+/// format loads alone — its accumulators and rows are not read, since the gate
+/// refuses the trail on the stamp — so a stale trail costs its refusal reason,
+/// never a loud-skip per row.
 pub fn load_checkpoint(conn: &Connection) -> Result<Option<Checkpoint>> {
     let row: Option<(String, String, String)> = conn
         .query_row(
@@ -471,9 +328,8 @@ pub fn load_checkpoint(conn: &Connection) -> Result<Option<Checkpoint>> {
     }))
 }
 
-/// Discard every checkpoint — a new run's entry path, and a completed resume's
-/// cleanup (`docs/portfolio-analysis.md §Failure posture`: a new run discards
-/// any interrupted run's checkpoints; its partial verdicts never became a run).
+/// A new run's entry path and a completed resume's cleanup
+/// (`docs/portfolio-analysis.md §Failure posture`).
 pub fn clear_checkpoints(conn: &Connection) -> Result<()> {
     conn.execute("DELETE FROM portfolio_checkpoint_holdings", [])?;
     conn.execute("DELETE FROM portfolio_checkpoints", [])?;
@@ -482,10 +338,10 @@ pub fn clear_checkpoints(conn: &Connection) -> Result<()> {
 
 // ---- The episode store (`docs/portfolio-analysis.md §Outcome learning`) ---------
 
-/// The whole episode store, loaded: every readable episode and check in
-/// insertion order, every `(episode, horizon)` a check row exists for — off the
-/// SQL columns, so an unreadable check still holds its horizon written and is
-/// never re-due — plus the count of rows that no longer decoded.
+/// Every readable episode and check in insertion order, every `(episode,
+/// horizon)` a check row exists for — off the SQL columns, so an unreadable
+/// check still holds its horizon written and is never re-due — and the count
+/// of rows that no longer decoded.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EpisodeStore {
     pub episodes: Vec<crate::portfolio::outcome::StoredEpisode>,
@@ -494,11 +350,11 @@ pub struct EpisodeStore {
     pub skipped: usize,
 }
 
-/// Load every episode and check, oldest first by insertion order (`id`) — the
-/// order that names a symbol's latest episode and that is a check's run order;
-/// the creation date is data, never identity. A row whose JSON no longer
-/// decodes is **skipped and logged — never a load failure and never deleted**:
-/// an unreadable episode is never due, and its checks count in no score.
+/// Oldest first by insertion order (`id`) — the order that names a symbol's
+/// latest episode and a check's run order; the creation date is data, never
+/// identity. A row whose JSON no longer decodes is skipped and logged — never a
+/// load failure and never deleted: an unreadable episode is never due, and its
+/// checks count in no score.
 pub fn load_episode_store(conn: &Connection) -> Result<EpisodeStore> {
     use crate::portfolio::outcome::{StoredCheck, StoredEpisode};
     let mut out = EpisodeStore::default();
@@ -542,8 +398,7 @@ pub fn load_episode_store(conn: &Connection) -> Result<EpisodeStore> {
     Ok(out)
 }
 
-/// Append one episode — the store's only episode write; an episode is never
-/// updated or deleted.
+/// The store's only episode write; an episode is never updated or deleted.
 pub fn insert_episode(
     conn: &Connection,
     record: &crate::portfolio::outcome::PriceRecord,
@@ -562,9 +417,8 @@ pub fn insert_episode(
     })
 }
 
-/// Write one check onto its episode — once: a second check for the same
-/// episode and horizon is refused by the schema, so a horizon can never be
-/// re-scored.
+/// A second check for the same episode and horizon is refused by the schema,
+/// so a horizon can never be re-scored.
 pub fn insert_check(
     conn: &Connection,
     episode_id: i64,
@@ -640,8 +494,7 @@ pub fn merge_price_bars(
     Ok(())
 }
 
-/// Persist the merged quick-check state, replacing any prior row — latest-only,
-/// like `holdings_pulls`.
+/// Latest-only, like `holdings_pulls`.
 pub fn save_quick_check(
     conn: &Connection,
     state: &crate::portfolio::quick_check::QuickCheckState,
@@ -658,15 +511,11 @@ pub fn save_quick_check(
     Ok(())
 }
 
-/// The latest quick-check state, or `None` before any quick check ran (or after a
-/// full pass cleared it).
-///
-/// Decode is **loud-skip**, like [`latest_run`]: an unparseable state logs one
-/// stderr warning and reads as `None`, never an `Err` — so a corrupt row neither
-/// blanks the Portfolio page load (the `latest_quick_check` command) nor, at the
-/// job, silently drops the quick-check chaining behind a swallowed error. Only a
-/// store read error (SQL / query failure) is an `Err`; the job degrades that the
-/// same way, logged (`job::prior_state_read`).
+/// `None` before any quick check ran or after a full pass cleared it. Decode is
+/// loud-skip, like [`latest_run`]: an unparseable state logs one warning and
+/// reads as `None`, never an `Err`, so a corrupt row neither blanks the
+/// Portfolio page load nor silently drops the quick-check chaining at the job.
+/// Only a store read error is an `Err`.
 pub fn latest_quick_check(
     conn: &Connection,
 ) -> Result<Option<crate::portfolio::quick_check::QuickCheckState>> {
@@ -686,20 +535,16 @@ pub fn latest_quick_check(
     }))
 }
 
-/// Drop the quick-check state — the successful full pass's clear
-/// (`docs/portfolio-analysis.md §The quick check`: the pass sees the fresh engine
-/// reads in its own prompts, so the flags and accumulated evidence events end
-/// with it).
+/// The successful full pass's clear (`docs/portfolio-analysis.md §The quick
+/// check`).
 pub fn clear_quick_check(conn: &Connection) -> Result<()> {
     conn.execute("DELETE FROM portfolio_quick_checks", [])?;
     Ok(())
 }
 
-/// The latest standalone **Pull holdings** snapshot (`docs/portfolio-analysis.md
-/// §Triggering`, `docs/storage.md §Local Analysis Suite Storage`) — **view-only**
-/// Portfolio-page state, distinct from the holdings snapshot persisted *inside* each
-/// run: the run's snapshot is the holdings-diff baseline and the audit record's
-/// basis, while this store is never read by the job.
+/// The latest standalone Pull holdings snapshot (`docs/portfolio-analysis.md
+/// §Triggering`, `docs/storage.md §Local Analysis Suite Storage`): view-only,
+/// never read by the job — the run's own snapshot is the holdings-diff baseline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HoldingsPull {
     /// Canonical UTC RFC3339; the frontend renders local time.
@@ -707,8 +552,7 @@ pub struct HoldingsPull {
     pub holdings: Holdings,
 }
 
-/// Persist a standalone pull, replacing any prior one — the store holds only the
-/// most recent snapshot.
+/// Latest-only: replaces any prior snapshot.
 pub fn save_pull(conn: &Connection, pull: &HoldingsPull) -> Result<()> {
     let holdings_json = serde_json::to_string(&pull.holdings)?;
     conn.execute(
@@ -722,7 +566,7 @@ pub fn save_pull(conn: &Connection, pull: &HoldingsPull) -> Result<()> {
     Ok(())
 }
 
-/// The latest standalone pull, or `None` before any pull happened.
+/// `None` before any pull.
 pub fn latest_pull(conn: &Connection) -> Result<Option<HoldingsPull>> {
     let row = conn
         .query_row(
@@ -740,19 +584,15 @@ pub fn latest_pull(conn: &Connection) -> Result<Option<HoldingsPull>> {
     }
 }
 
-/// Insert one completed run. The whole [`PortfolioRun`] is serialized into
-/// `run_json`; `run_id` and `created_at` are projected into columns for listing and
-/// ordering. The unique `run_id` makes a re-insert of the same run a clean error
-/// rather than a silent duplicate.
-///
-/// The write validates before it lands: the serialized record is decoded back
-/// through its own type, and a record that would not read back — a non-finite
-/// required float serde wrote as `null` — is refused, the holding named where the
-/// value sits in a per-holding record, so the run fails under its hard persistence posture
+/// The unique `run_id` makes a re-insert of the same run a clean error rather
+/// than a silent duplicate. The write validates before it lands: the serialized
+/// record is decoded back through its own type, and a record that would not
+/// read back — a non-finite required float serde wrote as `null` — is refused
+/// naming the holding, so the run fails under its hard persistence posture
 /// (`docs/portfolio-analysis.md` §Failure posture) instead of persisting a row
-/// every later read would loud-skip (the 2026-08-24 review's Codex I16, ruled
-/// 2026-08-29). The producers' finite-or-absent guards make this unreachable
-/// from the engine; the seam closes the class for whatever they miss.
+/// every later read would loud-skip. The producers' finite-or-absent guards
+/// make this unreachable from the engine; the seam closes the class for
+/// whatever they miss.
 pub fn insert_run(conn: &Connection, run: &PortfolioRun) -> Result<()> {
     let run_json = serde_json::to_string(run)?;
     if let Err(e) = serde_json::from_str::<PortfolioRun>(&run_json) {
@@ -773,8 +613,8 @@ pub fn insert_run(conn: &Connection, run: &PortfolioRun) -> Result<()> {
 }
 
 /// The first holding whose audit or verdict does not survive its own JSON
-/// round-trip — the name [`insert_run`]'s refusal carries. `None` when the
-/// unreadable value sits outside the per-holding records.
+/// round-trip; `None` when the unreadable value sits outside the per-holding
+/// records.
 fn unreadable_holding(run: &PortfolioRun) -> Option<String> {
     fn survives<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) -> bool {
         serde_json::to_string(value)
@@ -793,23 +633,15 @@ fn unreadable_holding(run: &PortfolioRun) -> Option<String> {
         })
 }
 
-/// The most recent run, or `None` before any exists. The prior run's verdicts
-/// feed the next run's continuity check
-/// (`docs/portfolio-analysis.md` §Continuity and isolation). Newest-first by
-/// **insertion order** (`id` — monotonic within a store, and preserved across
-/// machines by the portability export's id-order): the production identity of
-/// "latest" is the run most recently PERSISTED, never the wall clock's claim —
-/// under a backwards clock step a `created_at` ordering would hand the diff/carry
-/// baseline (and the page's refresh) back to the prior run while the
-/// just-persisted one sat invisible. `created_at` stays display data.
-///
-/// Decode is **loud-skip**: an unparseable blob logs one stderr warning naming
-/// the row and the walk continues to the next row, instead of erroring the
-/// whole read — the job caller fails soft to "no prior run", so an `Err` here
-/// silently became no diff baseline, no carries, every episode re-debuting on
-/// the strength of one corrupt row. What remains an `Err` is a store read error
-/// (SQL / query failure); the job degrades that the same way, logged
-/// (`job::prior_state_read`), and the page commands surface it.
+/// `None` before any run exists (`docs/portfolio-analysis.md` §Continuity and
+/// isolation). Newest-first by insertion order (`id`), never `created_at`: the
+/// identity of "latest" is the run most recently persisted — under a backwards
+/// clock step a `created_at` ordering would hand the diff / carry baseline back
+/// to the prior run while the just-persisted one sat invisible. Decode is
+/// loud-skip: an unparseable blob logs one warning and the walk continues to
+/// the next row, since the job caller fails soft to "no prior run" and an `Err`
+/// here would silently become no diff baseline and no carries on the strength
+/// of one corrupt row. Only a store read error is an `Err`.
 pub fn latest_run(conn: &Connection) -> Result<Option<PortfolioRun>> {
     let mut stmt = conn.prepare(
         "SELECT run_id, run_json FROM portfolio_runs
@@ -827,11 +659,9 @@ pub fn latest_run(conn: &Connection) -> Result<Option<PortfolioRun>> {
     Ok(None)
 }
 
-/// Decode one retained run blob, **loud-skip** on failure: single-homed here so a
-/// corrupt row degrades to one stderr warning instead of erroring its whole
-/// surface — unparseable blobs are a deliberately-retained store state, so one
-/// must never blank the runs history or the diff baseline for its entire
-/// retention life.
+/// Loud-skip on failure, single-homed here: unparseable blobs are a
+/// deliberately retained store state, so one must never blank the runs history
+/// or the diff baseline for its retention life.
 fn decode_run(run_id: &str, json: &str) -> Option<PortfolioRun> {
     match serde_json::from_str::<PortfolioRun>(json) {
         Ok(run) => Some(run),
@@ -842,10 +672,8 @@ fn decode_run(run_id: &str, json: &str) -> Option<PortfolioRun> {
     }
 }
 
-/// List the most recent runs, newest first, capped at `limit` — the Portfolio page's
-/// run history. Same insertion-order identity as [`latest_run`]. Decode is the same
-/// loud-skip ([`decode_run`]): one corrupt blob costs its own row, never the other
-/// twenty-nine for its retention life.
+/// Newest first, capped at `limit`; the same insertion-order identity and
+/// loud-skip as [`latest_run`].
 pub fn list_recent_runs(conn: &Connection, limit: u32) -> Result<Vec<PortfolioRun>> {
     let mut stmt = conn.prepare(
         "SELECT run_id, run_json FROM portfolio_runs
@@ -865,36 +693,26 @@ pub fn list_recent_runs(conn: &Connection, limit: u32) -> Result<Vec<PortfolioRu
     Ok(out)
 }
 
-/// One sidebar row of the Portfolio-runs history (`docs/interface.md §Main
-/// Layout`; the design package's shared-history `RunRow`): identity, timestamp,
-/// and the two counts a readable row renders (an unreadable row hides them —
-/// its zeros are placeholders) — never the run's verdict payload, so the
-/// listing IPC response stays rows, not ten full runs.
+/// One sidebar row of the run history (`docs/interface.md §Main Layout`):
+/// never the run's verdict payload, so the listing response stays rows, not
+/// full runs.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PortfolioRunSummary {
     pub run_id: String,
     /// Canonical UTC RFC3339; the frontend renders local time.
     pub created_at: String,
-    /// Positions in the run's holdings snapshot.
     pub holdings_count: usize,
-    /// Graded verdicts in the run (the roll-up's `graded_count`).
     pub graded_count: usize,
     /// Whether the run's blob decoded. An unreadable row still lists — its
     /// identity is column-backed — so the history shows the row exists instead
-    /// of silently shrinking, and the page's empty states can tell an unreadable
-    /// store from a never-ran one (Codex round). The counts above are zero on an
-    /// unreadable row.
+    /// of silently shrinking, and the page can tell an unreadable store from a
+    /// never-ran one. The counts are zero on an unreadable row.
     pub readable: bool,
 }
 
-/// List the most recent runs' summaries, newest first, capped at `limit` — the
-/// sidebar's Portfolio-runs history listing. Same ordering as [`latest_run`] /
-/// [`prune_runs`], so the list shows exactly the retained window. The counts
-/// come from each stored blob (bounded by the retention cap, so this stays a
-/// handful of local parses); the webview never receives the blobs themselves.
-/// An **unreadable** blob still yields a row — identity read from the SQL
-/// columns, counts zero, `readable: false` — so the history never silently
-/// shrinks over a corrupt row.
+/// Newest first, capped at `limit`; the same ordering as [`latest_run`] /
+/// [`prune_runs`], so the list shows exactly the retained window. An unreadable
+/// blob still yields a row with `readable: false`.
 pub fn list_run_summaries(conn: &Connection, limit: u32) -> Result<Vec<PortfolioRunSummary>> {
     let mut stmt = conn.prepare(
         "SELECT run_id, created_at, run_json FROM portfolio_runs
@@ -931,9 +749,8 @@ pub fn list_run_summaries(conn: &Connection, limit: u32) -> Result<Vec<Portfolio
     Ok(out)
 }
 
-/// Load one persisted run by id for the historical Portfolio view, or `None`
-/// when the id is unknown (e.g. the run was pruned between listing and click —
-/// the frontend re-lists rather than erroring).
+/// `None` when the id is unknown (e.g. pruned between listing and click — the
+/// frontend re-lists rather than erroring).
 pub fn run_by_id(conn: &Connection, run_id: &str) -> Result<Option<PortfolioRun>> {
     let json = conn
         .query_row(
@@ -942,18 +759,15 @@ pub fn run_by_id(conn: &Connection, run_id: &str) -> Result<Option<PortfolioRun>
             |row| row.get::<_, String>(0),
         )
         .optional()?;
-    // A corrupt row reads as not-found ([`decode_run`] loud-skips). The
-    // summaries still LIST it — column-backed identity, rendered disabled, so
-    // the UI never issues this call for it — which leaves only a stale or
-    // out-of-band caller reaching here, and the frontend's
-    // pruned-between-listing-and-click recovery (re-list) is exactly right.
+    // A corrupt row reads as not-found. The summaries still list it, rendered
+    // disabled, so only a stale or out-of-band caller reaches here, where the
+    // frontend's re-list recovery is right.
     Ok(json.and_then(|j| decode_run(run_id, &j)))
 }
 
-/// Whether any run row exists at all. [`latest_run`] returns `None` both for a
-/// never-ran store and for one whose only rows are unreadable; this is the cheap
-/// column read that lets a surface tell the two apart and refuse honestly (a "no
-/// runs yet" message over persisted work misdescribes the store).
+/// [`latest_run`] returns `None` both for a never-ran store and for one whose
+/// only rows are unreadable; this cheap column read lets a surface tell the two
+/// apart and refuse honestly.
 pub fn any_runs(conn: &Connection) -> Result<bool> {
     let exists: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM portfolio_runs)",
@@ -963,18 +777,14 @@ pub fn any_runs(conn: &Connection) -> Result<bool> {
     Ok(exists)
 }
 
-/// Prune runs beyond the newest `keep`, oldest first — the per-feature retention
-/// cascade (`docs/storage.md §Local Analysis Suite Storage`). Same newest-first
-/// ordering as [`list_recent_runs`], so it evicts exactly the runs the history no
-/// longer shows; degraded runs count against the one cap (no second retention
-/// path — ruled 2026-08-11). Idempotent; a no-op at or under the cap.
+/// The per-feature retention cascade (`docs/storage.md §Local Analysis Suite
+/// Storage`); degraded runs count against the one cap. Idempotent.
 pub fn prune_runs(conn: &Connection, keep: u32) -> Result<()> {
-    // Insertion-order retention, matching [`latest_run`] / [`list_recent_runs`]
-    // exactly — so eviction removes precisely the runs the history no longer
-    // shows, and the run being persisted (the max id) is inherently inside the
-    // keep set even under a backwards wall-clock step (a `created_at` ordering
-    // could evict it inside its own transaction, leaving a Successful job
-    // pointing at a phantom run_id).
+    // Insertion-order retention, matching [`latest_run`] / [`list_recent_runs`],
+    // so eviction removes exactly the runs the history no longer shows and the
+    // run being persisted (the max id) is inside the keep set even under a
+    // backwards wall-clock step — a `created_at` ordering could evict it inside
+    // its own transaction, leaving a Successful job pointing at a phantom run_id.
     conn.execute(
         "DELETE FROM portfolio_runs
          WHERE id NOT IN (
@@ -987,17 +797,15 @@ pub fn prune_runs(conn: &Connection, keep: u32) -> Result<()> {
     Ok(())
 }
 
-/// Persist a run and enforce retention in one step — the call the job makes once a
-/// run completes. Insert then prune to [`PORTFOLIO_RUN_RETENTION`].
+/// The job's one persist call: insert, then prune to the retention cap.
 pub fn record_run(conn: &Connection, run: &PortfolioRun) -> Result<()> {
     insert_run(conn, run)?;
     prune_runs(conn, PORTFOLIO_RUN_RETENTION)?;
     Ok(())
 }
 
-/// A run whose first audit carries a populated research record — one
-/// write-up, the disconfirming pass's, one roster entry — the round-trip
-/// fixture the store and portability tests share.
+/// The round-trip fixture the store and portability tests share: a run whose
+/// first audit carries a populated research record.
 #[cfg(test)]
 pub(crate) fn entry3_test_run() -> PortfolioRun {
     use crate::portfolio::research::{PageRosterEntry, ResearchAuditRecord, TopicWriteUp};
@@ -1034,8 +842,8 @@ pub(crate) fn entry3_test_run() -> PortfolioRun {
     run
 }
 
-/// A price record and a check written onto it — the episode-store fixture the
-/// archive round trip and [`archive_test_run`]'s accuracy record share.
+/// The episode-store fixture the archive round trip and [`archive_test_run`]
+/// share.
 #[cfg(test)]
 pub(crate) fn archive_test_episode() -> (
     crate::portfolio::outcome::PriceRecord,
@@ -1073,11 +881,8 @@ pub(crate) fn archive_test_episode() -> (
     (record, check)
 }
 
-/// The archive round trip's run: [`entry3_test_run`] with every field the
-/// later formats carry set — the verdict's basis read, the audit's review and
-/// read-through mark, a fund exposure basis with its NAV, a pre-profit
-/// overlay, and the run's accuracy record with an opened episode and a
-/// written check.
+/// The archive round trip's run: [`entry3_test_run`] with every optional
+/// record set, so the round trip exercises them all.
 #[cfg(test)]
 pub(crate) fn archive_test_run(run_id: &str, created_at: &str) -> PortfolioRun {
     use crate::portfolio::outcome::*;
@@ -1153,9 +958,8 @@ mod tests {
         let cp = load_checkpoint(&conn).unwrap().expect("the header loads");
         assert_eq!(cp.header.ma_deals, header.ma_deals);
         assert_eq!(cp.header.ma_gap, header.ma_gap);
-        // The pre-release posture: the two fields are required and always
-        // written, so a header persisted before them is unreadable, never
-        // defaulted to an empty feed.
+        // Required and always written (the pre-release posture), never defaulted
+        // to an empty feed.
         let mut json = serde_json::to_value(&header).unwrap();
         let obj = json.as_object_mut().unwrap();
         obj.remove("ma_deals");
@@ -1260,10 +1064,6 @@ mod tests {
         assert!(serde_json::from_value::<PromptUsage>(retired_row).is_err());
     }
 
-    /// A holding's checkpoint row round-trips its context-fit and fired-retry
-    /// rows and its data-health contribution exactly — what a resumed run's
-    /// data-health read rebuilds from — and the header its format stamp
-    /// (`docs/portfolio-analysis.md §Failure posture`).
     #[test]
     fn checkpoint_rows_round_trip_telemetry_health_and_the_format_stamp() {
         let conn = mem();
@@ -1318,10 +1118,6 @@ mod tests {
         assert_eq!(cp.header.checkpoint_format_version, CHECKPOINT_FORMAT_VERSION);
     }
 
-    /// A trail stamped under another format loads its header alone — the
-    /// accumulators and rows are not read, a row that would decode included —
-    /// so the resume gate refuses it on the stamp with its reason and no row
-    /// is loud-skipped as one that "will re-analyze" (Codex I18, round 1).
     #[test]
     fn a_trail_under_another_format_loads_its_header_alone() {
         let conn = mem();
@@ -1458,9 +1254,8 @@ mod tests {
         .unwrap();
         assert_eq!(load_checkpoint(&conn).unwrap().unwrap().holdings, vec![row]);
 
-        // A research record of the retired shape — the combined findings and
-        // the seed layer in place of the write-ups and the roster — is a
-        // loud skip, never a defaulted read (the pre-release posture).
+        // A retired research shape is a loud skip, never a defaulted read (the
+        // pre-release posture).
         let mut legacy_run = serde_json::to_value(&run).unwrap();
         let research = legacy_run["audit"][0]["research"].as_object_mut().unwrap();
         research.remove("write_ups");
@@ -1473,9 +1268,8 @@ mod tests {
         )
         .unwrap();
         assert!(latest_run(&conn).unwrap().is_none());
-        // A v21 research record — the write-ups and the roster with no
-        // distillation shape — is the same loud skip: the shape is required,
-        // never defaulted to `none`.
+        // A record with no distillation shape is the same loud skip: the shape is
+        // required, never defaulted to `none`.
         let mut v21_run = serde_json::to_value(&run).unwrap();
         let research = v21_run["audit"][0]["research"].as_object_mut().unwrap();
         assert!(research.remove("distillation").is_some());
@@ -1509,9 +1303,8 @@ mod tests {
         assert_eq!(back, run, "the whole run round-trips");
     }
 
-    /// The audit's factor composite and the verdict's grade basis are required
-    /// keys: a run row missing either is a loud skip, never a run that reads
-    /// them as none; an explicit `null` (a fund's) decodes as none.
+    /// An explicit `null` (a fund's) decodes as none; only an absent key is the
+    /// skip.
     #[test]
     fn a_run_row_missing_the_composite_or_the_grade_basis_key_is_skipped() {
         use crate::portfolio::pipeline::{self, tests as pt, StubAnalyst};
@@ -1527,7 +1320,6 @@ mod tests {
         let VerdictDisposition::Priced(g) = &back.verdicts[0].disposition else { panic!("priced") };
         assert!(g.grade_basis.is_some());
 
-        // The object each key sits on: the audit row, or the priced disposition.
         fn parent<'a>(run: &'a mut serde_json::Value, key: &str) -> &'a mut serde_json::Value {
             match key {
                 "factors" => &mut run["audit"][0],
@@ -1544,10 +1336,6 @@ mod tests {
         }
     }
 
-    /// The verdict record round-trips on every disposition: a priced verdict
-    /// with its thesis document and typed appendix (a null expected price
-    /// kept as null, never defaulted), a role/risk verdict with its document,
-    /// and an insufficient-evidence exit carrying the prior's document.
     #[test]
     fn priced_and_role_risk_verdicts_round_trip_with_their_thesis_documents() {
         use crate::portfolio::pipeline::{self, tests as pt, StubAnalyst};
@@ -1603,12 +1391,9 @@ mod tests {
 
     #[test]
     fn serde_writes_a_non_finite_float_as_null_and_refuses_null_into_a_bare_f64() {
-        // The premise behind Codex I1 / I16, pinned rather than assumed: a
-        // non-finite `f64` serializes as `null`, `null` does not decode into a
-        // required `f64` (an `Option` reads it as `None`), and an out-of-range
-        // numeric literal is rejected at parse — so every JSON-number
-        // pass-through in the record is finite by the parser, and only the
-        // app's own arithmetic can produce a non-finite value.
+        // Pinned rather than assumed: every JSON-number pass-through in the
+        // record is finite by the parser, so only the app's own arithmetic can
+        // produce a non-finite value.
         assert_eq!(serde_json::to_string(&f64::INFINITY).unwrap(), "null");
         assert_eq!(serde_json::to_string(&f64::NAN).unwrap(), "null");
         assert!(serde_json::from_str::<f64>("null").is_err());
@@ -1621,10 +1406,6 @@ mod tests {
 
     #[test]
     fn a_run_that_would_not_read_back_is_refused_at_the_write_naming_the_holding() {
-        // Codex I16 (ruled 2026-08-29): the write decodes its own record first.
-        // A non-finite required float is refused with the holding named — the
-        // run fails under its hard persistence posture — and no row lands, so
-        // the prior readable run stays the latest.
         let conn = mem();
         record_run(&conn, &sample_run("run-good", "2026-08-10T00:00:00Z")).unwrap();
         let mut poisoned = sample_run("run-poisoned", "2026-08-11T00:00:00Z");
@@ -1652,12 +1433,9 @@ mod tests {
 
     #[test]
     fn a_run_built_over_feed_extreme_inputs_round_trips_through_the_store() {
-        // The regression Codex I16 asked for and the panic-posture slice
-        // declined for the targets alone: finite extremes through the real
-        // producers — every derivation reads absent where its arithmetic did
-        // not finish, nothing persists non-finite, and the run reads back
-        // equal. The store's own round-trip pin covers exact floats; this one
-        // covers the record built over hostile-but-finite feed values.
+        // Finite extremes through the real producers: every derivation reads
+        // absent where its arithmetic did not finish, nothing persists
+        // non-finite, and the run reads back equal.
         use crate::portfolio::engine::{
             self, AnchorObservation, CompanyFinancials, DatedValue, QuickCheckBasis,
         };
@@ -1812,7 +1590,6 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM portfolio_runs", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, PORTFOLIO_RUN_RETENTION as i64, "pruned to the cap");
-        // The oldest run fell off; the newest survives.
         let surviving: Vec<String> = list_recent_runs(&conn, 100)
             .unwrap()
             .into_iter()
@@ -1827,12 +1604,8 @@ mod tests {
 
     #[test]
     fn a_backdated_run_keeps_full_production_identity_under_insertion_order() {
-        // A backwards wall-clock step must not demote the just-persisted run:
-        // under a `created_at` ordering it survived the prune (if at all) as an
-        // invisible extra row — `latest_run` returned the prior run, the capped
-        // history excluded it, the page refresh swapped it away, and the next
-        // analysis diffed against the wrong baseline. Insertion order is the
-        // production identity everywhere.
+        // A backwards wall-clock step must not demote the just-persisted run;
+        // insertion order is the production identity everywhere.
         let conn = mem();
         for i in 0..PORTFOLIO_RUN_RETENTION {
             let created_at = format!("2026-06-{:02}T00:00:00Z", i + 2);
@@ -1840,8 +1613,6 @@ mod tests {
         }
         // The clock steps back before every retained run.
         record_run(&conn, &sample_run("run-backdated", "2026-06-01T00:00:00Z")).unwrap();
-        // The newest-inserted run IS the latest, heads the CAPPED history the
-        // page actually queries, and the count holds the retention cap.
         assert_eq!(latest_run(&conn).unwrap().unwrap().run_id, "run-backdated");
         let capped: Vec<String> = list_recent_runs(&conn, PORTFOLIO_RUN_RETENTION)
             .unwrap()
@@ -1879,9 +1650,7 @@ mod tests {
             ],
             "newest first, light rows only"
         );
-        // The limit caps the window like the report sidebar's.
         assert_eq!(list_run_summaries(&conn, 1).unwrap().len(), 1);
-        // A listed id opens the full run; an unknown (pruned) id is None, not an error.
         let back = run_by_id(&conn, "run-a").unwrap().unwrap();
         assert_eq!(back.run_id, "run-a");
         assert!(run_by_id(&conn, "run-gone").unwrap().is_none());
@@ -1890,8 +1659,7 @@ mod tests {
     #[test]
     fn latest_run_skips_an_unparseable_blob_instead_of_erroring() {
         // The callers fail-soft with `.ok().flatten()`, so an `Err` here would
-        // silently become "no prior run" — no diff baseline, no carries — on
-        // the strength of one corrupt row. The read skips it loudly instead.
+        // silently become "no prior run" on the strength of one corrupt row.
         let conn = mem();
         record_run(&conn, &sample_run("run-good", "2026-08-10T00:00:00Z")).unwrap();
         conn.execute(
@@ -1907,9 +1675,6 @@ mod tests {
 
     #[test]
     fn latest_quick_check_skips_an_unparseable_state_instead_of_erroring() {
-        // Same loud-skip as `latest_run`: a corrupt quick-check row reads as
-        // "no quick check since the last pass" — never an `Err` that would blank
-        // the Portfolio page load or, at the job, silently drop the chaining.
         let conn = mem();
         conn.execute(
             "INSERT INTO portfolio_quick_checks (id, checked_at, state_json) \
@@ -1918,7 +1683,6 @@ mod tests {
         )
         .unwrap();
         assert!(latest_quick_check(&conn).unwrap().is_none());
-        // A readable state still round-trips (the skip is decode-only).
         let state = crate::portfolio::quick_check::QuickCheckState {
             parameter_version:
                 crate::portfolio::quick_check::QUICK_CHECK_PARAMETER_VERSION.into(),
@@ -1933,8 +1697,6 @@ mod tests {
 
     #[test]
     fn a_corrupt_row_costs_its_own_listing_row_never_the_history() {
-        // Unparseable blobs are a retained store state; one must not blank
-        // the sidebar for its retention life (combined-range review).
         let conn = mem();
         record_run(&conn, &sample_run("run-good", "2026-08-10T00:00:00Z")).unwrap();
         conn.execute(
@@ -1949,27 +1711,17 @@ mod tests {
             .map(|r| r.run_id)
             .collect();
         assert_eq!(ids, vec!["run-good".to_string()], "the corrupt row skips loudly");
-        // The summaries still LIST the unreadable row — identity is column-backed
-        // — so the history never silently shrinks and the page can tell
-        // unreadable from never-ran.
         let summaries = list_run_summaries(&conn, 10).unwrap();
         assert_eq!(summaries.len(), 2);
         assert_eq!(summaries[0].run_id, "run-corrupt");
         assert!(!summaries[0].readable);
         assert_eq!(summaries[0].holdings_count, 0);
         assert!(summaries[1].readable);
-        // A direct open of the corrupt row reads as not-found: the listing
-        // shows it disabled (never a live control), so only a stale or
-        // out-of-band call reaches it, and the frontend's re-list recovery
-        // is exactly right.
         assert!(run_by_id(&conn, "run-corrupt").unwrap().is_none());
     }
 
     #[test]
     fn any_runs_splits_never_ran_from_all_unreadable() {
-        // `latest_run` returns `None` both for a never-ran store and one whose
-        // only rows are unreadable; `any_runs` tells the two apart so a refusal
-        // names the true state instead of calling a store of corrupt rows empty.
         let conn = mem();
         assert!(!any_runs(&conn).unwrap());
         conn.execute(
@@ -2035,9 +1787,8 @@ mod tests {
 
     #[test]
     fn a_standalone_pull_never_touches_the_diff_baseline() {
-        // The job's holdings diff reads the prior *run's* snapshot (`job.rs` reads
-        // `store::latest_run`), never this store — pulling between runs must not
-        // change what the diff reports (`docs/portfolio-analysis.md §Triggering`).
+        // The job's diff reads the prior run's snapshot, never this store
+        // (`docs/portfolio-analysis.md §Triggering`).
         let conn = mem();
         let run = sample_run("run-1", "2026-07-01T00:00:00Z");
         record_run(&conn, &run).unwrap();
@@ -2137,7 +1888,7 @@ mod tests {
         assert_eq!(store.checks.len(), 1);
         assert_eq!(store.skipped, 2);
         // The unreadable check still holds its horizon written, so it is never
-        // re-due (its re-write would hit the one-check-per-horizon rule).
+        // re-due.
         assert!(store.written.contains(&(ep.id, Horizon::TwelveMonth)));
         assert!(store.written.contains(&(ep.id, Horizon::ThreeMonth)));
         // Never deleted: the rows stay for inspection.
@@ -2169,12 +1920,9 @@ mod tests {
 
     #[test]
     fn json_float_round_trip_is_bit_exact() {
-        // Every store in this module persists its value as serde_json text, so a
-        // carried numeric survives runs only as print → parse. Without serde_json's
-        // `float_roundtrip` feature the parse can drift 1 ulp — which is why
-        // carried-verdict tests once had to avoid exact comparison. The feature is
-        // load-bearing in Cargo.toml; this pins it so a dependency edit can't
-        // silently reopen the drift.
+        // serde_json's `float_roundtrip` feature is load-bearing in Cargo.toml:
+        // without it a parse can drift 1 ulp. This pins it so a dependency edit
+        // can't silently reopen the drift.
         let mut checked = 0usize;
         let mut check = |v: f64| {
             let s = serde_json::to_string(&v).unwrap();

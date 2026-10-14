@@ -1,23 +1,10 @@
-//! Step-6 research-inbox parsing (`docs/report-workflow.md §Step 6`,
-//! `docs/research-documents.md`): turn the user-supplied files in the research
-//! inbox into bounded text the research router and the condensed packet can
-//! carry.
-//!
-//! The whole stage is deterministic — full text is extracted per format, then
-//! condensed by pure char-cap rules rather than a model. `docs/agents.md §Data
-//! Extraction` records this decision (amended 2026-06-12): no model extraction
-//! stage runs; a GPT-5-mini stage stays reserved as the named follow-on if
-//! oversized documents prove common — it would replace [`truncate_at_seam`]'s
-//! "take the head" for docs that overflow [`PER_DOC_CHAR_CAP`], with nothing
-//! else changing.
-//!
-//! Failure semantics (`docs/research-documents.md §Parse Failures`): a document
-//! that cannot be parsed never fails the job — it is skipped with a recorded
-//! reason, left in the inbox for the next run, and surfaced in the Research
-//! Documents panel via the `research_parse_failures` table (`storage`). Only
-//! successfully parsed documents are archived, and only after the run's report
-//! persists (`pipeline`'s persist step) — a failed or cancelled run leaves the
-//! inbox untouched.
+//! Research-inbox parsing (`docs/report-workflow.md §Step 6`,
+//! `docs/research-documents.md`): user-supplied files into bounded text for
+//! the research router and the condensed packet, by per-format extraction and
+//! char-cap rules, never a model. An unparseable document never fails the job;
+//! it is skipped with a recorded reason and left in the inbox
+//! (`docs/research-documents.md §Parse Failures`). Only parsed documents are
+//! archived, and only after the run's report persists.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -25,45 +12,38 @@ use std::path::{Path, PathBuf};
 use crate::progress::RunContext;
 use crate::research::{self, ResearchDocument};
 
-/// Hard ceiling on a file the stage will read at all. A multi-hundred-MB drop
-/// would cost memory and parse time for text that the char budgets below
-/// discard anyway; oversize reads as a parse failure the user can see.
+/// Hard ceiling on a file the stage will read at all; oversize reads as a
+/// parse failure the user can see.
 const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 
-/// Per-document ceiling on condensed text, in chars (~3k tokens). Sized so
-/// typical user drops — saved articles, notes, short reports — ride whole;
-/// only genuinely long documents are head-truncated, visibly. Tunable alongside
-/// the packet caps.
+/// Per-document ceiling on condensed text, in chars (~3k tokens). Typical
+/// drops ride whole; only genuinely long documents are head-truncated, visibly.
 const PER_DOC_CHAR_CAP: usize = 12_000;
 
 /// Total budget across all documents, in chars (~10k tokens). Water-filled:
 /// small documents keep their full text and donate their surplus to larger
-/// ones, so three short notes plus one big PDF means the notes ride whole and
-/// the PDF takes nearly the whole remainder. Bounds what the condensed packet
-/// (and through it four agent calls) can carry, whatever the inbox holds.
+/// ones.
 const TOTAL_CHAR_BUDGET: usize = 40_000;
 
-/// Per-document ceiling on the shorter excerpt handed to research routing —
-/// the router picks topics, it does not deep-read.
+/// Per-document ceiling on the excerpt handed to research routing; the router
+/// picks topics, it does not deep-read.
 const ROUTER_EXCERPT_CHARS: usize = 2_000;
 
 /// Data rows kept from a CSV (the header row always survives); the remainder
 /// is summarized as a count so the agent knows the sample is a sample.
 const CSV_MAX_DATA_ROWS: usize = 100;
 
-/// Render width for the HTML→text pass. Wide enough that prose lines rarely
-/// hard-wrap mid-sentence; paragraph breaks (blank lines) are what the
+/// Render width for the HTML→text pass. Paragraph breaks are what the
 /// truncation seam keys on, and those survive any width.
 const HTML_RENDER_WIDTH: usize = 100;
 
-/// When truncating, back off from the hard cut to the last paragraph (or line)
-/// seam — but only if that seam keeps at least this fraction of the window,
-/// so a document with one giant paragraph still yields a usable head.
+/// A truncation backs off to the last paragraph (or line) seam only if that
+/// seam keeps at least this fraction of the window, so a document with one
+/// giant paragraph still yields a usable head.
 const SEAM_FLOOR: f64 = 0.7;
 
-/// One successfully parsed inbox document: the listing identity it was parsed
-/// from (`name`/`size_bytes`/`modified`, used to skip the archive move if the
-/// file changed underneath the run) plus the normalized, budget-condensed text.
+/// The listing identity (`name`/`size_bytes`/`modified`) is what skips the
+/// archive move if the file changed underneath the run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedResearchDoc {
     pub name: String,
@@ -71,24 +51,21 @@ pub struct ParsedResearchDoc {
     pub format: String,
     pub size_bytes: u64,
     /// RFC3339 UTC mtime at parse time, or `None` when the platform could not
-    /// report one — the same derivation as the listing, so the two compare.
+    /// report one; the same derivation as the listing, so the two compare.
     pub modified: Option<String>,
-    /// The condensed text: normalized full text, head-truncated to this doc's
-    /// share of the char budgets.
+    /// Normalized full text, head-truncated to this doc's share of the budgets.
     pub text: String,
-    /// Char count of the normalized *full* text, so truncation stays visible.
+    /// Char count of the normalized full text, so truncation stays visible.
     pub original_chars: usize,
 }
 
 impl ParsedResearchDoc {
-    /// Whether `text` is a head-cut of a longer original.
     pub fn truncated(&self) -> bool {
         self.text.chars().count() < self.original_chars
     }
 
-    /// The full prompt block the condensed packet carries: a provenance header,
-    /// an explicit truncation marker when the text is a head-cut (the gaps-manifest
-    /// posture — the agent knows it is seeing part of a document), and the text.
+    /// Carries an explicit truncation marker when the text is a head-cut, so
+    /// the agent knows it is seeing part of a document.
     pub fn prompt_block(&self) -> String {
         let mut block = format!("### Research document: {}", self.header_suffix());
         if self.truncated() {
@@ -103,8 +80,8 @@ impl ParsedResearchDoc {
         block
     }
 
-    /// The shorter routing excerpt: the same header over the head of the
-    /// condensed text, capped at [`ROUTER_EXCERPT_CHARS`].
+    /// The same header over the head of the condensed text, capped at
+    /// [`ROUTER_EXCERPT_CHARS`].
     pub fn router_excerpt(&self) -> String {
         let head: String = self.text.chars().take(ROUTER_EXCERPT_CHARS).collect();
         let cut = head.chars().count() < self.text.chars().count();
@@ -116,8 +93,7 @@ impl ParsedResearchDoc {
         )
     }
 
-    /// `name (FORMAT, modified YYYY-MM-DD)` — the provenance line shared by
-    /// both renderings.
+    /// `name (FORMAT, modified YYYY-MM-DD)`.
     fn header_suffix(&self) -> String {
         match self.modified.as_deref().and_then(|m| m.get(..10)) {
             Some(date) => format!(
@@ -131,8 +107,8 @@ impl ParsedResearchDoc {
     }
 }
 
-/// One document that could not be parsed: the listing identity (the panel's
-/// error state matches on it) and a short human-readable reason.
+/// The panel's error state matches on the listing identity; `reason` shows
+/// verbatim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseFailure {
     pub name: String,
@@ -141,21 +117,17 @@ pub struct ParseFailure {
     pub reason: String,
 }
 
-/// What one inbox pass produced: the parsed documents (condensed, prompt-ready)
-/// and the failures (left in the inbox, recorded for the panel).
 #[derive(Debug, Default)]
 pub struct InboxOutcome {
     pub docs: Vec<ParsedResearchDoc>,
     pub failures: Vec<ParseFailure>,
 }
 
-/// Parse every supported document in the inbox, newest first. Fully fail-soft:
-/// an unlistable folder degrades to an empty outcome with a stderr note, a bad
-/// file becomes a [`ParseFailure`] rather than an error, and unsupported
-/// formats are skipped entirely (the panel already tags them; they are not
-/// parse failures). Cancellation is polled per file, mirroring the executor's
-/// per-request polling — a cancel stops further parsing, and the caller skips
-/// the failure write so a partial pass never clobbers the recorded state.
+/// Fully fail-soft: an unlistable folder degrades to an empty outcome, a bad
+/// file becomes a [`ParseFailure`], and unsupported formats are skipped (the
+/// panel already tags them; they are not parse failures). Cancellation is
+/// polled per file; the caller then skips the failure write so a partial pass
+/// never clobbers the recorded state.
 pub fn process_inbox(dir: &Path, ctx: &RunContext) -> InboxOutcome {
     let listing = match research::list_folder(dir) {
         Ok(listing) => listing,
@@ -191,13 +163,10 @@ pub fn process_inbox(dir: &Path, ctx: &RunContext) -> InboxOutcome {
     }
 }
 
-/// Move each successfully parsed document into the archive
-/// (`docs/research-documents.md §Processing at Job Start` — archiving is
-/// automatic and reserved for successfully processed documents). Best-effort
-/// per file, like the persist step's other legs: a failed move logs to stderr
-/// and leaves the file for the next run's idempotent re-parse. A file whose
-/// size or mtime changed since parse time is skipped — the run consumed the
-/// old contents, so the new ones deserve their own pass.
+/// Best-effort per file (`docs/research-documents.md §Processing at Job
+/// Start`): a failed move leaves the file for the next run's idempotent
+/// re-parse. A file whose size or mtime changed since parse time is skipped,
+/// since the run consumed the old contents.
 pub fn archive_processed(inbox_dir: &Path, archive_dir: &Path, docs: &[ParsedResearchDoc]) {
     if docs.is_empty() {
         return;
@@ -242,8 +211,8 @@ pub fn archive_processed(inbox_dir: &Path, archive_dir: &Path, docs: &[ParsedRes
     }
 }
 
-/// `name`, or `stem (2).ext`, `stem (3).ext`, … — the first archive path not
-/// already taken. `None` once the counter is exhausted (a pathological archive).
+/// `name`, or `stem (2).ext`, `stem (3).ext`, …; `None` once the counter is
+/// exhausted.
 fn unique_destination(archive_dir: &Path, name: &str) -> Option<PathBuf> {
     let direct = archive_dir.join(name);
     if !direct.exists() {
@@ -265,8 +234,7 @@ fn unique_destination(archive_dir: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
-/// Read and parse one listed document to its normalized full text. `Err` is a
-/// short human-readable reason — it shows verbatim in the panel's error state.
+/// `Err` is a short human-readable reason; it shows verbatim in the panel.
 fn parse_document(dir: &Path, doc: &ResearchDocument) -> Result<String, String> {
     if doc.size_bytes > MAX_FILE_BYTES {
         return Err(format!(
@@ -284,10 +252,9 @@ fn parse_document(dir: &Path, doc: &ResearchDocument) -> Result<String, String> 
     Ok(text)
 }
 
-/// Per-format extraction to raw text. Formats are the supported set from
-/// `docs/research-documents.md §Research Inbox`; the caller has already
-/// filtered to them, so an unknown format here is a programming error surfaced
-/// as a parse failure rather than a panic.
+/// The supported set is `docs/research-documents.md §Research Inbox`; the
+/// caller has already filtered to it, so an unknown format here is a
+/// programming error surfaced as a parse failure rather than a panic.
 fn extract_text(format: &str, bytes: Vec<u8>) -> Result<String, String> {
     match format {
         "md" | "markdown" | "txt" => {
@@ -311,11 +278,9 @@ fn extract_text(format: &str, bytes: Vec<u8>) -> Result<String, String> {
     }
 }
 
-/// PDF text extraction with panic containment: `pdf-extract` is known to panic
-/// on some malformed inputs (unwraps, overflow in char-code conversion), and
-/// these are user-supplied files — so the call runs under `catch_unwind` and a
-/// panic reads as a parse failure, never a crashed run. (An unwinding panic;
-/// the rarer unbounded-recursion abort class is not catchable in-process.)
+/// `pdf-extract` panics on some malformed inputs, and these are user-supplied
+/// files, so a panic reads as a parse failure rather than a crashed run. An
+/// unbounded-recursion abort is not catchable in-process.
 fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
     match catch_unwind(AssertUnwindSafe(|| {
         pdf_extract::extract_text_from_mem(bytes)
@@ -333,16 +298,10 @@ fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
     }
 }
 
-/// Header record + the first [`CSV_MAX_DATA_ROWS`] data records, with the
-/// remainder summarized as a count — the agent sees the schema and a sample
-/// rather than a random cut. Record-aware, not line-based: a quoted field may
-/// span lines (RFC 4180), so records split on newlines *outside* quotes, the
-/// cap never cuts mid-field, and the omitted count counts records. Deliberately
-/// lenient about malformation — CSV has no enforceable grammar and real-world
-/// files are routinely ragged, so any UTF-8 text is accepted as evidence (an
-/// unbalanced quote is implicitly closed at end of input) rather than surfaced
-/// as a parse failure; that leniency is a conscious call, unlike JSON's strict
-/// validation.
+/// Record-aware, not line-based: a quoted field may span lines (RFC 4180), so
+/// the cap never cuts mid-field and the omitted count counts records.
+/// Deliberately lenient, unlike JSON: CSV has no enforceable grammar, so any
+/// UTF-8 text is accepted (an unbalanced quote closes at end of input).
 fn condense_csv(text: &str) -> String {
     let records = split_csv_records(text);
     if records.len() <= CSV_MAX_DATA_ROWS + 1 {
@@ -356,11 +315,9 @@ fn condense_csv(text: &str) -> String {
     out
 }
 
-/// Split CSV text into records: a newline inside a quoted field belongs to its
-/// record. A `"` toggles the quoted state — the doubled `""` escape is two
-/// toggles, which nets correctly for boundary purposes (field-level parsing is
-/// not needed here). Trailing `\r` is trimmed per record so CRLF input joins
-/// back as clean LF; a trailing newline yields no empty final record.
+/// A `"` toggles the quoted state; the doubled `""` escape is two toggles,
+/// which nets correctly for record boundaries. Trailing `\r` is trimmed per
+/// record so CRLF input joins back as clean LF.
 fn split_csv_records(text: &str) -> Vec<&str> {
     let mut records = Vec::new();
     let mut in_quotes = false;
@@ -387,13 +344,9 @@ fn split_csv_records(text: &str) -> Vec<&str> {
     records
 }
 
-/// Normalize extracted text for prompt use: CRLF→LF, control chars (except
-/// newline/tab) dropped, runs of spaces/tabs collapsed to one space, lines
-/// trimmed at **both** ends (leading indentation is dropped too — nested-list
-/// and code-block indentation flattens, an accepted loss for prompt
-/// condensation), runs of 3+ newlines collapsed to a paragraph break, and the
-/// whole trimmed. PDF extraction especially produces ragged spacing; this buys
-/// back tokens without losing a word.
+/// CRLF→LF, control chars dropped, space runs collapsed, lines trimmed at both
+/// ends (indentation flattens, an accepted loss for prompt condensation), and
+/// runs of 3+ newlines collapsed to a paragraph break.
 fn normalize_text(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut pending_space = false;
@@ -427,8 +380,7 @@ fn normalize_text(raw: &str) -> String {
     out.trim().to_string()
 }
 
-/// Apply the per-doc cap and the water-filled total budget, preserving the
-/// caller's (newest-first) order. Pure: same inbox in, same texts out.
+/// Preserves the caller's (newest-first) order.
 fn condense_documents(full: Vec<(ResearchDocument, String)>) -> Vec<ParsedResearchDoc> {
     let desired: Vec<usize> = full
         .iter()
@@ -451,11 +403,8 @@ fn condense_documents(full: Vec<(ResearchDocument, String)>) -> Vec<ParsedResear
         .collect()
 }
 
-/// Split `budget` chars across documents wanting `desired[i]` each: when the
-/// total fits, everyone gets their ask; when it doesn't, smaller documents are
-/// satisfied in full first and the rest split the remainder evenly — so short
-/// notes ride whole and only the large documents are cut. Deterministic, no
-/// reordering of the output.
+/// When the total fits, everyone gets their ask; otherwise smaller documents
+/// are satisfied in full first and the rest split the remainder evenly.
 fn water_fill(desired: &[usize], budget: usize) -> Vec<usize> {
     if desired.iter().sum::<usize>() <= budget {
         return desired.to_vec();
@@ -475,10 +424,9 @@ fn water_fill(desired: &[usize], budget: usize) -> Vec<usize> {
     allocations
 }
 
-/// Head-truncate `text` to at most `max_chars`, backing the cut off to the last
-/// paragraph break — or failing that, the last line break — inside the window,
-/// provided the seam keeps at least [`SEAM_FLOOR`] of it. A document with no
-/// usable seam is hard-cut at a char boundary instead.
+/// Backs the cut off to the last paragraph break, or failing that the last
+/// line break, provided the seam keeps at least [`SEAM_FLOOR`] of the window;
+/// otherwise a hard cut at a char boundary.
 fn truncate_at_seam(text: &str, max_chars: usize) -> String {
     let window: String = text.chars().take(max_chars).collect();
     if window.chars().count() >= text.chars().count() {
@@ -501,7 +449,6 @@ mod tests {
     use std::path::Path;
 
     fn ctx() -> std::sync::Arc<RunContext> {
-        // `process_inbox` takes `&RunContext`; the noop never cancels.
         RunContext::noop()
     }
 
@@ -509,9 +456,8 @@ mod tests {
         std::fs::write(dir.join(name), contents).unwrap();
     }
 
-    /// A minimal, structurally valid one-page PDF whose content stream draws
-    /// `text` in Helvetica — offsets and stream length computed so the xref is
-    /// real, not hand-guessed.
+    /// A minimal one-page PDF drawing `text`; offsets and stream length are
+    /// computed so the xref is real.
     fn minimal_pdf(text: &str) -> Vec<u8> {
         let stream = format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET");
         let objects = [
@@ -615,19 +561,14 @@ mod tests {
         assert_eq!(lines[0], "date,close");
         assert_eq!(lines.len(), CSV_MAX_DATA_ROWS + 2, "header + cap + marker");
         assert_eq!(*lines.last().unwrap(), "… 40 more rows");
-        // A small CSV is untouched.
         assert_eq!(condense_csv("a,b\n1,2\n"), "a,b\n1,2\n");
     }
 
     #[test]
     fn csv_quoted_multiline_fields_count_as_records_not_lines() {
-        // A quoted field spanning lines is one record (RFC 4180): a small file
-        // with one such record stays untouched rather than reading as over-cap.
         let small = "id,note\n1,\"line one\nline two\nline three\"\n";
         assert_eq!(condense_csv(small), small);
 
-        // Over the cap, the omitted count counts records, and the cut never
-        // lands inside a quoted field.
         let mut csv = String::from("id,note\n");
         for i in 0..(CSV_MAX_DATA_ROWS + 5) {
             csv.push_str(&format!("{i},\"first\nsecond\"\n"));
@@ -643,7 +584,6 @@ mod tests {
             0,
             "no record was cut mid-field"
         );
-        // Header + 100 two-line records survive intact.
         assert!(
             body.starts_with("id,note\n0,\"first\nsecond\"\n"),
             "sample keeps whole records"
@@ -734,9 +674,6 @@ mod tests {
 
         use crate::progress::NoopReporter;
 
-        // The per-file poll is checked before each file, so a cancel that is
-        // already set parses (and records) nothing — even a file that would
-        // have failed.
         let tmp = tempfile::tempdir().unwrap();
         write(tmp.path(), "note.md", b"# fine");
         write(tmp.path(), "broken.json", b"{ not json");
@@ -765,14 +702,12 @@ mod tests {
 
     #[test]
     fn water_fill_satisfies_small_docs_and_splits_the_rest() {
-        // Two small docs ride whole; the two large ones split the remainder evenly.
         let desired = vec![1_000, 12_000, 500, 12_000];
         let allocs = water_fill(&desired, 10_000);
         assert_eq!(allocs[0], 1_000);
         assert_eq!(allocs[2], 500);
         assert_eq!(allocs[1] + allocs[3], 8_500);
         assert!(allocs[1].abs_diff(allocs[3]) <= 1);
-        // Under budget: everyone gets their ask.
         assert_eq!(water_fill(&[100, 200], 1_000), vec![100, 200]);
     }
 
@@ -782,7 +717,7 @@ mod tests {
         let cut = truncate_at_seam(&text, 1_000);
         assert_eq!(cut, "a".repeat(900), "backed off to the paragraph seam");
 
-        // No seam inside the floor -> hard cut at the cap.
+        // No seam inside the floor: hard cut at the cap.
         let solid = "x".repeat(2_000);
         assert_eq!(truncate_at_seam(&solid, 1_000).chars().count(), 1_000);
 

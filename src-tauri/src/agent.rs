@@ -1,9 +1,6 @@
-//! The agent stage contract: a pure structured-in / structured-out boundary.
-//!
-//! The application layer (see `pipeline`) owns all I/O — agents never touch the
-//! network, the database, or the filesystem. Each stage is a pure function from
-//! a typed request to a typed, validated response. The real OpenAI/Anthropic
-//! adapter will later replace `StubMainAgent` behind the same `MainAgent` trait.
+//! The agent stage contracts: pure structured-in / structured-out boundaries. The
+//! application layer (`pipeline`) owns all I/O; agents never touch the network, the
+//! database or the filesystem.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -15,8 +12,7 @@ use crate::data_sources::BaselineMarketData;
 use crate::market_clock::MarketClock;
 use crate::research_packet::ResearchPacket;
 
-/// The market's risk stance (`docs/storage.md`). Serializes to the canonical
-/// kebab labels (`risk-on`, `risk-off`, `mixed`).
+/// The market's risk stance (`docs/storage.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RiskPosture {
@@ -75,20 +71,15 @@ impl ThesisStance {
     }
 }
 
-/// Structured report-summary metadata the main agent populates when it writes a
-/// report (`docs/storage.md §Report Summary Metadata Schema`). The required
-/// fields are the queryable keys used for cross-report retrieval; the optional
-/// arrays default to empty.
+/// Structured report-summary metadata (`docs/storage.md §Report Summary Metadata
+/// Schema`); the required fields are the queryable keys for cross-report retrieval.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportSummary {
     pub report_id: String,
     pub report_type: String,
     pub created_at: String,
-    /// A short, specific per-issue headline the main agent writes (e.g. "Rotation,
-    /// not rupture") — surfaced as the report's label in the UI in place of the
-    /// generic product name. `#[serde(default)]` so summaries persisted before this
-    /// field still decode: an older row carries an empty title and the UI falls back
-    /// to the product name.
+    /// A short per-issue headline (e.g. "Rotation, not rupture"), the report's label in
+    /// the UI; an empty title falls back to the product name.
     #[serde(default)]
     pub title: String,
     pub risk_posture: RiskPosture,
@@ -104,114 +95,74 @@ pub struct ReportSummary {
 }
 
 /// One recent prior report handed to the main agent as Step-2 context
-/// (`docs/report-workflow.md §Step 2`): the structured summary metadata
-/// paired with the report's canonical Markdown body. The body may be head-truncated
-/// by the application layer to bound prompt tokens (a truncation marker is appended
-/// when it is); it is empty when the Markdown file could not be read, in which case
-/// the summary still carries. HTML never appears here — agents reason over Markdown
-/// only (`docs/report-structure.md`).
+/// (`docs/report-workflow.md §Step 2`). The body may be head-truncated by the
+/// application layer (a marker is appended when it is) and is empty when the Markdown
+/// file could not be read, the summary still carrying. Never HTML: agents reason over
+/// Markdown only (`docs/report-structure.md`).
 #[derive(Debug, Clone)]
 pub struct RecentReport {
     pub summary: ReportSummary,
     pub markdown: String,
 }
 
-/// Input handed to the main agent. Carries the Step-3 baseline market-data scan
-/// (`docs/report-workflow.md §Step 3`) gathered by the application layer
-/// before agent reasoning, its change view, and the Step-11 condensed research
-/// packet; vector memory joins it when the Step-10 retrieval slice lands.
+/// Input handed to the main agent.
 #[derive(Debug, Clone, Default)]
 pub struct MainAgentInput {
     pub baseline: BaselineMarketData,
-    /// Deterministic change view of `baseline` against the previous report's persisted
-    /// snapshot (`baseline_delta`), computed by the application layer. `None` on the
-    /// first report, or when no prior snapshot could be read or decoded — the deltas are
-    /// additive and never gate a run.
+    /// `None` on the first report, or when no prior snapshot could be read or decoded;
+    /// additive, never a gate.
     pub deltas: Option<BaselineDeltas>,
-    /// The bounded recent history of the level-bearing series (`baseline_history`): one
-    /// point per retained prior snapshot plus this run, built by the application layer
-    /// beside the change view. `None` below three points (a first or second report) or
-    /// when the snapshots could not be read — additive, never a gate.
+    /// `None` below three points (a first or second report) or when the snapshots could
+    /// not be read; additive, never a gate.
     pub history: Option<BaselineHistory>,
-    /// The run's report cadence (`cadence::ReportCadence`): the elapsed interval since
-    /// the previous report, classified. Computed by the application layer from the prior
-    /// snapshot's timestamp alone — deliberately *not* derived from `deltas`, which is
-    /// `None` for both a first report and an undecodable prior, so an existing user with
-    /// a corrupt prior snapshot would otherwise be mislabeled a first run. Drives the
-    /// main agent's posture steer (a short interval is a tactical update; a long one a
-    /// structural refresh), and it is meaningful even when `deltas` is absent. `Default`
+    /// Computed from the prior snapshot's timestamp alone, deliberately not derived from
+    /// `deltas`, which is `None` for both a first report and an undecodable prior: a
+    /// corrupt prior snapshot would otherwise mislabel a run as a first one. `Default`
     /// is the first-report cadence.
     pub cadence: ReportCadence,
-    /// The market-session state at the moment this run's baseline was gathered
-    /// (`market_clock::MarketClock`): whether the US equity market was open, not yet open,
-    /// closed for the day, or closed for the weekend, plus the wall-clock time in
-    /// US/Eastern (the market's timezone). Computed by the application layer from the
-    /// baseline `as_of` instant — the time-of-day sibling of `cadence` (elapsed interval).
-    /// It tells the main agent the tense to narrate the day's moves in: live/intraday while
-    /// the session is open (the change so far today vs the prior close, still provisional)
-    /// versus a completed session once closed — closing the gap where an open-market run
-    /// read as a finished day. `Default` carries no session context (the offline/stub
-    /// path), in which case the prompt omits the block.
+    /// The session state when the baseline was gathered, with the US/Eastern wall-clock
+    /// time: tells the main agent whether to narrate the day's moves as live and
+    /// provisional or as a completed session. `Default` carries no session context, and
+    /// the prompt omits the block.
     pub market_clock: MarketClock,
-    /// The Step-11 condensed research packet (`research_packet`): the filtered news
-    /// clusters and bounded deep-research evidence the application layer assembled from
-    /// the research half. `None` on the offline/stub path (no research stages run) — the
-    /// research half is fully fail-soft, so a packet always exists on the live path even
-    /// when a stage degraded to empty. `baseline` and `deltas` ride at the top level here
-    /// rather than being read from the packet's own (inert) copies of them.
+    /// `None` on the offline/stub path; the research half is fail-soft, so a packet
+    /// always exists on the live path even when a stage degraded to empty. `baseline`
+    /// and `deltas` ride at the top level, not from the packet's own copies.
     pub research: Option<ResearchPacket>,
-    /// The Step-4 pre-research vector-memory pull (`docs/report-workflow.md
-    /// §Step 4`): memory recalled against the recent report context and current
-    /// measured market state, to steer the **retrospective audit** (`§Step 5`). It is
-    /// the audit's consumer of the same ephemeral pull that also feeds research
-    /// routing — a top-level sibling of `baseline`/`deltas`, deliberately *not* inside
-    /// `research`: the doc's replace-not-merge rule keeps the packet carrying only the
-    /// Step-10 research-informed pull (`§Step 10`), so the two memory pulls reach the
-    /// main agent on separate channels for separate purposes. Empty when nothing was
-    /// recalled (an early run or a retrieval failure). It *steers* the audit — what to
-    /// scrutinise — but no longer gates it; `recent_reports` is the auditable object.
+    /// The Step-4 pre-research pull (`docs/report-workflow.md §Step 4`), steering the
+    /// retrospective audit (`§Step 5`). A sibling of `research`, not inside it: the
+    /// replace-not-merge rule keeps the packet carrying only the Step-10 pull. It steers
+    /// the audit but never gates it; `recent_reports` is the auditable object.
     pub audit_memory: Vec<String>,
-    /// The Step-2 recent prior-report context (`docs/report-workflow.md §Step 2`):
-    /// the bounded set of most-recent reports — structured metadata plus (possibly
-    /// truncated) Markdown body — that the main agent reasons over for thesis continuity
-    /// and that the **Retrospective Audit** section (`§Step 5`) evaluates. This is the
-    /// audit's auditable object and its structural gate: a non-empty list licenses the
-    /// section, an empty one (a first run or a DB/file failure) omits it. Best-effort and
-    /// additive — never gates the run. Newest first.
+    /// The Step-2 context (`docs/report-workflow.md §Step 2`), newest first: the
+    /// auditable object and structural gate of the Retrospective Audit (`§Step 5`) — a
+    /// non-empty list licenses the section, an empty one omits it. Best-effort; never
+    /// gates the run.
     pub recent_reports: Vec<RecentReport>,
-    /// The Steps 12–15 analyst reviews (`docs/report-workflow.md §§12–15`):
-    /// the Bull, Bear, and Balanced reads of the same condensed research packet,
-    /// which the main agent critiques and weighs during synthesis (`§Step 16`,
-    /// `docs/agents.md §Synthesis Behavior`). Populated on the live path (the three
-    /// analyst stages run before the main agent); empty on the offline/stub path and
-    /// the early slices, in which case the synthesis prompt simply omits the block.
-    /// Ephemeral — never persisted (`§Step 12`).
+    /// The Steps 12–15 reviews the main agent weighs at synthesis (`§Step 16`); empty on
+    /// the offline/stub path, where the synthesis prompt omits the block. Ephemeral,
+    /// never persisted (`§Step 12`).
     pub analyst_reviews: Vec<AnalystOutput>,
 }
 
-/// What the main agent returns: the canonical Markdown body plus the structured
-/// summary. No HTML — agents never see or emit HTML.
+/// No HTML: agents never see or emit HTML.
 #[derive(Debug, Clone)]
 pub struct MainAgentOutput {
     pub markdown: String,
     pub summary: ReportSummary,
-    /// Durable learnings the agent identified this run (`docs/report-workflow.md
-    /// §Step 17`): rare, self-contained analytical lessons worth carrying across future
-    /// reports. Deliberately a sibling of `summary`, never inside it — the summary
-    /// metadata schema (`docs/storage.md`) is closed, and each learning is its own
-    /// atomic vector-memory unit, embedded and persisted separately from the summary.
-    /// Usually empty; the app layer owns the per-report cap.
+    /// Durable learnings (`docs/report-workflow.md §Step 17`): a sibling of `summary`,
+    /// never inside it, because the summary schema (`docs/storage.md`) is closed and
+    /// each learning is its own atomic vector-memory unit. Usually empty; the app layer
+    /// owns the per-report cap.
     pub durable_learnings: Vec<String>,
 }
 
-/// The agent stage. One method: structured input -> structured output.
 pub trait MainAgent {
     fn generate(&self, input: MainAgentInput) -> anyhow::Result<MainAgentOutput>;
 }
 
-/// Deterministic offline stand-in for the real model adapter. Body and labels
-/// are fixed; `report_id` and `created_at` are freshly minted per call so
-/// repeated runs produce distinct records.
+/// Deterministic offline stand-in; `report_id` and `created_at` are freshly minted per
+/// call so repeated runs produce distinct records.
 #[derive(Debug, Default)]
 pub struct StubMainAgent;
 
@@ -250,17 +201,15 @@ impl MainAgent for StubMainAgent {
         Ok(MainAgentOutput {
             markdown: STUB_REPORT_MARKDOWN.to_string(),
             summary,
-            // The stub models a run where nothing clears the durable-learning bar —
-            // the normal case, and what keeps exact-row-count tests over the memory
-            // store meaningful.
+            // No learnings, the normal case; exact-row-count tests over the memory store
+            // rely on it.
             durable_learnings: Vec::new(),
         })
     }
 }
 
-/// A small but structurally valid report body following the section order in
-/// `docs/report-structure.md`, written so the frontend `.prose` styling has
-/// real headings, a list, a blockquote, and a table to render.
+/// A small but structurally valid body in the `docs/report-structure.md` section order,
+/// with real headings, a list, a blockquote and a table for the frontend `.prose` styling.
 const STUB_REPORT_MARKDOWN: &str = r#"# Market Signal Report
 
 Date: current
@@ -327,11 +276,8 @@ This frames where risk and reward look asymmetric — it is not buy/sell guidanc
 - Stubbed report — no external sources in this slice.
 "#;
 
-/// Which analytical perspective an analyst agent argues from (`docs/agents.md
-/// §Analyst Agents`). Each of the three fixed analyst stages
-/// (`docs/report-workflow.md §§12–15`) is one posture; the posture selects the adapter's system
-/// prompt and tags the review it returns so the main agent's synthesis can attribute
-/// each read. Serializes to the lowercase label.
+/// Which perspective an analyst argues from (`docs/agents.md §Analyst Agents`);
+/// selects the adapter's system prompt and tags the review it returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Posture {
@@ -341,11 +287,10 @@ pub enum Posture {
 }
 
 impl Posture {
-    /// The three postures in the doc's order — the single source for constructing the
-    /// analyst trio so callers never hard-code the set.
+    /// The doc's order; the single source for constructing the analyst trio.
     pub const ALL: [Posture; 3] = [Self::Bull, Self::Bear, Self::Balanced];
 
-    /// Canonical lowercase label (the serde rename and the per-review tag).
+    /// The serde rename and the per-review tag.
     pub fn as_str(&self) -> &'static str {
         match self {
             Posture::Bull => "bull",
@@ -354,7 +299,6 @@ impl Posture {
         }
     }
 
-    /// Human-readable analyst name, for prompts and the synthesis block.
     pub fn display_name(&self) -> &'static str {
         match self {
             Posture::Bull => "Bull Analyst",
@@ -364,8 +308,7 @@ impl Posture {
     }
 }
 
-/// How strongly an analyst holds its read (`docs/agents.md §Balanced Analyst` names
-/// assigning confidence levels as part of weighing evidence). Serializes lowercase;
+/// How strongly an analyst holds its read (`docs/agents.md §Balanced Analyst`);
 /// defaults to `Medium` so a model response that omits it still decodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -386,40 +329,28 @@ impl Confidence {
     }
 }
 
-/// One analyst agent's structured review of the condensed research packet
-/// (`docs/report-workflow.md §§12–15`). This is the contract between the
-/// analyst stage and the main agent's synthesis (`§Step 16`): each analyst argues
-/// from its `posture` and returns its read as fields the main agent critiques and
-/// weighs. Ephemeral — never persisted (`§Step 12`); it rides into the main agent on
-/// [`MainAgentInput::analyst_reviews`].
+/// One analyst's structured review (`docs/report-workflow.md §§12–15`), the contract
+/// with the main agent's synthesis (`§Step 16`). Ephemeral, never persisted (`§Step 12`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnalystOutput {
     pub posture: Posture,
-    /// A short prose read of the market from this perspective.
     pub summary: String,
-    /// The strongest specific points the perspective rests on.
     pub key_points: Vec<String>,
-    /// Risks this perspective surfaces (a bull still names what could break its case).
+    /// A bull still names what could break its case.
     pub risks: Vec<String>,
-    /// Opportunities or constructive developments this perspective surfaces.
     pub opportunities: Vec<String>,
-    /// How strongly the analyst holds this read.
     pub confidence: Confidence,
 }
 
-/// The analyst stage (`docs/agents.md §Analyst Agents`). One method: read the shared
-/// condensed research packet and return a structured review from the adapter's
-/// assigned posture. Sync and pure like [`MainAgent`] — the blocking model HTTP call
-/// inside the real adapter is offloaded via `spawn_blocking` at the application-layer
-/// seam, where the three analysts run concurrently (`docs/report-workflow.md
-/// §Step 12`).
+/// The analyst stage (`docs/agents.md §Analyst Agents`). Sync and pure like
+/// [`MainAgent`]: the real adapter's blocking HTTP call is offloaded via
+/// `spawn_blocking` at the application-layer seam, where the three analysts run
+/// concurrently (`docs/report-workflow.md §Step 12`).
 pub trait AnalystAgent {
-    /// `cadence` is the run's report cadence — how long since the previous report — so
-    /// the analyst can weight recent moves versus the structural picture. Passed
-    /// explicitly (not read from the packet's change view) so a corrupt prior snapshot
-    /// still yields the true interval (see [`MainAgentInput::cadence`]). `history` is the
-    /// run's baseline history ([`MainAgentInput::history`]), rendered beside the packet
-    /// rather than inside it; `None` when the run has none.
+    /// `cadence` is passed explicitly, not read from the packet's change view, so a
+    /// corrupt prior snapshot still yields the true interval (see
+    /// [`MainAgentInput::cadence`]); `history` renders beside the packet rather than
+    /// inside it.
     fn review(
         &self,
         packet: &ResearchPacket,
@@ -428,9 +359,7 @@ pub trait AnalystAgent {
     ) -> anyhow::Result<AnalystOutput>;
 }
 
-/// Deterministic offline stand-in for a real analyst adapter, tagged with the posture
-/// it argues from. Returns a fixed structured review so the pipeline and its tests run
-/// end to end without live keys.
+/// Deterministic offline stand-in for one posture.
 #[derive(Debug)]
 pub struct StubAnalystAgent {
     posture: Posture,
@@ -490,8 +419,7 @@ mod tests {
 
     #[test]
     fn as_str_matches_serde_labels() {
-        // The DB columns are written from `as_str()` while JSON uses serde's
-        // kebab rename; this pins the two label sources together.
+        // The DB columns are written from `as_str()` while JSON uses the serde rename.
         for v in [
             RiskPosture::RiskOn,
             RiskPosture::RiskOff,
@@ -539,13 +467,11 @@ mod tests {
         let json = serde_json::to_string(&out).unwrap();
         let back: AnalystOutput = serde_json::from_str(&json).unwrap();
         assert_eq!(out, back);
-        // The posture tag serializes to its lowercase label.
         assert_eq!(serde_json::to_value(&out).unwrap()["posture"], "bear");
     }
 
     #[test]
     fn stub_analyst_tags_its_posture_and_default_input_has_no_reviews() {
-        // Each stub is one posture and returns a review tagged with it.
         for p in Posture::ALL {
             let out = StubAnalystAgent::new(p)
                 .review(
@@ -557,15 +483,13 @@ mod tests {
             assert_eq!(out.posture, p);
             assert!(!out.summary.is_empty());
         }
-        // The main agent input defaults to no analyst reviews (the offline/stub path),
-        // so the synthesis prompt omits the block until the live stage populates it.
         assert!(MainAgentInput::default().analyst_reviews.is_empty());
     }
 
     #[test]
     fn confidence_defaults_to_medium_when_absent() {
-        // The review schema marks confidence required, but a lenient decode keeps a
-        // malformed response from losing the rest of the review.
+        // The schema marks it required; the lenient decode keeps a malformed response
+        // from losing the rest of the review.
         #[derive(Deserialize)]
         struct Partial {
             #[serde(default)]

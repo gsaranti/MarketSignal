@@ -1,27 +1,13 @@
 //! Source registry and evidence tiers (`docs/data-sources.md §Source registry
-//! and evidence tiers`; the informs-never-gates rule in `docs/web-research.md
-//! §Source quality and evidence weighting`).
-//!
-//! The web loop reaches an unbounded set of domains, so the suite weighs
-//! *where* evidence comes from, not only what it says. The registry is a
-//! **thin override over heuristic defaults** — the long tail of the web is
-//! never registered and is scored by default rules; the registry pins the
-//! handful of domains whose treatment must be deliberate (primary sources,
-//! known specialists, denied junk).
-//!
-//! The load-bearing rule: **tiers grade, `deny` excludes, nothing between is
-//! gated.** A low tier weights conviction down; only the explicit deny list
-//! drops a hit, and denying junk that isn't evidence at all (SEO stock mills,
-//! AI-generated quote pages) is keeping spam out of the evidence base, not
-//! gating on quality. The seed membership below is drafted and accrues from
-//! live-run evidence; a user-facing override surface is deferred
-//! (`docs/configuration.md §Web Research`).
+//! and evidence tiers`; `docs/web-research.md §Source quality and evidence
+//! weighting`). A thin override over heuristic defaults: tiers grade, `deny`
+//! excludes, nothing between is gated.
 
 use serde::{Deserialize, Serialize};
 
 /// How the fetch layer should treat a domain (`docs/data-sources.md` — the
-/// `extractionProfile` field). Seeded here; the learned per-domain state the
-/// telemetry accumulates lives in the web-research source-state store.
+/// `extractionProfile` field). Seeded here; the learned per-domain state
+/// lives in the source-state store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtractionProfile {
@@ -30,10 +16,8 @@ pub enum ExtractionProfile {
     JsRequired,
 }
 
-/// Whether full text depends on a connected subscription. Connected Sources is
-/// deferred by ruling (2026-08-23), so `Connected` has no consumer this slice —
-/// the field keeps the documented registry shape so the deferral costs no
-/// schema change later.
+/// Whether full text depends on a connected subscription. `Connected` has no
+/// consumer yet; the field keeps the documented registry shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialMode {
@@ -42,10 +26,8 @@ pub enum CredentialMode {
 }
 
 /// Per-lane treatment (`docs/web-research.md §Source quality and evidence
-/// weighting` — Lane policy). Portfolio runs the per-holding *validation*
-/// lane only; the discovery lane's soft preference joins with Trade
-/// Opportunities. `SentimentOnly` marks the Tier-5 read: sentiment signal,
-/// never fact.
+/// weighting` — Lane policy). `SentimentOnly` marks the Tier-5 read:
+/// sentiment signal, never fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LanePolicy {
@@ -83,10 +65,9 @@ pub enum SourcePolicy {
 }
 
 /// The app-computed half of the per-document evidence annotation
-/// (`docs/web-research.md §Source quality and evidence weighting` — "the
-/// evidence annotation, split by who can know it"). Model-derived judgment
-/// (claim specificity, contradiction flags) stays model-side and is never
-/// dressed up as app-computed.
+/// (`docs/web-research.md §Source quality and evidence weighting`).
+/// Model-derived judgment stays model-side and is never dressed up as
+/// app-computed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceAnnotation {
     /// Evidence tier 0–5 resolved from the registry or default heuristic.
@@ -98,15 +79,15 @@ pub struct SourceAnnotation {
     /// carries no usable date (unscored, never a fabricated 1.0).
     pub recency_score: Option<f64>,
     /// 0–1: how much real article body the readability pass recovered vs a
-    /// thin paywall / JS stub. Filled by the fetch layer.
+    /// thin paywall / JS stub.
     pub extraction_quality: f64,
-    /// The paywall / JS-stub flag: extraction recovered too little body to
-    /// treat the fetch as the page's content.
+    /// Extraction recovered too little body to treat the fetch as the page's
+    /// content.
     pub thin_stub: bool,
 }
 
 /// Lowercase a host, strip a trailing dot and a leading `www.`, so lookups
-/// and dedup key on the registrable-ish suffix the seed table uses.
+/// and dedup key on the suffix the seed table uses.
 pub fn normalize_host(host: &str) -> String {
     let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
     h.strip_prefix("www.").unwrap_or(&h).to_string()
@@ -117,7 +98,6 @@ fn matches_domain(host: &str, domain: &str) -> bool {
     host == domain || host.ends_with(&format!(".{domain}"))
 }
 
-/// One seed row: the registered domain suffix and its entry.
 struct Seed {
     domain: &'static str,
     entry: RegistryEntry,
@@ -146,10 +126,9 @@ const fn seed(
     }
 }
 
-/// The representative starter set (`docs/data-sources.md §Source registry and
-/// evidence tiers` — the tier examples), deliberately not a catalog of the
-/// whole web: an unregistered domain takes the default heuristic below.
-/// Freshness SLAs are drafted (long for filings/structured, short for news).
+/// The starter set (`docs/data-sources.md §Source registry and evidence
+/// tiers`), deliberately not a catalog: an unregistered domain takes the
+/// default heuristic below. Freshness SLAs are drafted.
 static SEEDS: &[Seed] = &[
     // Tier 0 — primary / deterministic.
     seed("sec.gov", 0, &["filings", "financials", "legal-disclosure"], LanePolicy::Evidence, 365, ExtractionProfile::ApiOrHtml, false),
@@ -198,20 +177,17 @@ static SEEDS: &[Seed] = &[
     seed("youtube.com", 5, &["sentiment"], LanePolicy::SentimentOnly, 14, ExtractionProfile::JsRequired, false),
 ];
 
-/// The deny seed — the one categorical exclusion (AI-generated forecast /
-/// quote pages whose whole output is algorithmic filler, not evidence).
-/// Drafted and deliberately tiny: deny drops junk that isn't evidence at all,
-/// and membership accrues from live-run evidence rather than guesswork.
+/// The one categorical exclusion: pages whose whole output is algorithmic
+/// filler, not evidence. Deliberately tiny; membership accrues from live-run
+/// evidence.
 static DENY: &[(&str, &str)] = &[
     ("stockinvest.us", "algorithmic forecast pages, not evidence"),
     ("walletinvestor.com", "algorithmic forecast pages, not evidence"),
 ];
 
 /// Resolve a host to its registry policy: an explicit deny, a registered
-/// entry (suffix match), or the default heuristic — a recognized `.gov` /
-/// company-IR host defaults to Tier 0, anything else to the unknown-blog
-/// Tier 4 — so the system degrades gracefully rather than depending on
-/// registry completeness.
+/// entry (suffix match), or the default heuristic, so the system never
+/// depends on registry completeness.
 pub fn assess(host: &str) -> SourcePolicy {
     let host = normalize_host(host);
     for (domain, reason) in DENY {
@@ -227,7 +203,8 @@ pub fn assess(host: &str) -> SourcePolicy {
     SourcePolicy::Graded(default_entry(&host))
 }
 
-/// The default heuristic for an unregistered host.
+/// The default for an unregistered host: `.gov` and company-IR hosts read
+/// Tier 0, anything else the unknown-blog Tier 4.
 fn default_entry(host: &str) -> RegistryEntry {
     if host.ends_with(".gov") {
         return RegistryEntry {
@@ -240,8 +217,7 @@ fn default_entry(host: &str) -> RegistryEntry {
             paywall: false,
         };
     }
-    // Company investor-relations hosts are primary sources for their own
-    // issuer (`ir.example.com` / `investors.example.com` / `investor.example.com`).
+    // Investor-relations hosts are primary sources for their own issuer.
     let ir_host = host
         .split_once('.')
         .is_some_and(|(label, _)| matches!(label, "ir" | "investor" | "investors"));
@@ -268,10 +244,8 @@ fn default_entry(host: &str) -> RegistryEntry {
 }
 
 /// The 0–1 recency read against a source's freshness SLA: full weight inside
-/// the SLA, then a smooth `sla/age` decay — a weight, never a gate
-/// (`docs/web-research.md §Source quality and evidence weighting`; claim
-/// freshness as a *floor* question is job-owned and lives elsewhere). Drafted,
-/// calibratable.
+/// the SLA, then an `sla/age` decay — a weight, never a gate
+/// (`docs/web-research.md §Source quality and evidence weighting`).
 pub fn recency_score(age_days: f64, sla_days: u32) -> f64 {
     if !age_days.is_finite() || age_days < 0.0 {
         return 1.0; // A future-dated or unreadable age never penalizes.
@@ -284,9 +258,8 @@ pub fn recency_score(age_days: f64, sla_days: u32) -> f64 {
     }
 }
 
-/// Assemble the app-computed annotation for a fetched document: the registry
-/// read plus the fetch layer's extraction measurements. `age_days` is the
-/// document's age at annotation time when a publish/retrieval date exists.
+/// `age_days` is the document's age at annotation time when a
+/// publish/retrieval date exists.
 pub fn annotate(
     host: &str,
     age_days: Option<f64>,
@@ -351,25 +324,21 @@ mod tests {
 
     #[test]
     fn unregistered_hosts_take_the_default_heuristic() {
-        // A .gov host defaults high (recognized primary), an unknown blog low.
         assert_eq!(tier_of("treasury.gov"), 0);
         assert_eq!(tier_of("randomstockblog.example"), 4);
-        // Company IR hosts read primary for their own issuer.
         assert_eq!(tier_of("ir.tesla.com"), 0);
         assert_eq!(tier_of("investors.broadcom.com"), 0);
-        // A host merely containing "ir" in a label does not.
+        // A host merely containing "ir" in a label is not an IR host.
         assert_eq!(tier_of("firstrepublic.example"), 4);
     }
 
     #[test]
     fn a_registered_suffix_never_matches_a_lookalike() {
-        // `notsec.gov` matches the .gov heuristic (tier 0) but must not match
-        // the sec.gov row's evidence kinds.
+        // `notsec.gov` takes the .gov heuristic, not the sec.gov row.
         let SourcePolicy::Graded(e) = assess("notsec.gov") else {
             panic!("graded expected");
         };
         assert_eq!(e.evidence_kinds, &["government-primary"]);
-        // And a non-gov lookalike falls straight to the default.
         assert_eq!(tier_of("sec-gov.example"), 4);
     }
 
@@ -380,7 +349,6 @@ mod tests {
         let decayed = recency_score(28.0, 14);
         assert!((decayed - 0.5).abs() < 1e-9, "sla/age decay: {decayed}");
         assert!(recency_score(1400.0, 14) < 0.02);
-        // Unreadable / future ages never penalize.
         assert_eq!(recency_score(-3.0, 14), 1.0);
         assert_eq!(recency_score(f64::NAN, 14), 1.0);
     }
@@ -394,13 +362,11 @@ mod tests {
         assert!((a.extraction_quality - 0.83).abs() < 1e-9);
         assert!(!a.thin_stub);
 
-        // No date -> no recency read (never a fabricated 1.0 with a date).
         let b = annotate("reuters.com", None, 0.4, true).unwrap();
         assert_eq!(b.recency_score, None);
         assert!(b.thin_stub);
         assert!(!b.primary_source_bonus);
 
-        // Extraction quality is clamped to 0–1.
         let c = annotate("reuters.com", None, 7.0, false).unwrap();
         assert_eq!(c.extraction_quality, 1.0);
     }

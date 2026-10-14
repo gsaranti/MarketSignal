@@ -1,46 +1,8 @@
-//! Real Financial Modeling Prep adapter for the baseline market-data scan.
-//!
-//! The first data-source adapter behind the `MarketDataSource` trait
-//! (`data_sources`). On FMP's free tier the provider is effectively an *equities*
-//! API, so this adapter owns the equity-market half of the Step-3 baseline:
-//! the market **indices** (Dow / S&P 500 / Nasdaq / Russell 2000), the **VIX**,
-//! **gold** and **silver** (`GCUSD` / `SIUSD`, free on the quote endpoint), **sector
-//! performance**, each index's **multi-horizon performance** (weekly / MTD / YTD /
-//! 52-week range) derived from FMP's free end-of-day history, the **market movers**
-//! (biggest gainers / losers / most-active names), the **earnings calendar** (the
-//! recent + upcoming large-cap reporters), and the **valuation + finer-rotation**
-//! snapshots — per-sector P/E, the strongest / weakest industries (average move joined
-//! with aggregate P/E), and the US equity-risk-premium. The
-//! remaining macro / commodity internals — Treasury yields, the dollar index, oil,
-//! and natural gas — are gated behind FMP premium (verified live: HTTP 402 "not
-//! available under your current subscription") and are sourced from FRED instead.
-//! Each is a canonical free FRED series; see `docs/data-sources.md` (amended to
-//! reflect this split).
-//!
-//! Like `model_agent`, the HTTP call is synchronous (`reqwest::blocking`) so the
-//! trait stays sync; the blocking work is offloaded via `spawn_blocking` at the
-//! Tauri command seam. The key rides as a query param, never an Authorization
-//! header — the convention `connection_test` verified live (Jun 2026).
-//!
-//! Degradation policy. The guiding rule: **every failure degrades to a recorded gap, so
-//! one flaky symbol or a whole-provider outage never throws away the rest of the scan.**
-//! One pure function, `interpret_response`, classifies each response into a
-//! [`Disposition`] — either a 2xx value to shape, or a `Gap(reason)` the loop records
-//! and steps past:
-//! - `OutOfScope` — a 402 (premium) or 404 (not found): FMP explicitly signals this one
-//!   symbol is permanently absent. Excluded from the coverage denominator. (A 2xx that
-//!   parses but carries *no* rows is instead an `Unavailable` gap — see `fetch_quotes` —
-//!   so an empty response for an expected symbol still counts against coverage.)
-//! - `Rejected` — auth (401/403) or a 200 `{"Error Message"}` rate-limit / plan body. A
-//!   whole-provider condition, so the loop stops calling and records the remaining
-//!   symbols as `Rejected` too.
-//! - `Unavailable` — a 429 / 5xx that survived the retry layer, or a transport error.
-//! - `Malformed` — a request-contract error (400/408/422/other non-2xx), an unparseable
-//!   2xx body, or a response that won't shape into the expected array.
-//!
-//! No floor lives here anymore: a scan that resolves no index quotes returns an empty
-//! `indices` group plus its gaps, and the central coverage gate
-//! (`pipeline::enforce_coverage`) decides whether that's below the run's floor.
+//! Financial Modeling Prep adapter: the equity half of the baseline scan behind
+//! `MarketDataSource`, the economic-calendar consensus feed, and the Portfolio
+//! per-holding surface (`docs/data-sources.md`). Every failure degrades to a
+//! recorded gap ([`Disposition`]) so one flaky symbol never throws away a scan;
+//! the key rides as a query param, never an `Authorization` header.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -70,31 +32,23 @@ use crate::portfolio::evidence::{
 use crate::primary_market::{self, FrothWindows, IpoRow, IpoStatus};
 use crate::progress::RunContext;
 
-/// Base URL for FMP's stable API. The endpoint paths below are joined onto it in
-/// [`FmpDataSource::get`]; a test redirects the whole adapter at a localhost mock via
-/// [`FmpDataSource::with_base_url`], so the wire path (URL build → retry → interpret)
-/// runs offline.
+/// Base URL for FMP's stable API; [`FmpDataSource::with_base_url`] redirects it at a
+/// mock in tests.
 const FMP_BASE: &str = "https://financialmodelingprep.com/stable";
 
-/// FMP's stable single-symbol quote endpoint — the one `connection_test` exercises.
 const FMP_QUOTE_PATH: &str = "/quote";
-/// FMP's sector-performance snapshot endpoint. Requires a `date` query param
-/// (a dateless call returns HTTP 400).
+/// Requires a `date` query param (a dateless call returns HTTP 400).
 const FMP_SECTOR_PATH: &str = "/sector-performance-snapshot";
 
-/// Short timeout per request: the baseline scan issues several sequential calls,
-/// none of which should park for the model adapter's 120s ceiling.
+/// Per-request timeout; the scan issues many sequential calls, so none may park
+/// for the model adapter's 120s ceiling.
 const FMP_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 
-/// FMP's provider-specific retry policy (probe-verified 2026-08-05: the paid
-/// plan's per-minute limit arrives as an **HTTP 429** carrying the
-/// `"Limit Reach"` body with no `Retry-After` — tripped at ~61 calls of a 2s
-/// burst, so the suite's burst paths can genuinely hit it). The 429 ladder
-/// doubles 1s → 32s — 63s cumulative over seven attempts, guaranteed to cross
-/// any minute window (pinned by test) — while 5xx keeps the short shared
-/// schedule so a genuinely-down provider fails fast instead of stalling a
-/// multi-request scan; a server `Retry-After`, should one appear, is honored
-/// up to 90s. Shared by every FMP client (`fmp_news` included).
+/// FMP's retry policy, shared by every FMP client (`fmp_news` included). The paid
+/// plan's per-minute limit arrives as an HTTP 429 (`"Limit Reach"` body) with no
+/// `Retry-After`, so the rate-limit ladder (1s doubling to 32s, 63s cumulative) is
+/// sized to cross any minute window (pinned by test); 5xx keeps a short schedule so
+/// a down provider fails fast. A server `Retry-After` is honored up to 90s.
 pub(crate) const FMP_RETRY: crate::http_retry::RetryPolicy = crate::http_retry::RetryPolicy {
     rate_limit: crate::http_retry::Schedule {
         attempts: 7,
@@ -107,140 +61,100 @@ pub(crate) const FMP_RETRY: crate::http_retry::RetryPolicy = crate::http_retry::
     retry_after_cap: StdDuration::from_secs(90),
 };
 
-/// How many trading-day candidates back to probe for the most recent sector snapshot.
-/// A run can land on a weekend, when the latest snapshot is the prior Friday's;
-/// `sector_candidate_dates` skips the closed-market weekend without spending a request,
-/// so this budget covers weekdays (the holidays that actually need walking back over)
-/// rather than being burned on a guaranteed-empty Saturday or Sunday.
+/// Weekday candidates probed back for the latest sector snapshot. `sector_candidate_dates`
+/// skips weekends without a request, so the budget covers holidays rather than being
+/// burned on a guaranteed-empty Saturday or Sunday.
 pub(crate) const SECTOR_LOOKBACK_WEEKDAYS: usize = 5;
 
-/// FMP's end-of-day historical-price endpoint (light: date + close). One call per
-/// index over a trailing ~53-week window backs the multi-horizon `IndexPerformance`
-/// (weekly / MTD / YTD / 52-week range) — free on the equities tier (probed live
-/// Jun 2026, all four indices + the VIX return 200 with data).
+/// End-of-day history (light: date + close), free-tier; one call per index backs the
+/// multi-horizon `IndexPerformance`.
 const FMP_EOD_PATH: &str = "/historical-price-eod/light";
 
-/// Trailing window requested for the EOD history: ~53 weeks, so the 52-week range and
-/// the year-to-date anchor both sit inside the window with margin.
+/// ~53 weeks, so the 52-week range and the year-to-date anchor both sit inside the
+/// window with margin.
 const EOD_LOOKBACK_DAYS: i64 = 371;
 
-/// FMP's free market-mover lists — biggest gainers / losers and the most-active names.
-/// Each returns the whole US mover list in one call (no params). NB the most-active path
-/// is **plural** (`most-actives`); the singular `most-active` 404s (probed live Jun 2026).
+/// Free mover lists. NB the most-active path is **plural** (`most-actives`); the
+/// singular `most-active` 404s.
 const FMP_GAINERS_PATH: &str = "/biggest-gainers";
 const FMP_LOSERS_PATH: &str = "/biggest-losers";
 const FMP_MOST_ACTIVE_PATH: &str = "/most-actives";
 
-/// FMP's free earnings calendar — every US ticker reporting in a date window. Free on a
-/// ~1-month history window (probed live Jun 2026: forward dates return estimates with
-/// null actuals, past dates return both).
+/// Free on a ~1-month history window; forward dates return estimates with null actuals.
 const FMP_EARNINGS_PATH: &str = "/earnings-calendar";
-/// The paid new-listings calendar the primary-market read counts its IPOs from.
+/// Paid; the primary-market read counts its IPOs from it.
 const FMP_IPOS_CALENDAR_PATH: &str = "/ipos-calendar";
 
-/// FMP's paid economic calendar — every US event in a date window with its impact,
-/// consensus estimate and actual (a free key replies 402). The report's consensus feed
-/// (`econ_calendar`), joined onto FRED's release schedule.
+/// Paid (a free key replies 402); the `econ_calendar` consensus feed.
 const FMP_ECONOMIC_CALENDAR_PATH: &str = "/economic-calendar";
 
-/// FMP's free valuation + finer-rotation snapshots — all date-keyed like the
-/// sector-performance snapshot (a dateless call returns HTTP 400), all free-tier (probed
-/// live Jun 2026). `sector-pe-snapshot` is the per-sector aggregate P/E (a valuation
-/// complement to `sector-performance-snapshot`); the two `industry-*` snapshots are the
-/// finer ~130-industry cut (average move + aggregate P/E), joined by industry name.
+/// Free valuation and finer-rotation snapshots, all date-keyed (a dateless call returns
+/// HTTP 400). The two `industry-*` snapshots are joined by industry name.
 const FMP_SECTOR_PE_PATH: &str = "/sector-pe-snapshot";
 const FMP_INDUSTRY_PERF_PATH: &str = "/industry-performance-snapshot";
 const FMP_INDUSTRY_PE_PATH: &str = "/industry-pe-snapshot";
 
-/// FMP's paid trailing-history endpoints behind the sector and industry reads against their
-/// own history (`group_history`, `docs/data-sources.md §Report enrichment`), each keyed by
-/// one sector or industry on one exchange with `from` / `to` (probed live 2026-10-12: one
-/// row per trading day, newest first). The sector P/E history shares
+/// Paid trailing-history endpoints behind `group_history` (`docs/data-sources.md
+/// §Report enrichment`), each keyed by one sector or industry on one exchange with
+/// `from` / `to`; one row per trading day, newest first. The sector P/E history shares
 /// [`FMP_HISTORICAL_SECTOR_PE_PATH`] with the Portfolio fund path.
 const FMP_HISTORICAL_INDUSTRY_PE_PATH: &str = "/historical-industry-pe";
 const FMP_HISTORICAL_SECTOR_PERF_PATH: &str = "/historical-sector-performance";
 const FMP_HISTORICAL_INDUSTRY_PERF_PATH: &str = "/historical-industry-performance";
 
-/// FMP's free market-risk-premium endpoint — Damodaran's per-country equity-risk-premium
-/// dataset (no params). Filtered to the US row; a near-static annual constant (probed live
-/// Jun 2026: US total ERP ≈ 4.46%).
+/// Free; Damodaran's per-country equity-risk-premium dataset (no params), a near-static
+/// annual constant.
 const FMP_RISK_PREMIUM_PATH: &str = "/market-risk-premium";
 
-/// The exchanges the valuation snapshots are gathered for. FMP's sector / industry snapshots
-/// are **exchange-specific** (verified live: a no-`exchange` call defaults to NASDAQ only;
-/// `NYSE` and `AMEX` are also free). We pin both major boards so the model sees the
-/// growth/tech-tilted NASDAQ read *and* the broader, more value-weighted NYSE read rather
-/// than silently treating one exchange's valuation as whole-market. Each call is pinned to a
-/// single exchange, so the per-industry performance↔P/E join is always within one exchange.
+/// FMP's sector / industry snapshots are exchange-specific (a no-`exchange` call
+/// defaults to NASDAQ only). Both major boards are pinned so the model sees the
+/// growth-tilted NASDAQ read and the value-weighted NYSE read rather than treating one
+/// exchange's valuation as whole-market; each call is pinned to a single exchange, so
+/// the per-industry performance↔P/E join is always within one exchange.
 const SNAPSHOT_EXCHANGES: &[&str] = &["NASDAQ", "NYSE"];
 
-/// Industry-snapshot cap: keep the `INDUSTRY_TOP_N` strongest and `INDUSTRY_TOP_N` weakest
-/// industries by average move (FMP reports ~130 per exchange), applied **per exchange**, so
-/// the finer-rotation read surfaces the extremes without flooding the packet with the flat
-/// middle. Tunable after a live run.
+/// The strongest and weakest industries kept by average move, per exchange (FMP reports
+/// ~130), so the finer-rotation read surfaces the extremes without the flat middle.
 const INDUSTRY_TOP_N: usize = 10;
 
-/// The plausible-aggregate ceiling for an industry P/E. Above this a multiple is treated as
-/// a near-zero-earnings artifact rather than a valuation: FMP's aggregate P/E divides an
-/// industry's summed price by its summed earnings, so an industry near an earnings trough can
-/// report an absurd multiple (a live run surfaced `pe ≈ 461`) that reads to the model as a
-/// real "expensive" level when it is noise from a denominator approaching zero. This is the
-/// symmetric upper bound to the non-positive drop in [`industry_pe_map_from_value`] — both
-/// withhold a meaningless figure (→ `None`) rather than fabricate or pass one. Calibrated
-/// against the live distribution (`tuning_industry_pe_distribution_probe`, 2026-06-16): the
-/// plausible band runs up to ~94 (NYSE REIT-Healthcare; NASDAQ tops at ~88, Construction)
-/// and the clear denominator-near-zero artifact cluster begins ≥128 (up to ~465), leaving a
-/// clean ~106→128 gap. The ceiling sits at 120 — inside that gap, ~8pt below the artifact
-/// floor — so the borderline 100–106 aggregates (energy E&P, casinos at an earnings trough)
-/// are **kept** as the genuine, if low-signal, cyclical-trough valuations they are, while the
-/// ≥128 denominator artifacts stay dropped. Re-run the probe to re-tune.
+/// The plausible-aggregate ceiling for an industry P/E. FMP's aggregate P/E divides an
+/// industry's summed price by its summed earnings, so an industry at an earnings trough
+/// reports an absurd multiple (≈461 has been seen) that reads as "expensive" when it is
+/// denominator noise; above the ceiling the figure is withheld (`None`), the symmetric
+/// upper bound to the non-positive drop in [`industry_pe_map_from_value`]. Calibrated by
+/// `tuning_industry_pe_distribution_probe`: the plausible band runs up to ~94 and the
+/// artifact cluster begins ≥128, so 120 keeps the borderline 100–106 cyclical-trough
+/// aggregates while dropping the artifacts. Re-run the probe to re-tune.
 const INDUSTRY_PE_MAX: f64 = 120.0;
 
-/// The plausible-aggregate ceiling for a *sector* P/E — the symmetric upper bound to the
-/// non-positive drop in [`sector_pe_from_value`], the same drop-to-`None` honesty stance as
-/// [`INDUSTRY_PE_MAX`]. FMP's sector aggregate divides a sector's summed price by its summed
-/// earnings, so the same denominator-near-zero artifact is possible (an aggregate inflated past
-/// any plausible level by a sector at an earnings trough), and the non-positive case is *more*
-/// reachable here than at the industry cut: a whole sector can carry net-negative trailing
-/// aggregate earnings in a broad downturn (FMP reports `pe: 0.0` there), which would otherwise
-/// pass through as a misleading near-zero "cheap" multiple. Calibrated against the live
-/// distribution (`tuning_sector_pe_distribution_probe`, 2026-06-17 board snapshot): the
-/// prediction held —
-/// summing over far more constituents than an industry's makes the artifact tail *rarer* and the
-/// plausible band *tighter*. Both boards showed zero sectors above the prior 120 ceiling and zero
-/// non-positive, the highest plausible aggregate sitting at 85.2 (NASDAQ Consumer Cyclical; NYSE
-/// topped at 45.6, Technology), with no artifact cluster at all — versus the industry cut's ~94
-/// plausible max and ≥128 artifact floor. The ceiling drops 120 → 100: ~15pt of headroom above
-/// the observed max so a genuine cyclical-trough sector multiple drifting past 85 is kept, while
-/// the hundreds-magnitude denominator-near-zero artifact a future trough could still produce
-/// (same mechanism as the industry ~461) stays dropped. Re-run the probe to re-tune.
+/// The plausible-aggregate ceiling for a sector P/E, the same stance as
+/// [`INDUSTRY_PE_MAX`] and the symmetric upper bound to the non-positive drop in
+/// [`sector_pe_from_value`]. The non-positive case is more reachable at the sector cut
+/// (FMP reports `pe: 0.0` for net-negative aggregate earnings), while summing over more
+/// constituents makes the artifact tail rarer and the plausible band tighter. Calibrated
+/// by `tuning_sector_pe_distribution_probe`: the highest plausible aggregate sat at 85.2
+/// with no artifact cluster, so 100 leaves headroom for a genuine trough multiple while
+/// a hundreds-magnitude artifact stays dropped. Re-run the probe to re-tune.
 const SECTOR_PE_MAX: f64 = 100.0;
 
-/// The exact `country` label to keep from the market-risk-premium dataset. Exact-match, not
-/// a substring — "United Kingdom" and "United Arab Emirates" also start with "United".
+/// Exact-match, not a substring — "United Kingdom" and "United Arab Emirates" also
+/// start with "United".
 const RISK_PREMIUM_COUNTRY: &str = "United States";
 
-/// Mover-list filters (the raw lists are dominated by sub-$1 micro-caps that are noise for
-/// a market thesis). Keep only names priced at or above the floor, listed on a major US
-/// exchange, then the top N per list in FMP's own ranking order (gainers/losers by percent
-/// move, most-actives by volume). Tunable after a live run.
+/// Mover-list filters: the raw lists are dominated by sub-$1 micro-caps, so keep names
+/// at or above the price floor on a major US exchange, then the top N in FMP's own
+/// ranking order (gainers/losers by percent move, most-actives by volume).
 const MOVER_MIN_PRICE: f64 = 5.0;
 const MOVER_TOP_N: usize = 10;
 const MOVER_EXCHANGES: &[&str] = &["NASDAQ", "NYSE", "AMEX"];
 
-/// Case-insensitive name fragments that mark a mover row as a fund / ETF / ETN or a
-/// leveraged-and-inverse product rather than an individual company. The free mover lists
-/// carry no fund flag and are dominated by leveraged ETFs (TQQQ, SOXS, "Daily Target 2X
-/// …"), which would otherwise be sector-tagged as companies; this name heuristic is the
-/// only free signal. It necessarily errs toward false negatives, not false positives — the
-/// prompt's "a mover may be a fund" caveat is the backstop for products it misses, whereas
-/// dropping a real company is the worse error. So markers must be fund-specific:
-/// - `" etf"` / `" etn"` carry a leading space to match the suffix, not a substring of a
-///   company name (e.g. "Aetna").
-/// - The leverage tokens (`2x`/`3x`/`leveraged`/`inverse`/`ultrapro`/`ultrashort`), the
-///   issuer names, and the `" etf"`/`" etn"` suffix already catch every leveraged
-///   *directional* product, so bare `"bull"`/`"bear"` are deliberately NOT markers — they
-///   would drop real companies like "Build-A-Bear Workshop" for no added coverage.
+/// Case-insensitive name fragments marking a mover row as a fund / ETF / ETN or a
+/// leveraged-inverse product. The free mover lists carry no fund flag, so this name
+/// heuristic is the only signal; it errs toward false negatives (the prompt's "a mover
+/// may be a fund" caveat backs it) because dropping a real company is the worse error.
+/// `" etf"` / `" etn"` carry a leading space to match the suffix, not a substring of a
+/// company name ("Aetna"); bare `"bull"` / `"bear"` are deliberately not markers (they
+/// would drop "Build-A-Bear Workshop" for no added coverage).
 const MOVER_FUND_MARKERS: &[&str] = &[
     " etf",
     " etn",
@@ -258,27 +172,19 @@ const MOVER_FUND_MARKERS: &[&str] = &[
     "microsectors",
 ];
 
-/// Earnings-calendar window and filter: a cadence-sized lookback (the reporters since the
-/// previous report) + the upcoming fortnight, then keep only large-cap reporters (quarterly
-/// revenue estimate at or above the floor — no free index-membership list to filter by, so
-/// revenue magnitude is the proxy), capped at the largest N by revenue estimate. Tunable
-/// after a live run.
-///
-/// The *back* window scales with the run cadence ([`cadence_window_days`]): [`EARNINGS_BACK_DAYS`]
-/// is the floor (a sub-weekly run still gets a week of recent context) and
-/// [`EARNINGS_BACK_MAX_DAYS`] the cap (FMP's free earnings window is ~1 month). The *forward*
-/// window stays fixed — "upcoming" is upcoming regardless of how long since the last report.
+/// Earnings-calendar window and filter. The back window scales with the run cadence
+/// ([`cadence_window_days`]) between the floor and the cap (FMP's free earnings window is
+/// ~1 month); the forward window stays fixed. No free index-membership list exists, so
+/// the quarterly revenue estimate is the large-cap proxy.
 const EARNINGS_BACK_DAYS: i64 = 7;
 const EARNINGS_BACK_MAX_DAYS: i64 = 31;
 const EARNINGS_FWD_DAYS: i64 = 14;
 const EARNINGS_MIN_REVENUE: f64 = 5_000_000_000.0;
 const EARNINGS_MAX_ROWS: usize = 25;
 
-/// The cadence-sized window in whole days for this run — the earnings-calendar lookback and
-/// the primary-market read's recent window: [`EARNINGS_BACK_DAYS`] on the first report (no
-/// prior interval), else the elapsed interval rounded up and clamped to
-/// `[EARNINGS_BACK_DAYS, EARNINGS_BACK_MAX_DAYS]`. The saturating `f64 as i64` cast makes a
-/// non-finite or absurd interval clamp to the floor/cap rather than panic.
+/// The cadence-sized lookback in whole days: the floor on the first report, else the
+/// elapsed interval rounded up and clamped. The saturating `f64 as i64` cast makes a
+/// non-finite interval clamp rather than panic.
 fn cadence_window_days(elapsed_days: Option<f64>) -> i64 {
     match elapsed_days {
         None => EARNINGS_BACK_DAYS,
@@ -286,11 +192,9 @@ fn cadence_window_days(elapsed_days: Option<f64>) -> i64 {
     }
 }
 
-/// The four headline indices of the baseline scan (`docs/report-workflow
-/// .md §Step 3`), paired with a display name used when FMP omits one and the `price`
-/// unit. All four are free-tier on FMP (verified live). The unit rides from the table,
-/// not the wire — FMP's quote object carries no unit — and labels the level for the
-/// model the same way `fred`'s and `bls`'s series tables do.
+/// The headline indices (`docs/report-workflow.md §Step 3`) with a fallback display
+/// name and the `price` unit; FMP's quote object carries no unit, so it rides from the
+/// table.
 const INDEX_SYMBOLS: &[(&str, &str, &str)] = &[
     ("^DJI", "Dow Jones Industrial Average", "index points"),
     ("^GSPC", "S&P 500", "index points"),
@@ -298,22 +202,16 @@ const INDEX_SYMBOLS: &[(&str, &str, &str)] = &[
     ("^RUT", "Russell 2000", "index points"),
 ];
 
-/// The free-tier market internals FMP serves: the VIX and gold (`GCUSD`, verified
-/// live on the free quote endpoint), each with its `price` unit. The dollar index,
-/// oil, and natural gas are FMP-premium and come from FRED instead (see the module
-/// header).
+/// The free-tier internals with their `price` unit; the dollar index, oil and natural
+/// gas are FMP-premium and come from FRED instead.
 const INTERNAL_SYMBOLS: &[(&str, &str, &str)] = &[
     ("^VIX", "CBOE Volatility Index", "index points"),
     ("GCUSD", "Gold", "USD per troy ounce"),
     ("SIUSD", "Silver", "USD per troy ounce"),
 ];
 
-/// FMP's quote object, trimmed to the fields the baseline needs. `name` is optional
-/// (filled from the local label when absent), but `price` and the percent change are
-/// **required**: a quote missing either fails the parse, which the loop records as a
-/// `Malformed` gap rather than reaching the model as a false `0.0`. The change
-/// field is `changePercentage` on the stable API, with the legacy `changesPercentage`
-/// accepted as an alias.
+/// `price` and the percent change are required so a quote missing either fails the parse
+/// (a `Malformed` gap) rather than reaching the model as a false `0.0`.
 #[derive(Debug, Deserialize)]
 struct FmpQuoteRaw {
     symbol: String,
@@ -324,10 +222,8 @@ struct FmpQuoteRaw {
     change_pct: f64,
 }
 
-/// One row of FMP's sector-performance snapshot. `sector` and `averageChange` are
-/// **required** — a row missing either fails the parse, which `fetch_sectors` records as
-/// a `Malformed` gap rather than dropping silently. The snapshot's `date` / `exchange` fields are
-/// ignored.
+/// Both fields are required so a short row fails the parse (a `Malformed` gap) rather
+/// than dropping silently.
 #[derive(Debug, Deserialize)]
 struct FmpSectorRaw {
     sector: String,
@@ -335,21 +231,16 @@ struct FmpSectorRaw {
     average_change: f64,
 }
 
-/// One row of FMP's EOD light history: the close (`price`) on a `date` (`"YYYY-MM-DD"`).
-/// Both are required — a row missing either fails the parse, which the loop records as a
-/// `Malformed` gap rather than dropping the row silently. The `symbol` / `volume` fields the endpoint also returns
-/// are ignored.
+/// The close (`price`) on a `date` (`"YYYY-MM-DD"`); both required so a short row fails
+/// the parse rather than dropping silently.
 #[derive(Debug, Deserialize)]
 struct FmpEodRaw {
     date: String,
     price: f64,
 }
 
-/// One row of FMP's mover lists (gainers / losers / most-actives share this shape).
-/// `price` and the percent change are required; `name` / `exchange` fall back to empty
-/// when absent. The percent change is `changesPercentage` (plural) on the mover lists,
-/// with the singular `changePercentage` accepted as an alias — the inverse of the quote
-/// endpoint's spelling (probed live Jun 2026). `volume` is not returned by these lists.
+/// The percent change is `changesPercentage` (plural) on the mover lists, the inverse of
+/// the quote endpoint's spelling.
 #[derive(Debug, Deserialize)]
 struct FmpMoverRaw {
     symbol: String,
@@ -362,9 +253,8 @@ struct FmpMoverRaw {
     exchange: String,
 }
 
-/// One row of FMP's earnings calendar. `symbol` and `date` are required; the EPS /
-/// revenue estimate and actual fields are all optional — FMP omits actuals for dates that
-/// haven't reported and can omit estimates for thinly-covered names.
+/// FMP omits actuals for dates that haven't reported and can omit estimates for
+/// thinly-covered names.
 #[derive(Debug, Deserialize)]
 struct FmpEarningsRaw {
     symbol: String,
@@ -379,11 +269,8 @@ struct FmpEarningsRaw {
     revenue_actual: Option<f64>,
 }
 
-/// One row of FMP's sector-PE snapshot. `sector`, `exchange`, and `pe` are all required — a
-/// row missing any fails the parse (a `Malformed` gap in the loop) rather than dropping
-/// silently. `exchange` is read from the wire (not assumed from the request) so the row is
-/// labelled by the board FMP actually reported, even if the `exchange` query param were ever
-/// ignored or regressed. `date` is ignored.
+/// `exchange` is read from the wire, not assumed from the request, so the row is labelled
+/// by the board FMP actually reported should the `exchange` query param ever be ignored.
 #[derive(Debug, Deserialize)]
 struct FmpSectorPeRaw {
     sector: String,
@@ -391,9 +278,7 @@ struct FmpSectorPeRaw {
     pe: f64,
 }
 
-/// One row of FMP's industry-performance snapshot. `industry`, `exchange`, and
-/// `averageChange` are required; `exchange` is read from the wire (see [`FmpSectorPeRaw`]).
-/// `date` is ignored.
+/// `exchange` is read from the wire (see [`FmpSectorPeRaw`]).
 #[derive(Debug, Deserialize)]
 struct FmpIndustryPerfRaw {
     industry: String,
@@ -402,8 +287,7 @@ struct FmpIndustryPerfRaw {
     average_change: f64,
 }
 
-/// One row of FMP's industry-PE snapshot. `industry`, `exchange`, and `pe` are required;
-/// `exchange` is read from the wire (see [`FmpSectorPeRaw`]). `date` is ignored.
+/// `exchange` is read from the wire (see [`FmpSectorPeRaw`]).
 #[derive(Debug, Deserialize)]
 struct FmpIndustryPeRaw {
     industry: String,
@@ -411,8 +295,6 @@ struct FmpIndustryPeRaw {
     pe: f64,
 }
 
-/// One row of FMP's market-risk-premium dataset. `country` and both premiums are required;
-/// the `continent` field is ignored.
 #[derive(Debug, Deserialize)]
 struct FmpRiskPremiumRaw {
     country: String,
@@ -422,21 +304,16 @@ struct FmpRiskPremiumRaw {
     total_equity_risk_premium: f64,
 }
 
-/// One FMP response classified into what the loop should do with it — the single place
-/// the degradation policy lives, now in terms of [`GapReason`] rather than a fatal
-/// `Err`. Either a 2xx value to shape, or a gap the loop records and steps past.
+/// One FMP response classified for the loop: a 2xx value to shape, or a gap the loop
+/// records and steps past. The degradation policy lives in [`interpret_response`].
 enum Disposition {
     Value(Value),
     Gap(GapReason),
 }
 
-/// Interpret one FMP response by the full status × body matrix. Pure and total. Status
-/// decides disposition first, with an explicit *skip allowlist* (402/404 → `OutOfScope`),
-/// so a non-2xx is never reclassified by its body (a 402 with a JSON error body skips
-/// just like a 402 with a plain-text body). Only on a 2xx is the body inspected, where
-/// FMP's `{"Error Message"}` rate-limit / plan signal is a `Rejected` gap and an
-/// unparseable body a `Malformed` gap — distinct from an empty "no data" array, which
-/// parses fine and shapes to zero quotes.
+/// Status decides first, so a non-2xx is never reclassified by its body; only a 2xx
+/// body is inspected, where FMP's `{"Error Message"}` rate-limit / plan signal is a
+/// `Rejected` gap. An empty "no data" array parses fine and shapes to zero rows.
 fn interpret_response(status: u16, body: &str) -> Disposition {
     match status {
         200..=299 => match serde_json::from_str::<Value>(body) {
@@ -456,23 +333,18 @@ fn interpret_response(status: u16, body: &str) -> Disposition {
     }
 }
 
-/// FMP's error-envelope probe — the `{"Error Message": …}` rate-limit / plan
-/// signal — single-homed for [`interpret_response`]'s classification and
-/// [`http_gap_detail`]'s cause sentence, so the shape cannot drift between
-/// the two readers of the same body.
+/// FMP's `{"Error Message": …}` rate-limit / plan envelope, single-homed so
+/// [`interpret_response`] and [`http_gap_detail`] cannot drift on its shape.
 fn fmp_error_message(v: &Value) -> Option<&str> {
     v.get("Error Message").and_then(Value::as_str)
 }
 
-/// Cap on the body text an HTTP-level gap detail embeds — FMP error sentences
-/// fit comfortably; the cap only bites on an HTML error page or similar.
+/// Cap on the body text a gap detail embeds; FMP error sentences fit, the cap only
+/// bites on an HTML error page or similar.
 const GAP_DETAIL_BODY_CAP: usize = 300;
 
-/// The one sentence an HTTP-level gap leaves on its tracker row: the status,
-/// plus FMP's own error sentence when the body carries one
-/// ([`fmp_error_message`] — the signal `interpret_response` classifies as
-/// `Rejected`), else a capped head of the body. The transport arm formats the
-/// reqwest chain instead ([`FmpDataSource::suite_get_shaped`]).
+/// The sentence an HTTP-level gap leaves on its tracker row: the status plus FMP's own
+/// error sentence when the body carries one, else a capped head of the body.
 fn http_gap_detail(status: u16, body: &str) -> String {
     let text = serde_json::from_str::<Value>(body)
         .ok()
@@ -489,8 +361,8 @@ fn http_gap_detail(status: u16, body: &str) -> String {
     }
 }
 
-/// One gap for the `sectors` group, which is a whole-snapshot (no per-series symbols),
-/// so it carries a synthetic series id / name rather than one per sector.
+/// The `sectors` group is a whole snapshot, so its gap carries a synthetic series id
+/// rather than one per sector.
 fn sector_gap(reason: GapReason) -> DataGap {
     DataGap::new(
         GroupKind::Sectors,
@@ -500,9 +372,8 @@ fn sector_gap(reason: GapReason) -> DataGap {
     )
 }
 
-/// One gap for the `sector-pe` group on `exchange` — like `sector_gap`, a whole-snapshot
-/// group whose gap carries a synthetic, exchange-tagged series id / name rather than one per
-/// sector (so a NASDAQ failure and an NYSE failure are distinct manifest entries).
+/// Exchange-tagged like the other snapshot gaps, so a NASDAQ failure and an NYSE
+/// failure are distinct manifest entries.
 fn sector_pe_gap(exchange: &str, reason: GapReason) -> DataGap {
     DataGap::new(
         GroupKind::SectorPe,
@@ -512,7 +383,6 @@ fn sector_pe_gap(exchange: &str, reason: GapReason) -> DataGap {
     )
 }
 
-/// One gap for the industry-performance leg of the `industries` group on `exchange`.
 fn industry_perf_gap(exchange: &str, reason: GapReason) -> DataGap {
     DataGap::new(
         GroupKind::Industries,
@@ -522,7 +392,6 @@ fn industry_perf_gap(exchange: &str, reason: GapReason) -> DataGap {
     )
 }
 
-/// One gap for the industry-P/E leg of the `industries` group on `exchange`.
 fn industry_pe_gap(exchange: &str, reason: GapReason) -> DataGap {
     DataGap::new(
         GroupKind::Industries,
@@ -532,10 +401,8 @@ fn industry_pe_gap(exchange: &str, reason: GapReason) -> DataGap {
     )
 }
 
-/// Shape a successful quote response (a single-symbol `/stable/quote` call returns a
-/// one-element array) into typed quotes, falling back to `fallback_name` when FMP omits
-/// the instrument name and stamping each with the requested symbol's `unit` (FMP's quote
-/// object carries none). A body that is not the expected array of quotes is an error.
+/// A single-symbol `/quote` call returns a one-element array; the `unit` is stamped from
+/// the request because FMP's quote object carries none.
 fn quotes_from_value(value: Value, fallback_name: &str, unit: &str) -> Result<Vec<Quote>> {
     let raws: Vec<FmpQuoteRaw> = serde_json::from_value(value)
         .context("FMP quote response did not match the expected array shape")?;
@@ -555,9 +422,7 @@ fn quotes_from_value(value: Value, fallback_name: &str, unit: &str) -> Result<Ve
         .collect())
 }
 
-/// Shape a successful sector snapshot into typed rows, deduplicated by sector name (the
-/// default call returns one row per sector, but a per-exchange variant could repeat
-/// them). A body that is not the expected array of sector rows is an error.
+/// Deduplicated by sector name: a per-exchange variant of the call could repeat sectors.
 fn sectors_from_value(value: Value) -> Result<Vec<SectorPerformance>> {
     let raws: Vec<FmpSectorRaw> = serde_json::from_value(value)
         .context("FMP sector response did not match the expected array shape")?;
@@ -574,9 +439,6 @@ fn sectors_from_value(value: Value) -> Result<Vec<SectorPerformance>> {
     Ok(out)
 }
 
-/// Shape a successful mover-list response into typed [`StockMover`]s tagged with the list's
-/// `category`, falling back to the symbol when FMP omits the name. A body that is not the
-/// expected array of mover rows is an error.
 fn movers_from_value(value: Value, category: MoverCategory) -> Result<Vec<StockMover>> {
     let raws: Vec<FmpMoverRaw> = serde_json::from_value(value)
         .context("FMP mover response did not match the expected array shape")?;
@@ -597,9 +459,6 @@ fn movers_from_value(value: Value, category: MoverCategory) -> Result<Vec<StockM
         .collect())
 }
 
-/// Whether a mover's name marks it as a fund / ETF / ETN or leveraged-inverse product
-/// rather than an individual company — a [`MOVER_FUND_MARKERS`] substring match,
-/// case-insensitive. Imperfect by nature (no free fund flag); the prompt caveat backs it.
 fn is_fund_or_leveraged(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     MOVER_FUND_MARKERS
@@ -607,13 +466,7 @@ fn is_fund_or_leveraged(name: &str) -> bool {
         .any(|marker| lower.contains(marker))
 }
 
-/// Filter one raw mover list down to thesis-relevant individual-company names: priced at or
-/// above [`MOVER_MIN_PRICE`] (strips the sub-$1 micro-caps the raw lists are dominated by),
-/// listed on a [`MOVER_EXCHANGES`] exchange, and not a fund / leveraged-inverse ETF
-/// ([`is_fund_or_leveraged`] — the raw lists are otherwise full of TQQQ/SOXS-type products
-/// that aren't single-company signals), capped at the first [`MOVER_TOP_N`] in FMP's
-/// ranking order (the order the list arrives in — by percent move for gainers/losers, by
-/// volume for most-actives). Pure.
+/// The cap takes the first N in arrival order, which is FMP's own ranking.
 fn filter_movers(movers: Vec<StockMover>) -> Vec<StockMover> {
     movers
         .into_iter()
@@ -626,8 +479,6 @@ fn filter_movers(movers: Vec<StockMover>) -> Vec<StockMover> {
         .collect()
 }
 
-/// Shape a successful earnings-calendar response into typed [`EarningsEvent`]s. A body that
-/// is not the expected array of earnings rows is an error.
 fn earnings_from_value(value: Value) -> Result<Vec<EarningsEvent>> {
     let raws: Vec<FmpEarningsRaw> = serde_json::from_value(value)
         .context("FMP earnings response did not match the expected array shape")?;
@@ -644,12 +495,8 @@ fn earnings_from_value(value: Value) -> Result<Vec<EarningsEvent>> {
         .collect())
 }
 
-/// Filter the raw earnings calendar to large-cap reporters: keep rows whose quarterly
-/// revenue estimate clears [`EARNINGS_MIN_REVENUE`] (no free index-membership list to
-/// filter by, so revenue magnitude is the large-cap proxy), ordered by that estimate
-/// descending and capped at [`EARNINGS_MAX_ROWS`]. Rows without a revenue estimate are
-/// dropped — they can't clear the floor and are overwhelmingly thinly-covered small-caps.
-/// Pure.
+/// Rows without a revenue estimate are dropped: they cannot clear the floor and are
+/// overwhelmingly thinly-covered small-caps.
 fn filter_earnings(events: Vec<EarningsEvent>) -> Vec<EarningsEvent> {
     let mut kept: Vec<EarningsEvent> = events
         .into_iter()
@@ -667,19 +514,11 @@ fn filter_earnings(events: Vec<EarningsEvent>) -> Vec<EarningsEvent> {
     kept
 }
 
-/// Shape a successful sector-PE snapshot into typed rows. Every row's wire `exchange` must
-/// match `expected_exchange` (the board the call was pinned to); a single mismatch fails the
-/// whole leg as an error (→ a `Malformed` gap in the loop) rather than silently accepting
-/// off-board rows — the guard against FMP ignoring the `exchange` query param and returning,
-/// say, NASDAQ data for an NYSE request (which would otherwise duplicate one board and drop
-/// the other with no gap). Rows are then labelled by their (validated) wire exchange and
-/// deduplicated by (sector, exchange), keep first. Each kept row's aggregate `pe` is then
-/// band-bounded to `(0.0, SECTOR_PE_MAX]` (see [`SECTOR_PE_MAX`] and the matching industry
-/// drop in [`industry_pe_map_from_value`]): a non-positive aggregate (FMP's `0.0` for a sector
-/// with no positive summed earnings) or one inflated past the ceiling by a near-zero earnings
-/// base is dropped to `None` rather than passed as a misleading "cheap"/"expensive" multiple —
-/// but the (sector, exchange) row itself survives, so the model still sees the sector was
-/// scanned. A body that is not the expected array, or that carries an off-board row, is an error.
+/// A single off-board row fails the whole leg (a `Malformed` gap) rather than silently
+/// accepting it: were FMP to ignore the `exchange` param, one board would otherwise be
+/// duplicated and the other dropped with no gap. A `pe` outside `(0.0, SECTOR_PE_MAX]`
+/// is withheld as `None` while the row survives, so the model still sees the sector was
+/// scanned.
 fn sector_pe_from_value(value: Value, expected_exchange: &str) -> Result<Vec<SectorPe>> {
     let raws: Vec<FmpSectorPeRaw> = serde_json::from_value(value)
         .context("FMP sector-PE response did not match the expected array shape")?;
@@ -707,12 +546,8 @@ fn sector_pe_from_value(value: Value, expected_exchange: &str) -> Result<Vec<Sec
     Ok(out)
 }
 
-/// Shape a successful industry-performance snapshot into `(industry, exchange, average_change)`
-/// rows. Every row's wire `exchange` must match `expected_exchange`; a mismatch fails the leg
-/// (see [`sector_pe_from_value`] for the rationale — the same off-board guard). Rows are then
-/// labelled by their validated wire exchange and deduplicated by (industry, exchange), keep
-/// first, preserving arrival order. A body that is not the expected array, or that carries an
-/// off-board row, is an error.
+/// `(industry, exchange, average_change)` rows, keep-first in arrival order; the same
+/// off-board guard as [`sector_pe_from_value`].
 fn industry_perf_from_value(
     value: Value,
     expected_exchange: &str,
@@ -736,17 +571,10 @@ fn industry_perf_from_value(
     Ok(out)
 }
 
-/// Shape a successful industry-PE snapshot into an `(industry, exchange) -> pe` map. Every
-/// row's wire `exchange` must match `expected_exchange`; a mismatch fails the leg (the same
-/// off-board guard as [`sector_pe_from_value`]). The map keys by (industry, exchange) so the
-/// performance↔P/E join can only ever pair same-board figures. Out-of-band ratios are
-/// dropped from both ends: FMP reports `pe: 0.0` (not null) for an industry with no positive
-/// aggregate earnings, and an aggregate divided by a denominator approaching zero from above
-/// inflates past any plausible level (a live run surfaced `pe ≈ 461`) — a P/E is only a
-/// meaningful valuation inside `(0.0, INDUSTRY_PE_MAX]`, so an industry outside that band is
-/// left out of the map and joins to `None`, rather than reaching the model as a misleading
-/// near-zero "cheap" or absurdly-inflated "expensive" multiple. A body that is not the
-/// expected array, or that carries an off-board row, is an error.
+/// Keyed by (industry, exchange) so the performance↔P/E join can only pair same-board
+/// figures; the same off-board guard as [`sector_pe_from_value`]. FMP reports `pe: 0.0`
+/// (not null) for an industry with no positive aggregate earnings, so a ratio outside
+/// `(0.0, INDUSTRY_PE_MAX]` is left out of the map and joins to `None`.
 fn industry_pe_map_from_value(
     value: Value,
     expected_exchange: &str,
@@ -769,15 +597,8 @@ fn industry_pe_map_from_value(
     Ok(map)
 }
 
-/// Join the industry-performance rows with the PE map into the capped finer-rotation read:
-/// the [`INDUSTRY_TOP_N`] strongest and [`INDUSTRY_TOP_N`] weakest industries by average move
-/// (FMP reports ~130 per exchange, mostly a flat middle), each carrying the wire `exchange`
-/// from its performance row and its aggregate `pe` where the PE snapshot had it for that same
-/// (industry, exchange) (`None` otherwise — a missing/failed PE call, a non-positive ratio, or
-/// a board mismatch degrades to no valuation, never drops the rotation row). Keying the lookup
-/// by (industry, exchange) means a row's P/E can never come from a different board than its
-/// performance. The two slices never overlap: the bottom count is clamped to what's left after
-/// the top, so a short list yields each industry once. Pure.
+/// A missing P/E degrades the row to `pe: None`, never drops it. The bottom count is
+/// clamped to what's left after the top, so a short list yields each industry once.
 fn top_bottom_industries(
     perf: Vec<(String, String, f64)>,
     pe: &HashMap<(String, String), f64>,
@@ -805,8 +626,8 @@ fn top_bottom_industries(
         .collect()
 }
 
-/// One of the four trailing-history series behind the sector and industry reads against
-/// their own history (`group_history`), each fetched per group on one exchange.
+/// The trailing-history series behind `group_history`, each fetched per group on one
+/// exchange.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HistoryFamily {
     SectorPe,
@@ -833,7 +654,6 @@ impl HistoryFamily {
         }
     }
 
-    /// The baseline group whose rows carry the read.
     fn group(self) -> GroupKind {
         match self {
             HistoryFamily::SectorPe | HistoryFamily::SectorReturn => GroupKind::SectorPe,
@@ -851,7 +671,7 @@ impl HistoryFamily {
         }
     }
 
-    /// The family's display name, for its one family-level gap.
+    /// For the family-level gap.
     fn label(self) -> &'static str {
         match self {
             HistoryFamily::SectorPe => "Sector P/E history",
@@ -861,7 +681,7 @@ impl HistoryFamily {
         }
     }
 
-    /// The per-group read's display noun, for its tracker row and row-level gap.
+    /// For the per-group tracker row and row-level gap.
     fn read_label(self) -> &'static str {
         match self {
             HistoryFamily::SectorPe | HistoryFamily::IndustryPe => "P/E history",
@@ -870,8 +690,8 @@ impl HistoryFamily {
     }
 }
 
-/// The dates every history fetch in one scan shares: the fetch window and the ET session
-/// date the freshness check reads.
+/// The fetch window and the ET session date the freshness check reads, shared by every
+/// history fetch in one scan.
 #[derive(Debug, Clone, Copy)]
 struct HistoryClock {
     from: NaiveDate,
@@ -881,8 +701,8 @@ struct HistoryClock {
 
 impl HistoryClock {
     fn at(now: chrono::DateTime<Utc>) -> Self {
-        // The fetch range's upper bound deliberately stays the UTC date — a fetch bound, not a
-        // session key; the freshness check reads the ET session (`market_clock`).
+        // The fetch range's upper bound deliberately stays UTC (a fetch bound, not a
+        // session key); the freshness check reads the ET session (`market_clock`).
         let (from, to) = group_history::window(now.date_naive());
         Self {
             from,
@@ -902,8 +722,8 @@ fn series_token(name: &str) -> String {
         .join("-")
 }
 
-/// One gap for a whole history family on `exchange`: a this-run failure stops the family's
-/// loop there, so the reads it did not reach share this one manifest entry.
+/// A whole-provider failure stops the family's loop, so the reads it did not reach share
+/// this one manifest entry.
 fn history_family_gap(family: HistoryFamily, exchange: &str, reason: GapReason) -> DataGap {
     DataGap::new(
         family.group(),
@@ -913,14 +733,9 @@ fn history_family_gap(family: HistoryFamily, exchange: &str, reason: GapReason) 
     )
 }
 
-/// Shape one `historical-*` body into the requested group's dated points. The sector P/E
-/// rows go through the one sector-P/E shaper ([`sector_pe_rows_from_value`] — its exchange
-/// check and `(0, SECTOR_PE_MAX]` band); the other three hold the same integrity contract —
-/// a row served under another exchange, or none, makes the whole body `Err` — with an
-/// industry P/E usable inside `(0, INDUSTRY_PE_MAX]` and a daily `averageChange` usable when
-/// finite (the ±25-point guard is the derivation's). A row for another group than the one
-/// requested, or without a datable date or a usable value, is unreadable and dropped. A body
-/// that is not an array is `Err`.
+/// A row served under another exchange, or none, fails the whole body; a row for another
+/// group, or without a datable date or usable value, is dropped. A daily `averageChange`
+/// is usable when finite (the ±25-point guard is the derivation's).
 fn history_points_from_value(
     value: &Value,
     family: HistoryFamily,
@@ -984,9 +799,7 @@ fn history_points_from_value(
     Ok(out)
 }
 
-/// Shape a successful market-risk-premium response, filtering to the US row
-/// ([`RISK_PREMIUM_COUNTRY`], exact match). Zero or one row in practice. A body that is not
-/// the expected array is an error.
+/// Zero or one row in practice.
 fn risk_premium_from_value(value: Value) -> Result<Vec<MarketRiskPremium>> {
     let raws: Vec<FmpRiskPremiumRaw> = serde_json::from_value(value)
         .context("FMP market-risk-premium response did not match the expected array shape")?;
@@ -1001,13 +814,8 @@ fn risk_premium_from_value(value: Value) -> Result<Vec<MarketRiskPremium>> {
         .collect())
 }
 
-/// The ordered sector-snapshot candidate dates for a run: the most recent weekday on
-/// or before `today`, then each prior weekday, up to `lookback` candidates. Weekends
-/// are skipped without spending a request — FMP publishes no Saturday or Sunday
-/// snapshot — so the lookback budget covers trading-day candidates (the holidays that
-/// actually need walking back over) rather than being burned on the weekend. A run
-/// landing on a weekend would otherwise spend its first one or two requests on the
-/// guaranteed-empty Sat/Sun.
+/// The most recent weekday on or before `today`, then each prior weekday; FMP publishes
+/// no weekend snapshot, so skipping Sat/Sun spends no request on them.
 pub(crate) fn sector_candidate_dates(today: NaiveDate, lookback: usize) -> Vec<NaiveDate> {
     let mut out = Vec::with_capacity(lookback);
     let mut date = today;
@@ -1020,15 +828,10 @@ pub(crate) fn sector_candidate_dates(today: NaiveDate, lookback: usize) -> Vec<N
     out
 }
 
-/// Compute one index's multi-horizon performance from its EOD history (newest-first).
-/// Returns `None` when the history is too short to anchor even the weekly return.
-///
-/// Each horizon's baseline is the most recent close on or before the horizon's start
-/// date (an "as-of" lookup), so weekends and holidays don't skew the anchor: weekly off
-/// 7 days back, month-to-date off the last close of the prior month, year-to-date off
-/// the last close of the prior year. The 52-week range is the min/max close over the
-/// trailing 365 days. Everything anchors to the latest close's own date — the report's
-/// reference close — not the wall-clock run date.
+/// `rows` are newest-first. Each horizon's baseline is the most recent close on or
+/// before the horizon's start (an "as-of" lookup), so weekends and holidays don't skew
+/// the anchor, and everything anchors to the latest close's own date, not the wall-clock
+/// run date. `None` when the history cannot anchor even the weekly return.
 fn index_performance_from_eod(
     symbol: &str,
     name: &str,
@@ -1044,11 +847,9 @@ fn index_performance_from_eod(
         }
     };
 
-    // Weekly is required (it anchors the shortest horizon); without a close a week back
-    // there isn't enough history to report this index.
     let weekly_pct = pct(as_of(latest_date - Duration::days(7))?);
-    // MTD / YTD soft-degrade to 0.0 when the window doesn't reach back to the anchor
-    // (a fresh listing, or a short fetch) rather than dropping the whole index.
+    // MTD / YTD soft-degrade to 0.0 when the window doesn't reach the anchor (a fresh
+    // listing, or a short fetch) rather than dropping the whole index.
     let first_of_month = latest_date.with_day(1)?;
     let mtd_pct = as_of(first_of_month - Duration::days(1))
         .map(pct)
@@ -1058,7 +859,6 @@ fn index_performance_from_eod(
         .map(pct)
         .unwrap_or(0.0);
 
-    // 52-week range over the trailing 365 days (latest included).
     let cutoff = latest_date - Duration::days(365);
     let mut low_52w = latest;
     let mut high_52w = latest;
@@ -1083,10 +883,8 @@ fn index_performance_from_eod(
     })
 }
 
-/// Shape a successful EOD light response into one index's performance: parse the rows
-/// into dated closes, sort newest-first defensively (FMP returns descending, but the
-/// anchors must not depend on it), then compute the horizons. A body that is not the
-/// expected array fails the parse; an empty or too-short history yields `None`.
+/// Sorts newest-first defensively: FMP returns descending, but the anchors must not
+/// depend on it.
 fn eod_to_performance(value: Value, symbol: &str, name: &str) -> Result<Option<IndexPerformance>> {
     let raws: Vec<FmpEodRaw> = serde_json::from_value(value)
         .context("FMP EOD response did not match the expected array shape")?;
@@ -1104,21 +902,13 @@ fn eod_to_performance(value: Value, symbol: &str, name: &str) -> Result<Option<I
     Ok(index_performance_from_eod(symbol, name, &rows))
 }
 
-/// Live FMP adapter behind the `MarketDataSource` trait.
 pub struct FmpDataSource {
     api_key: String,
     http: reqwest::blocking::Client,
-    /// API origin the endpoint paths are joined onto. Defaults to [`FMP_BASE`]; an
-    /// offline round-trip test overrides it via [`FmpDataSource::with_base_url`] to
-    /// point the adapter at a localhost mock.
     base_url: String,
-    /// Run context for live progress + cooperative cancellation. Defaults to a no-op
-    /// (tests / offline smokes); the live command path attaches the real one via
-    /// [`FmpDataSource::with_context`].
+    /// Live progress and cooperative cancellation; a no-op until
+    /// [`FmpDataSource::with_context`] attaches the real one.
     progress: Arc<RunContext>,
-    /// Per-provider retry policy every request rides. Defaults to [`FMP_RETRY`]
-    /// (the minute-crossing 429 ladder); a wiring test injects a
-    /// millisecond-scale policy via [`FmpDataSource::with_retry_policy`].
     retry: crate::http_retry::RetryPolicy,
 }
 
@@ -1137,45 +927,33 @@ impl FmpDataSource {
         })
     }
 
-    /// Redirect the adapter at an alternate API origin (a localhost mock) so the wire
-    /// path runs offline. Test-only; a trailing slash is trimmed so the joined path's
-    /// leading slash doesn't double up.
+    /// A trailing slash is trimmed so the joined path's leading slash doesn't double up.
     #[cfg(test)]
     pub(crate) fn with_base_url(mut self, base_url: &str) -> Self {
         self.base_url = base_url.trim_end_matches('/').to_string();
         self
     }
 
-    /// Swap the retry policy for a millisecond-scale one so the wiring test proves
-    /// `get` rides `self.retry` without sleeping the real ladder. Test-only.
+    /// A millisecond-scale policy so the wiring test doesn't sleep the real ladder.
     #[cfg(test)]
     fn with_retry_policy(mut self, retry: crate::http_retry::RetryPolicy) -> Self {
         self.retry = retry;
         self
     }
 
-    /// Attach a live run context so the per-series scan streams a tracker row per
-    /// request and stops making requests once a cancel is observed. Without it the
-    /// adapter keeps its no-op context.
     pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
         self.progress = ctx;
         self
     }
 
-    /// Resolve the adapter from the environment, for the live smoke and any
-    /// caller that bypasses the gate. The execution gate (`config::validate`)
-    /// runs ahead of this in the command path.
+    /// The execution gate (`config::validate`) runs ahead of this in the command path.
     pub fn from_env() -> Result<Self> {
         Self::new(crate::config::AppConfig::from_env().fmp_key()?)
     }
 
-    /// GET one FMP endpoint (a `/path` joined onto [`Self::base_url`]) with the key as
-    /// a query param, returning the status and raw body for `interpret_response` to
-    /// judge. A transport error (the provider is unreachable) returns `Err` to the
-    /// caller, which records it as an `Unavailable` gap rather than failing the scan.
-    /// Requests ride [`FMP_RETRY`] (via `self.retry`) with the run's cancel flag as
-    /// the abort signal, so a cancel mid-backoff stops retrying within ~250ms and
-    /// the caller's own `is_cancelled()` boundary check routes it.
+    /// The key rides as a query param. A transport error is `Err`, which callers record
+    /// as an `Unavailable` gap. The run's cancel flag is the retry abort signal, so a
+    /// cancel mid-backoff stops retrying within ~250ms.
     fn get(&self, path: &str, extra: &[(&str, &str)]) -> Result<(u16, String)> {
         let mut query: Vec<(&str, &str)> = vec![("apikey", self.api_key.as_str())];
         query.extend_from_slice(extra);
@@ -1186,13 +964,9 @@ impl FmpDataSource {
         })
     }
 
-    /// Fetch one quote per symbol, recording a [`DataGap`] in `group` for any that don't
-    /// resolve rather than failing the scan. `interpret_response` decides each response;
-    /// a `Rejected` (auth / quota) is a whole-provider condition, so the loop stops
-    /// calling and records the remaining symbols without hammering. A 2xx that won't
-    /// shape into quotes is a `Malformed` gap; an empty "no data" array for an expected
-    /// symbol is an `Unavailable` gap (no value this run), so it still counts against
-    /// coverage rather than vanishing.
+    /// A `Rejected` (auth / quota) is a whole-provider condition, so the loop stops
+    /// calling and records the remaining symbols. An empty "no data" array for an
+    /// expected symbol is an `Unavailable` gap, so it still counts against coverage.
     fn fetch_quotes(
         &self,
         symbols: &[(&str, &str, &str)],
@@ -1202,15 +976,14 @@ impl FmpDataSource {
         let mut out = Vec::with_capacity(symbols.len());
         let mut rejected = false;
         for (symbol, fallback_name, unit) in symbols {
-            // Cancel checkpoint between series: stop hitting the API once a cancel is
-            // requested. The series already fetched are kept; the run unwinds at the
-            // pipeline's post-baseline checkpoint.
+            // The series already fetched are kept; the run unwinds at the pipeline's
+            // post-baseline checkpoint.
             if self.progress.is_cancelled() {
                 break;
             }
             if rejected {
-                // No request is made for a short-circuited series, so it gets no
-                // tracker row — rows stay one-to-one with actual HTTP calls.
+                // No tracker row for a short-circuited series: rows stay one-to-one
+                // with actual HTTP calls.
                 gaps.push(DataGap::new(
                     group,
                     *symbol,
@@ -1227,9 +1000,6 @@ impl FmpDataSource {
                 self.get_interpreted(FMP_QUOTE_PATH, &[("symbol", symbol)]);
             match disposition {
                 Disposition::Value(value) => match quotes_from_value(value, fallback_name, unit) {
-                    // An empty "no data" 2xx array for an expected symbol is a this-run
-                    // absence, not silence: record it so it counts against coverage and
-                    // shows in the manifest rather than vanishing from both.
                     Ok(quotes) if quotes.is_empty() => gaps.push(DataGap::new(
                         group,
                         *symbol,
@@ -1266,23 +1036,16 @@ impl FmpDataSource {
         out
     }
 
-    /// Fetch the most recent sector-performance snapshot, walking back over weekday
-    /// candidates (`sector_candidate_dates` skips the closed-market weekend) to the last
-    /// trading day with data (holidays have none). A 404 / empty array means no snapshot
-    /// for that date — try the prior weekday; a this-run failure (auth / quota / 5xx /
-    /// transport / malformed) records one group-level `sectors` gap and stops walking
-    /// back. If no candidate has a snapshot, returns empty with no gap — a quiet window,
-    /// not a failure.
+    /// Walks back over weekday candidates to the last trading day with data: a 404 or
+    /// empty array means no snapshot for that date, a this-run failure records one
+    /// group-level gap and stops. No candidate with a snapshot returns empty with no gap
+    /// (a quiet window, not a failure).
     fn fetch_sectors(&self, gaps: &mut Vec<DataGap>) -> Vec<SectorPerformance> {
-        // The **ET session** the walk starts from, not the UTC date: these
-        // snapshots are keyed by trading day, and an evening-ET run under a
-        // UTC date leads with a session that has not traded — the endpoint
-        // answers 200 with an empty array, so the first candidate is spent
-        // every evening (`market_clock::et_session_date`).
+        // The ET session, not the UTC date: the snapshots are keyed by trading day, and
+        // an evening-ET run under a UTC date would spend its first candidate on a
+        // session that has not traded (`market_clock`).
         let today = crate::market_clock::et_session_date(Utc::now());
         for date in sector_candidate_dates(today, SECTOR_LOOKBACK_WEEKDAYS) {
-            // Cancel checkpoint: the date-walk can fire several probes, so stop here
-            // rather than working through them after a cancel during an earlier group.
             if self.progress.is_cancelled() {
                 return Vec::new();
             }
@@ -1312,7 +1075,6 @@ impl FmpDataSource {
                         finish("ok");
                         return sectors;
                     }
-                    // An empty array — no snapshot for this weekday; try the prior one.
                     Ok(_) => finish("empty"),
                     Err(_) => {
                         finish("malformed");
@@ -1320,9 +1082,7 @@ impl FmpDataSource {
                         return Vec::new();
                     }
                 },
-                // A legitimate per-date absence (404) — try the prior weekday.
                 Disposition::Gap(GapReason::OutOfScope) => finish("out-of-scope"),
-                // Auth / quota / 5xx / transport — the snapshot is unavailable this run.
                 Disposition::Gap(reason) => {
                     finish(reason.as_str());
                     gaps.push(sector_gap(reason));
@@ -1333,20 +1093,14 @@ impl FmpDataSource {
         Vec::new()
     }
 
-    /// Fetch each index's EOD history and shape it into multi-horizon performance, one
-    /// `historical-price-eod/light` call per index over the trailing window. Additive
-    /// enrichment over the required daily `indices` quotes, so a permanent absence
-    /// (402 / 404) or a history too short to anchor is skipped *silently* — the daily
-    /// quote already covers that symbol and a recurring premium gap would be noise. A
-    /// this-run failure (auth / quota / 5xx / transport / malformed), by contrast, is
-    /// recorded as a gap so the agent sees the enrichment was lost on this run; a
-    /// `Rejected` stops the loop, like the quote groups.
+    /// Additive enrichment over the required daily quotes, so a permanent absence
+    /// (402 / 404) or a history too short to anchor is skipped silently (the daily quote
+    /// covers the symbol, and a recurring premium gap would be noise); a this-run failure
+    /// is recorded as a gap, and a `Rejected` stops the loop like the quote groups.
     fn fetch_index_performance(&self, gaps: &mut Vec<DataGap>) -> Vec<IndexPerformance> {
-        // Deliberately the UTC date, not the ET session: this is a fetch range's
-        // inclusive upper bound, so a one-day forward roll asks for an untraded
-        // day that serves no row and shifts a rolling multi-day lookback by one.
-        // Only session-KEYED reads (snapshot dates, staleness bounds, evidence
-        // boundaries) need converting.
+        // Fetch-range upper bound deliberately stays UTC: a forward roll to the ET
+        // session would ask for an untraded day and shift the lookback by one. Only
+        // session-keyed reads convert (`market_clock`).
         let to = Utc::now().date_naive();
         let from = to - Duration::days(EOD_LOOKBACK_DAYS);
         let (from_s, to_s) = (
@@ -1388,7 +1142,6 @@ impl FmpDataSource {
             match disposition {
                 Disposition::Value(value) => match eod_to_performance(value, symbol, name) {
                     Ok(Some(perf)) => out.push(perf),
-                    // Too short to anchor — skip silently; the daily quote still covers it.
                     Ok(None) => {}
                     Err(_) => gaps.push(DataGap::new(
                         GroupKind::IndexPerformance,
@@ -1397,7 +1150,6 @@ impl FmpDataSource {
                         GapReason::Malformed,
                     )),
                 },
-                // Permanent absence (402/404) is silent for this additive group.
                 Disposition::Gap(GapReason::OutOfScope) => {}
                 Disposition::Gap(reason) => {
                     if reason == GapReason::Rejected {
@@ -1426,13 +1178,8 @@ impl FmpDataSource {
         out
     }
 
-    /// Fetch the three mover lists (gainers / losers / most-actives), one call each, and
-    /// shape + filter them into tagged [`StockMover`]s. Additive enrichment like
-    /// `index_performance`: a permanent absence (402/404) or an empty / all-filtered list is
-    /// skipped silently — the breadth read sits on top of the required index/internals
-    /// grounding — while a this-run failure (auth / quota / 5xx / transport / malformed)
-    /// records a `Movers` gap so the agent sees the loss; a `Rejected` stops the loop and
-    /// records the remaining lists, like the quote groups.
+    /// Additive like `fetch_index_performance`: a permanent absence or an empty /
+    /// all-filtered list is silent, a this-run failure records a gap.
     fn fetch_movers(&self, gaps: &mut Vec<DataGap>) -> Vec<StockMover> {
         let endpoints = [
             (
@@ -1485,7 +1232,6 @@ impl FmpDataSource {
                         GapReason::Malformed,
                     )),
                 },
-                // Permanent absence (402/404) is silent for this additive group.
                 Disposition::Gap(GapReason::OutOfScope) => {}
                 Disposition::Gap(reason) => {
                     if reason == GapReason::Rejected {
@@ -1509,17 +1255,14 @@ impl FmpDataSource {
         out
     }
 
-    /// Fetch the earnings calendar over the recent + upcoming-fortnight window in one
-    /// call, then filter to large-cap reporters. Additive and non-floor like `movers`: a
-    /// permanent absence or an empty / all-filtered window is silent; a this-run failure
-    /// (auth / quota / 5xx / transport / malformed) records one `Earnings` gap.
+    /// Additive like `fetch_movers`: a permanent absence or an empty / all-filtered
+    /// window is silent, a this-run failure records one gap.
     fn fetch_earnings(&self, back_days: i64, gaps: &mut Vec<DataGap>) -> Vec<EarningsEvent> {
         if self.progress.is_cancelled() {
             return Vec::new();
         }
-        // The **ET session** date: both bounds are trading-day dates, so a UTC
-        // date on an evening run slides the whole window forward one day and
-        // drops an event sitting on its trailing edge.
+        // The ET session: both bounds are trading-day dates, so a UTC date on an evening
+        // run slides the window forward a day and drops an event on its trailing edge.
         let today = crate::market_clock::et_session_date(Utc::now());
         let from = (today - Duration::days(back_days))
             .format("%Y-%m-%d")
@@ -1549,7 +1292,6 @@ impl FmpDataSource {
                     Vec::new()
                 }
             },
-            // Permanent absence (402/404) is silent for this additive group.
             Disposition::Gap(GapReason::OutOfScope) => Vec::new(),
             Disposition::Gap(reason) => {
                 gaps.push(DataGap::new(GroupKind::Earnings, series_id, name, reason));
@@ -1570,9 +1312,8 @@ impl FmpDataSource {
         out
     }
 
-    /// The primary-market read (`docs/data-sources.md §Report enrichment`): the IPO side off
-    /// one `ipos-calendar` request over the three windows, the deal side off the M&A walk
-    /// back to the windows' first day; `None` when neither side was read.
+    /// The primary-market read (`docs/data-sources.md §Report enrichment`); `None` when
+    /// neither side was read.
     fn fetch_primary_market(
         &self,
         windows: &FrothWindows,
@@ -1583,10 +1324,9 @@ impl FmpDataSource {
         primary_market::activity(windows, ipos, deals)
     }
 
-    /// The IPO side: one `ipos-calendar` request from the windows' first day to their last,
-    /// one tracker row. A key below the paid tier (402) or a 404 leaves it absent silently; a
-    /// this-run failure, a body with no readable row, a served offering with no readable date,
-    /// or a calendar with no row in any window records one `PrimaryMarket` gap.
+    /// A key below the paid tier (402) or a 404 leaves the IPO side absent silently; a
+    /// this-run failure, an unreadable body, a served offering with no readable date, or
+    /// a calendar with no row in any window records one gap.
     fn fetch_ipo_activity(
         &self,
         windows: &FrothWindows,
@@ -1628,7 +1368,6 @@ impl FmpDataSource {
                     None
                 }
             },
-            // A key below the paid tier (402) or a 404 is silent for this additive group.
             Disposition::Gap(GapReason::OutOfScope) => None,
             Disposition::Gap(reason) => {
                 gaps.push(gap(reason));
@@ -1649,9 +1388,8 @@ impl FmpDataSource {
         out
     }
 
-    /// The deal side: the M&A walk back to the windows' first day, one tracker row per page,
-    /// mapped onto the three completion states ([`primary_market::deal_activity`]); a state
-    /// with no deal read records its one `PrimaryMarket` gap.
+    /// The M&A walk back to the windows' first day, one tracker row per page; a walk
+    /// state with no deal read records one gap ([`primary_market::deal_activity`]).
     fn fetch_deal_activity(
         &self,
         windows: &FrothWindows,
@@ -1668,9 +1406,6 @@ impl FmpDataSource {
         read
     }
 
-    /// Fetch the per-sector P/E for each exchange in [`SNAPSHOT_EXCHANGES`] (NASDAQ + NYSE),
-    /// accumulating the exchange-tagged rows so the model sees the growth and value reads
-    /// side by side. Each exchange walks independently via [`Self::fetch_sector_pe_for_exchange`].
     fn fetch_sector_pe(&self, gaps: &mut Vec<DataGap>) -> Vec<SectorPe> {
         let mut out = Vec::new();
         for exchange in SNAPSHOT_EXCHANGES {
@@ -1682,22 +1417,14 @@ impl FmpDataSource {
         out
     }
 
-    /// Fetch one exchange's most recent sector-PE snapshot, walking back over weekday
-    /// candidates like `fetch_sectors` (the snapshot is date-keyed, and weekends / holidays
-    /// have none). The call is pinned to `exchange`. Additive and non-floor: a 404 / empty
-    /// array for a date means no snapshot — try the prior weekday; a this-run failure
-    /// (auth / quota / 5xx / transport / malformed) records one exchange-tagged `sector-pe`
-    /// gap and stops walking; an exhausted walk returns empty with no gap.
+    /// The same date walk as `fetch_sectors`, pinned to `exchange`; additive, so an
+    /// exhausted walk returns empty with no gap.
     fn fetch_sector_pe_for_exchange(
         &self,
         exchange: &str,
         gaps: &mut Vec<DataGap>,
     ) -> Vec<SectorPe> {
-        // The **ET session** the walk starts from, not the UTC date: these
-        // snapshots are keyed by trading day, and an evening-ET run under a
-        // UTC date leads with a session that has not traded — the endpoint
-        // answers 200 with an empty array, so the first candidate is spent
-        // every evening (`market_clock::et_session_date`).
+        // The ET session, not the UTC date (see `fetch_sectors`).
         let today = crate::market_clock::et_session_date(Utc::now());
         for date in sector_candidate_dates(today, SECTOR_LOOKBACK_WEEKDAYS) {
             if self.progress.is_cancelled() {
@@ -1750,9 +1477,6 @@ impl FmpDataSource {
         Vec::new()
     }
 
-    /// Fetch the finer-rotation read for each exchange in [`SNAPSHOT_EXCHANGES`], accumulating
-    /// each exchange's top/bottom industries (so the NASDAQ growth and NYSE value rotations
-    /// are both surfaced, the cap applied per exchange).
     fn fetch_industries(&self, gaps: &mut Vec<DataGap>) -> Vec<IndustrySnapshot> {
         let mut out = Vec::new();
         for exchange in SNAPSHOT_EXCHANGES {
@@ -1764,24 +1488,16 @@ impl FmpDataSource {
         out
     }
 
-    /// Fetch one exchange's finer-rotation read: walk weekday candidates for the
-    /// industry-performance snapshot (the spine), then on the first date with data fetch the
-    /// industry-PE snapshot for that same date and exchange and join them by industry name.
-    /// Both calls are pinned to `exchange`, so the performance↔P/E join is within one
-    /// exchange. Additive and non-floor: a performance this-run failure records one
-    /// exchange-tagged `industry-performance` gap and stops; an exhausted walk returns empty
-    /// with no gap. The PE leg degrades independently — its failure leaves the industries with
-    /// `pe: None` plus one recorded `industry-pe` gap rather than dropping the rotation read.
+    /// The industry-performance snapshot is the spine (the same date walk as
+    /// `fetch_sectors`); the P/E snapshot is fetched for that same date and exchange and
+    /// degrades independently, its failure leaving `pe: None` plus one gap rather than
+    /// dropping the rotation read.
     fn fetch_industries_for_exchange(
         &self,
         exchange: &str,
         gaps: &mut Vec<DataGap>,
     ) -> Vec<IndustrySnapshot> {
-        // The **ET session** the walk starts from, not the UTC date: these
-        // snapshots are keyed by trading day, and an evening-ET run under a
-        // UTC date leads with a session that has not traded — the endpoint
-        // answers 200 with an empty array, so the first candidate is spent
-        // every evening (`market_clock::et_session_date`).
+        // The ET session, not the UTC date (see `fetch_sectors`).
         let today = crate::market_clock::et_session_date(Utc::now());
         for date in sector_candidate_dates(today, SECTOR_LOOKBACK_WEEKDAYS) {
             if self.progress.is_cancelled() {
@@ -1838,10 +1554,8 @@ impl FmpDataSource {
         Vec::new()
     }
 
-    /// Fetch one exchange's industry-PE snapshot for the date the performance leg resolved —
-    /// the optional valuation join. Any failure or emptiness degrades to an empty map (the
-    /// industries carry `pe: None`); a this-run failure additionally records one exchange-tagged
-    /// `industry-pe` gap so the agent sees valuation was lost. Never aborts the group.
+    /// The optional valuation join: any failure degrades to an empty map (`pe: None`), a
+    /// this-run failure additionally recording one gap. Never aborts the group.
     fn fetch_industry_pe(
         &self,
         date_str: &str,
@@ -1901,9 +1615,8 @@ impl FmpDataSource {
         }
     }
 
-    /// Attach the trailing-year reads to each sector-P/E row: per exchange, the P/E history
-    /// and the return history of every sector the snapshot returned on that board
-    /// (`docs/data-sources.md §Report enrichment`). A read that was not derivable stays
+    /// Per exchange, the P/E and return history of every sector the snapshot returned
+    /// (`docs/data-sources.md §Report enrichment`); a read that was not derivable stays
     /// `None`.
     fn attach_sector_history(
         &self,
@@ -1943,8 +1656,7 @@ impl FmpDataSource {
         }
     }
 
-    /// Attach the trailing-year reads to each surfaced industry, per exchange, as
-    /// [`Self::attach_sector_history`] does for the sectors.
+    /// As [`Self::attach_sector_history`], for the surfaced industries.
     fn attach_industry_history(
         &self,
         rows: &mut [IndustrySnapshot],
@@ -1983,13 +1695,10 @@ impl FmpDataSource {
         }
     }
 
-    /// Fetch one history family for each of `names` on `exchange` — one request and one
-    /// tracker row per group over the clock's window — and derive each group's read.
     /// Fail-soft by cause: a 402 (a key below the paid tier) stops the loop silently; a
-    /// this-run failure (rejected, or unavailable past the retry ladder) records one
-    /// family-level gap and stops the loop; a 404, an empty or unreadable body, or a series
-    /// below the sample floor or freshness bound records one gap for that group alone and
-    /// the loop moves on. Returns each derived read by group name.
+    /// rejected or unavailable response records one family-level gap and stops; a 404, an
+    /// empty or unreadable body, or a series below the sample floor or freshness bound
+    /// records one gap for that group alone and the loop moves on.
     fn fetch_history_family<T>(
         &self,
         family: HistoryFamily,
@@ -2096,10 +1805,8 @@ impl FmpDataSource {
         out
     }
 
-    /// Fetch the US equity-risk-premium in one call (no date), then filter to the US row.
-    /// Additive and non-floor like `earnings`: a permanent absence or an empty / no-US-row
-    /// response is silent; a this-run failure (auth / quota / 5xx / transport / malformed)
-    /// records one `market-risk-premium` gap.
+    /// Additive like `fetch_earnings`: a permanent absence or a no-US-row response is
+    /// silent.
     fn fetch_market_risk_premium(&self, gaps: &mut Vec<DataGap>) -> Vec<MarketRiskPremium> {
         if self.progress.is_cancelled() {
             return Vec::new();
@@ -2152,16 +1859,10 @@ impl FmpDataSource {
         out
     }
 
-    /// Per-company financials for the local Portfolio Analysis job
-    /// (`docs/portfolio-analysis.md`, `docs/data-sources.md §Local Analysis Suite
-    /// Sources`). Distinct from the baseline market scan: this pulls one equity's
-    /// quote (price / market cap / shares) and recent EOD price history — the FMP
-    /// half of a holding's evidence packet. Each endpoint is fail-soft: a 402 (premium
-    /// gate), a transport error, or a malformed body records a tagged gap on the
-    /// returned [`CompanyFinancials`] rather than failing, and the dossier fills the
-    /// statement lines (revenue, margins, equity) from keyless SEC EDGAR. The
-    /// valuation multiples are left for the dossier to derive from market cap + SEC
-    /// facts ("compute, don't guess"). One tracker row per actual call.
+    /// The FMP half of a holding's evidence packet (`docs/portfolio-analysis.md`,
+    /// `docs/data-sources.md §Local Analysis Suite Sources`): fail-soft per endpoint, each
+    /// failure recording a tagged gap on the returned [`CompanyFinancials`]. The valuation
+    /// multiples are left for the dossier to derive from market cap + SEC facts.
     fn fetch_quote_and_eod(
         &self,
         symbol: &str,
@@ -2172,20 +1873,14 @@ impl FmpDataSource {
             ..CompanyFinancials::default()
         };
 
-        // Cancel checkpoint before the first request, mirroring `fetch_quotes`: a cancel
-        // already requested skips the network entirely (no request, so no tracker row).
         if self.progress.is_cancelled() {
             fin.gaps.push("company financials skipped (run cancelled)".to_string());
             return fin;
         }
 
-        // 1) Quote: current price, market cap, shares outstanding. The row's
-        // status reflects the SHAPED outcome (the `emit_series_row` semantics:
-        // ok only when a price landed), not merely a parseable body — and a
-        // gap carries its cause as the detail, so a quota rejection paints
-        // "rejected" plus FMP's sentence rather than a benign non-result
-        // (the 2026-08-10 failure class; Codex round). These two rows were the
-        // first shaped sites; they now ride the shared `suite_get_shaped`.
+        // 1) Quote. The row's status reflects the shaped outcome (ok only when a price
+        // landed), and a gap carries its cause as the detail, so a quota rejection
+        // paints "rejected" plus FMP's sentence rather than a benign non-result.
         if let Err(reason) = self.suite_get_shaped(
             "company-quote",
             symbol,
@@ -2201,8 +1896,7 @@ impl FmpDataSource {
                     fin.year_low = q.year_low;
                     match (q.price, q.unusable_price) {
                         (Some(_), _) => Shaped::ok(()),
-                        // A served zero or negative print is no price: the gap
-                        // and the row both name what was served (Codex I1).
+                        // A served zero or negative print is no price.
                         (None, Some(served)) => {
                             let detail =
                                 format!("FMP quote carried no usable price (served {served})");
@@ -2215,9 +1909,8 @@ impl FmpDataSource {
                         }
                     }
                 }
-                // A served-empty array (an unknown symbol) is an honest empty
-                // answer, not drift — the parser folds both into `None`, so
-                // the split runs here (Codex round 2).
+                // A served-empty array (an unknown symbol) is an honest empty answer,
+                // not drift; the parser folds both into `None`, so the split runs here.
                 None if value.as_array().is_some_and(|a| a.is_empty()) => {
                     fin.gaps.push("FMP quote was empty".to_string());
                     Shaped::empty(())
@@ -2234,17 +1927,11 @@ impl FmpDataSource {
         }
 
         // 2) EOD price history for momentum + volatility.
-        // Cancel checkpoint between the two requests: a cancel after the quote skips the
-        // EOD call rather than spending it.
         if self.progress.is_cancelled() {
             fin.gaps.push("price history skipped (run cancelled)".to_string());
             return fin;
         }
-        // Deliberately the UTC date, not the ET session: this is a fetch range's
-        // inclusive upper bound, so a one-day forward roll asks for an untraded
-        // day that serves no row and shifts a rolling multi-day lookback by one.
-        // Only session-KEYED reads (snapshot dates, staleness bounds, evidence
-        // boundaries) need converting.
+        // Fetch-range upper bound deliberately stays UTC (see `fetch_index_performance`).
         let to = Utc::now().date_naive();
         let from = to - Duration::days(COMPANY_EOD_LOOKBACK_DAYS);
         if let Err(reason) = self.suite_get_shaped(
@@ -2286,17 +1973,9 @@ impl FmpDataSource {
         fin
     }
 
-    /// The full **stock** per-symbol surface: the quote + EOD core plus the v2
-    /// target surface — quarterly income prints (the anchor window's trailing
-    /// driver source and the TTM statement basis), quarterly cash-flow prints (the
-    /// pre-profit overlay's burn / runway / capex legs), the quarterly balance
-    /// sheets (the newest for the leverage leg, the P/B denominator and the
-    /// runway's liquid-resource lines; the year-ago row for the soft forensic
-    /// flags' receivables and inventory comparator), the Altman Z and Piotroski
-    /// scores (the flags' score inputs), the forward consensus (the driver
-    /// ladder), and the trailing dividends (the total-return leg). Each fail-soft
-    /// with a tagged gap; a missing consensus later abstains the holding under
-    /// the named `no-admissible-driver` floor reason rather than failing here.
+    /// The stock per-symbol surface, each endpoint fail-soft with a tagged gap; a
+    /// missing consensus later abstains the holding under the `no-admissible-driver`
+    /// floor reason rather than failing here.
     pub fn fetch_company_financials(
         &self,
         symbol: &str,
@@ -2321,9 +2000,7 @@ impl FmpDataSource {
         fin
     }
 
-    /// The **fund** flavor of the per-symbol pull: the quote + EOD core plus the
-    /// dividend history (the TTM distributions the fund-form total return adds) —
-    /// the statement / consensus endpoints are stock surface, so a fund never logs
+    /// The statement / consensus endpoints are stock surface, so a fund never logs
     /// their spurious gaps.
     pub fn fetch_fund_financials(
         &self,
@@ -2337,37 +2014,28 @@ impl FmpDataSource {
     }
 }
 
-/// How many days of EOD history the per-company pull requests — long enough for a
-/// meaningful momentum and volatility read, short enough to stay one light call.
+/// Long enough for a momentum and volatility read, short enough to stay one light call.
 const COMPANY_EOD_LOOKBACK_DAYS: i64 = 180;
 
-/// The fields the per-company quote contributes, pulled from FMP's `/quote` body.
 struct CompanyQuote {
-    /// The **usable** price — finite and strictly positive
-    /// (`crate::portfolio::engine::usable_price`) — or `None`.
+    /// Finite and strictly positive (`crate::portfolio::engine::usable_price`), else
+    /// `None`.
     price: Option<f64>,
-    /// A served `price` the usability test rejected (zero or negative — JSON
-    /// carries no non-finite number), kept so the consumer's gap and tracker
-    /// row can name what was served. `None` when the field was absent or usable.
+    /// A served `price` the usability test rejected, kept so the gap and tracker row
+    /// can name what was served; `None` when the field was absent or usable.
     unusable_price: Option<f64>,
     market_cap: Option<f64>,
     shares_outstanding: Option<f64>,
-    /// The served 52-week high and low (`yearHigh` / `yearLow`) — FETCHED
-    /// VALUES renders the range as served, never a computed min / max.
+    /// The served 52-week range; rendered as served, never a computed min / max.
     year_high: Option<f64>,
     year_low: Option<f64>,
 }
 
-/// Shape an FMP `/quote` array body into a [`CompanyQuote`]. `None` only when the body
-/// is not the expected non-empty array; individual missing fields stay `None`. Pure,
-/// so the contract is unit-testable offline.
-///
-/// The price is shaped by the evidence floor's usability rule at this one parse —
-/// the seam every quote consumer rides (the per-holding pull, the quick check's
-/// price refresh, the run-level commodity quote), two of which have no engine
-/// floor behind them — so a zero or negative print never leaves the adapter as a
-/// price (`docs/portfolio-analysis.md` §Evidence floor; Codex I1, ruled
-/// 2026-08-28).
+/// `None` only when the body is not a non-empty array; individual missing fields stay
+/// `None`. The usability rule is applied at this one parse because it is the seam every
+/// quote consumer rides, two of which have no engine floor behind them, so a zero or
+/// negative print never leaves the adapter as a price (`docs/portfolio-analysis.md`
+/// §Evidence floor).
 fn company_quote_from_value(value: &Value) -> Option<CompanyQuote> {
     let first = value.as_array()?.first()?;
     let served = first.get("price").and_then(Value::as_f64);
@@ -2388,28 +2056,22 @@ fn company_quote_from_value(value: &Value) -> Option<CompanyQuote> {
     })
 }
 
-/// Parse a served date string (`%Y-%m-%d`; non-zero-padded accepted — the
-/// strict-estimates leniency) and return its CANONICAL fixed-width ISO
-/// render. The suite's dated shapers key row READABILITY on this — a
-/// string-valued non-date is an unreadable row (Codex round 4) — and always
-/// store the canonical form, never the source text: a datable-but-noncanonical
-/// string like `"2026-9-30"` sorts after `"2026-12-31"` and compares fresh
-/// against an October last-pass date, so in source form it corrupts exactly
-/// the lexicographic consumers readability exists to protect (`DatedValue`'s
-/// ISO contract, the EOD chronology sort, the quick check's since-`last_pass`
-/// compare — Codex round 5).
+/// Parses a served date (`%Y-%m-%d`, non-zero-padded accepted) into its canonical
+/// fixed-width render. The dated shapers key row readability on this and always store
+/// the canonical form, never the source text: `"2026-9-30"` sorts after `"2026-12-31"`,
+/// corrupting every lexicographic consumer (`DatedValue`'s ISO contract, the EOD
+/// chronology sort, the quick check's since-`last_pass` compare).
 fn canonical_date(date: &str) -> Option<String> {
     chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
         .ok()
         .map(|d| d.format("%Y-%m-%d").to_string())
 }
 
-/// A news row's `publishedDate` with its date prefix CANONICALIZED, or `None`
-/// when the row is unreadable: the leading date token (before any time part,
-/// space- or `T`-separated) must parse as a calendar date — the same prefix
-/// the since-`from` comparison keys on, so it must be fixed-width before that
-/// lexicographic compare. Shared by [`symbol_news_from_value`] and the fetch
-/// site's drift guard so "readable" cannot drift between the two.
+/// A news row's `publishedDate` with its leading date token (before any space- or
+/// `T`-separated time part) canonicalized, so the since-`from` lexicographic compare
+/// sees a fixed-width prefix; `None` when the token is no calendar date. Shared by
+/// [`symbol_news_from_value`] and the fetch site's drift guard so "readable" cannot
+/// drift between the two.
 fn canonical_news_date(row: &Value) -> Option<String> {
     let published = row.get("publishedDate").and_then(Value::as_str)?;
     let token = published.split([' ', 'T']).next().unwrap_or("");
@@ -2417,14 +2079,9 @@ fn canonical_news_date(row: &Value) -> Option<String> {
     Some(format!("{canonical}{}", &published[token.len()..]))
 }
 
-/// Shape an FMP `/historical-price-eod/light` array body into chronological (oldest
-/// first) closing prices. A non-array body is a contract error; rows are sorted by
-/// date ascending so the engine's first/last read is a real start/end. A close is
-/// usable only when finite and strictly positive — the quote's usability rule
-/// ([`crate::portfolio::engine::usable_price`]) applied at the EOD parse too, so a
-/// served zero or negative print drops as an unreadable row rather than riding
-/// into a return, a drawdown, or an outcome label's required float (the
-/// 2026-08-24 review's Codex I16, its reviewer round; ruled 2026-08-29). Pure.
+/// Chronological (oldest first) closes. A close is usable only when finite and strictly
+/// positive ([`crate::portfolio::engine::usable_price`]), so a served zero or negative
+/// print drops as an unreadable row rather than riding into a return or a drawdown.
 fn eod_prices_from_value(value: &Value) -> Result<Vec<f64>> {
     let rows = value
         .as_array()
@@ -2432,9 +2089,8 @@ fn eod_prices_from_value(value: &Value) -> Result<Vec<f64>> {
     let mut dated: Vec<(String, f64)> = Vec::with_capacity(rows.len());
     for row in rows {
         if let (Some(date), Some(price)) = (
-            // A non-date string is an unreadable row, and the kept date is
-            // the CANONICAL render ([`canonical_date`]): the sort below
-            // relies on fixed-width ISO ordering.
+            // The canonical date render: the sort below relies on fixed-width ISO
+            // ordering.
             row.get("date").and_then(Value::as_str).and_then(canonical_date),
             crate::portfolio::engine::usable_price(row.get("price").and_then(Value::as_f64)),
         ) {
@@ -2445,12 +2101,10 @@ fn eod_prices_from_value(value: &Value) -> Result<Vec<f64>> {
     Ok(dated.into_iter().map(|(_, p)| p).collect())
 }
 
-/// Shape an FMP `/historical-price-eod/light` array body into **dated** chronological
-/// closes — the deep-history form the v2 anchor join reads
-/// ([`FmpDataSource::fetch_dated_eod`]). A close is usable only when finite and
-/// strictly positive, the same rule as [`eod_prices_from_value`]: this is the
-/// series the outcome labels' price-bar cache is fed from, and a zero entry
-/// close made an episode row's required `price_return` unreadable. Pure.
+/// Dated chronological closes, the deep-history form the anchor join reads. The same
+/// usability rule as [`eod_prices_from_value`]: this series feeds the outcome labels'
+/// price-bar cache, where a zero entry close makes an episode's `price_return`
+/// unreadable.
 fn dated_eod_from_value(value: &Value) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
     let rows = value
         .as_array()
@@ -2459,9 +2113,8 @@ fn dated_eod_from_value(value: &Value) -> Result<Vec<crate::portfolio::engine::D
         .iter()
         .filter_map(|row| {
             match (
-                // A non-date string is an unreadable row, and the kept date
-                // is the CANONICAL render ([`canonical_date`]): `DatedValue`
-                // carries the fixed-width ISO contract downstream.
+                // The canonical date render: `DatedValue` carries the fixed-width ISO
+                // contract downstream.
                 row.get("date").and_then(Value::as_str).and_then(canonical_date),
                 crate::portfolio::engine::usable_price(row.get("price").and_then(Value::as_f64)),
             ) {
@@ -2477,13 +2130,9 @@ fn dated_eod_from_value(value: &Value) -> Result<Vec<crate::portfolio::engine::D
     Ok(dated)
 }
 
-/// Shape an FMP `/historical-price-eod/light` array body into dated
-/// chronological **bars with their share volume** — the tradability flag's
-/// input ([`FmpDataSource::fetch_dated_bars`]). A row is readable on the same
-/// rule as [`dated_eod_from_value`] (a canonical date and a usable close); its
-/// volume is kept only when finite and non-negative, so a row serving none, a
-/// negative or a non-finite volume keeps its close and reads as a missing
-/// volume day. Pure.
+/// Dated chronological bars with share volume. A row is readable on the same rule as
+/// [`dated_eod_from_value`]; its volume is kept only when finite and non-negative, so a
+/// row serving none keeps its close and reads as a missing volume day.
 fn dated_bars_from_value(value: &Value) -> Result<Vec<crate::portfolio::engine::DailyBar>> {
     let rows = value
         .as_array()
@@ -2511,14 +2160,11 @@ fn dated_bars_from_value(value: &Value) -> Result<Vec<crate::portfolio::engine::
 
 impl MarketDataSource for FmpDataSource {
     fn baseline_scan(&self, cadence: ReportCadence) -> Result<BaselineMarketData> {
-        // Every group degrades to recorded gaps rather than failing: a thin or empty
-        // `indices` group is no longer this adapter's call to abort on — the central
-        // coverage gate (`pipeline::enforce_coverage`) decides the run's floor over the
-        // merged baseline. So this scan returns `Ok` for all data outcomes; only a
-        // catastrophic (non-data) fault would be an `Err`, and none arises here.
+        // Every group degrades to recorded gaps and the coverage gate
+        // (`pipeline::enforce_coverage`) decides the run's floor, so the scan returns
+        // `Ok` for all data outcomes. Each fetch streams its own per-request tracker
+        // rows; the scan emits no group-level summary rows.
         let mut gaps = Vec::new();
-        // Each fetch streams its own per-request tracker rows (one per series / date
-        // probe / EOD-history call), so the scan emits no group-level summary rows.
         let indices = self.fetch_quotes(INDEX_SYMBOLS, GroupKind::Indices, &mut gaps);
         let internals = self.fetch_quotes(INTERNAL_SYMBOLS, GroupKind::Internals, &mut gaps);
         let sectors = self.fetch_sectors(&mut gaps);
@@ -2530,8 +2176,6 @@ impl MarketDataSource for FmpDataSource {
         let froth_windows =
             FrothWindows::new(crate::market_clock::et_session_date(Utc::now()), window_days);
         let primary_market = self.fetch_primary_market(&froth_windows, &mut gaps);
-        // The paid-tier trailing-year reads against each group's own history ride the
-        // sector-P/E and industry rows the snapshots returned.
         let history_clock = HistoryClock::at(Utc::now());
         let mut sector_pe = self.fetch_sector_pe(&mut gaps);
         self.attach_sector_history(&mut sector_pe, history_clock, &mut gaps);
@@ -2548,8 +2192,7 @@ impl MarketDataSource for FmpDataSource {
             sector_pe,
             industries,
             market_risk_premium,
-            // FRED owns the macro levels and the economic-release calendar, BLS the
-            // labor levels, and CFTC the COT positioning; FMP contributes none of them.
+            // FRED, BLS and CFTC own these groups; FMP contributes none of them.
             macro_levels: Vec::new(),
             labor_levels: Vec::new(),
             calendar: Vec::new(),
@@ -2561,9 +2204,8 @@ impl MarketDataSource for FmpDataSource {
 }
 
 impl EconomicCalendarSource for FmpDataSource {
-    /// One `economic-calendar` request over the window, with one tracker row. A 402 / 404
-    /// (a key below the paid tier) is silent; a this-run failure or an unreadable body
-    /// records one `Calendar` gap. Either way the calendar stays at names and dates.
+    /// A 402 / 404 (a key below the paid tier) is silent; a this-run failure or an
+    /// unreadable body records one gap. Either way the calendar stays at names and dates.
     fn economic_calendar(
         &self,
         from: NaiveDate,
@@ -2597,7 +2239,6 @@ impl EconomicCalendarSource for FmpDataSource {
                     Vec::new()
                 }
             },
-            // A plan-tier refusal (402) or absence (404) is silent: names and dates.
             Disposition::Gap(GapReason::OutOfScope) => Vec::new(),
             Disposition::Gap(reason) => {
                 gaps.push(DataGap::new(GroupKind::Calendar, series_id, name, reason));
@@ -2626,16 +2267,12 @@ mod tests {
 
     #[test]
     fn cadence_window_days_floors_caps_and_scales() {
-        // First report (no interval) → the floor.
         assert_eq!(cadence_window_days(None), EARNINGS_BACK_DAYS);
-        // Sub-weekly run floors to the default week of context.
         assert_eq!(cadence_window_days(Some(1.0)), EARNINGS_BACK_DAYS);
         assert_eq!(cadence_window_days(Some(3.2)), EARNINGS_BACK_DAYS);
-        // A multi-week run rounds up to ~its interval, above the floor and below the cap.
         assert_eq!(cadence_window_days(Some(10.0)), 10);
         assert_eq!(cadence_window_days(Some(12.5)), 13);
         assert_eq!(cadence_window_days(Some(30.0)), 30);
-        // A longer gap is capped at FMP's ~1-month free window.
         assert_eq!(cadence_window_days(Some(45.0)), EARNINGS_BACK_MAX_DAYS);
         assert_eq!(cadence_window_days(Some(120.0)), EARNINGS_BACK_MAX_DAYS);
         // Degenerate intervals (clock skew, non-finite) clamp to the floor, never panic.
@@ -2647,7 +2284,6 @@ mod tests {
     #[test]
     fn interpret_response_covers_the_full_matrix() {
         use GapReason::*;
-        // 2xx array (incl. the empty "no data" array) -> a value to shape.
         assert!(matches!(
             interpret_response(
                 200,
@@ -2660,7 +2296,6 @@ mod tests {
             Disposition::Value(_)
         ));
 
-        // Explicit skip allowlist: a legitimate per-symbol absence -> OutOfScope gap.
         assert!(matches!(
             interpret_response(402, "Premium Query Parameter"),
             Disposition::Gap(OutOfScope)
@@ -2670,9 +2305,6 @@ mod tests {
             Disposition::Gap(OutOfScope)
         ));
 
-        // Auth -> Rejected; systemic 429/5xx -> Unavailable; request-contract -> Malformed
-        // (a 400, e.g. a malformed sector date, degrades to a gap rather than skipping
-        // silently).
         for status in [401, 403] {
             assert!(
                 matches!(interpret_response(status, ""), Disposition::Gap(Rejected)),
@@ -2695,17 +2327,15 @@ mod tests {
             );
         }
 
-        // A 200 {"Error Message"} body (rate-limit / plan) -> Rejected...
         assert!(matches!(
             interpret_response(200, r#"{"Error Message":"Limit Reach"}"#),
             Disposition::Gap(Rejected)
         ));
-        // ...but the SAME body on a non-2xx is classified by status, not body (402 skips).
+        // The same body on a non-2xx is classified by status, not body.
         assert!(matches!(
             interpret_response(402, r#"{"Error Message":"Premium"}"#),
             Disposition::Gap(OutOfScope)
         ));
-        // A 2xx that isn't valid JSON is a contract violation -> Malformed.
         assert!(matches!(
             interpret_response(200, "not json at all"),
             Disposition::Gap(Malformed)
@@ -2714,13 +2344,8 @@ mod tests {
 
     // ---- Offline round trip: adapter -> retry -> interpret -> domain output ----
     //
-    // `interpret_response` above pins the status/body matrix as a pure function; these
-    // drive the *whole* `get` -> `send_with_retry` -> `interpret_response` ->
-    // `quotes_from_value` path against a localhost mock (`crate::test_http`), the path a
-    // live FMP key was previously the only way to exercise. `with_base_url` redirects
-    // every endpoint at the mock; `fetch_quotes` with a single symbol is the smallest
-    // fetch that round-trips one request. Single-reply scripts (no retryable status), so
-    // no `BASE_BACKOFF` sleep is incurred — retry mechanics live in `http_retry`'s tests.
+    // Single-reply scripts (no retryable status), so no backoff sleep is incurred;
+    // retry mechanics live in `http_retry`'s tests.
 
     fn test_source(base_url: &str) -> FmpDataSource {
         FmpDataSource::new("test-key".to_string())
@@ -2792,7 +2417,6 @@ mod tests {
                 (GroupKind::Calendar, "economic-calendar", GapReason::Malformed),
             ]
         );
-        // One tracker row per fetch, its status the shaped outcome.
         let finished: Vec<(String, String)> = rec
             .messages()
             .into_iter()
@@ -2905,7 +2529,6 @@ mod tests {
         {"symbol":"AMZN","companyName":"Amazon","targetedSymbol":"GSAT","targetedCompanyName":"Globalstar, Inc.","transactionDate":"2026-07-31","link":"https://sec.gov/c"}
     ]"#;
 
-    /// A full M&A page of distinct filings on one date.
     fn full_mna_page(date: &str) -> &'static str {
         let rows: Vec<String> = (0..crate::portfolio::evidence::MA_PAGE_LIMIT)
             .map(|i| {
@@ -3577,24 +3200,20 @@ mod tests {
 
     #[test]
     fn fmp_ladder_crosses_a_minute_window_and_is_the_constructor_default() {
-        // The plan-pinned guarantee (2026-08-05 ruling): the 429 ladder's cumulative
-        // sleep must cross any 60s rate window. 1+2+4+8+16+32 = 63s.
+        // 1+2+4+8+16+32 = 63s, past any 60s rate window.
         assert_eq!(
             FMP_RETRY.cumulative_rate_limit_backoff(),
             StdDuration::from_secs(63)
         );
         assert!(FMP_RETRY.cumulative_rate_limit_backoff() > StdDuration::from_secs(60));
-        // And the production constructor wires it on — not the shared default.
         let source = FmpDataSource::new("k".into()).expect("adapter");
         assert_eq!(source.retry, FMP_RETRY);
     }
 
     #[test]
     fn get_rides_the_injected_retry_policy_past_a_429_burst() {
-        // Four 429s then a clean quote: under the server-error-sized budget (3)
-        // this stops at attempt 3 and surfaces a gap; under the rate-limit class
-        // (attempts=5 here, millisecond-scale) the fetch rides through to the
-        // parsed quote — proving `get` consumes `self.retry`'s rate-limit class.
+        // Four 429s then a clean quote: the server-error budget (3) would stop at
+        // attempt 3, so riding through proves `get` consumes the rate-limit class.
         let mut replies: Vec<Canned> = (0..4)
             .map(|_| Canned::Reply {
                 status: 429,
@@ -3634,18 +3253,13 @@ mod tests {
 
     #[test]
     fn a_suite_row_carries_the_gap_reason_and_transport_detail() {
-        // The suite GET previously emitted status "empty" with `detail: None`
-        // for every gap; the row now carries the gap's kebab reason and, on a
-        // transport error, the error text — the per-fetch trace the 2026-08-10
-        // failure analysis had to reconstruct from screenshots.
         let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
         let ctx = crate::progress::RunContext::new(
             "run",
             rec.clone(),
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
-        // An unroutable endpoint: a transport error on every attempt; the
-        // millisecond schedule keeps the retries instant.
+        // An unroutable endpoint: a transport error on every attempt.
         let source = test_source("http://127.0.0.1:1")
             .with_retry_policy(crate::http_retry::RetryPolicy {
                 rate_limit: crate::http_retry::Schedule {
@@ -3677,18 +3291,16 @@ mod tests {
         let detail = finished[0].1.as_deref().expect(
             "the transport error reaches the row's detail",
         );
-        // The detail must never carry the request URL: the FMP key rides as a
-        // query param, and this string reaches stderr (the tee) and the tracker.
+        // The detail must never carry the request URL: the key rides as a query param,
+        // and this string reaches stderr and the tracker.
         assert!(!detail.contains("test-key"), "{detail}");
         assert!(!detail.contains("apikey"), "{detail}");
     }
 
     #[test]
     fn a_suite_row_carries_the_http_level_cause_too() {
-        // The transport arm was only half the fix: FMP's plan/quota signal
-        // arrives as HTTP 200 with an `{"Error Message"}` body — the 2026-08-10
-        // failure class — and a 403 is a rejection with a plain body. Both must
-        // leave their cause on the row, not a bare status word (review sweep).
+        // FMP's plan/quota signal arrives as HTTP 200 with an `{"Error Message"}` body,
+        // a 403 as a rejection with a plain body; both must leave their cause on the row.
         let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
         let ctx = crate::progress::RunContext::new(
             "run",
@@ -3738,11 +3350,8 @@ mod tests {
 
     #[test]
     fn quote_and_eod_rows_reflect_the_shaped_outcome() {
-        // A parseable body is not success: these two rows carry the shaped
-        // outcome (the emit_series_row semantics — ok only when data landed),
-        // and an HTTP-level rejection carries its cause, so a quota
-        // exhaustion can never paint a benign word on the suite's two most
-        // load-bearing calls (Codex round; the 2026-08-10 failure class).
+        // A parseable body is not success: a row is ok only when data landed, and an
+        // HTTP-level rejection carries its cause.
         let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
         let ctx = crate::progress::RunContext::new(
             "run",
@@ -3790,10 +3399,6 @@ mod tests {
 
     #[test]
     fn a_non_positive_quote_print_is_no_usable_price_at_the_parse() {
-        // Codex I1 (ruled 2026-08-28): the usability rule runs at the one
-        // parse every quote consumer rides. A zero or negative print shapes
-        // to no price with the served value kept for the gap; a usable print
-        // and an absent field keep their old shapes.
         let shaped = |body: &str| {
             company_quote_from_value(&serde_json::from_str(body).unwrap())
                 .expect("a non-empty array parses")
@@ -3815,10 +3420,7 @@ mod tests {
 
     #[test]
     fn an_unusable_quote_print_lands_as_a_named_gap_on_every_consumer() {
-        // The three quote consumers behind the one parse: the per-holding pull
-        // records no price, its gap and tracker row naming the served print;
-        // the quick check's refresh and the commodity quote both `Err` naming
-        // it; every row is empty — never ok, never malformed (Codex I1).
+        // Every row reads empty, never ok, never malformed.
         let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
         let ctx = crate::progress::RunContext::new(
             "run",
@@ -3900,11 +3502,7 @@ mod tests {
 
     #[test]
     fn every_suite_row_carries_the_shaped_outcome_not_ok_on_parse() {
-        // The 17 formerly "ok"-on-parse sites now ride `suite_get_shaped`: a
-        // row reads "ok" only when the caller's parse landed usable data. A
-        // parsed-but-empty statements body is "empty"; a parsed-but-priceless
-        // quote is "empty" while the caller still errors; an unshapeable body
-        // is "malformed" with its cause on the row.
+        // A parsed-but-priceless quote is "empty" while the caller still errors.
         let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
         let ctx = crate::progress::RunContext::new(
             "run",
@@ -3995,11 +3593,9 @@ mod tests {
 
     #[test]
     fn schema_drift_reads_malformed_with_its_cause_never_benign_empty() {
-        // The shared shapers fold a non-array body into an empty result, and a
-        // parsed-but-fieldless body into a default, so without the per-site
-        // drift checks a drifted 200 read as a benign `empty` — or worse, `ok`
-        // (`[{}]` balance sheet, `{}` etf/info). Every malformed row must also
-        // carry its cause, per the run-tracking contract (Codex round).
+        // The shared shapers fold a non-array body into an empty result and a
+        // fieldless body into a default, so only the per-site drift checks keep a
+        // drifted 200 from reading as a benign `empty` or `ok`.
         let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
         let ctx = crate::progress::RunContext::new(
             "run",
@@ -4044,9 +3640,9 @@ mod tests {
             "{:?}",
             fund.gaps
         );
-        // The drifted profile body must land its detection gap on the record
-        // itself, not only the tracker row — `suite_get_shaped` folds malformed
-        // into Ok, so the shaper pushes it (Codex 2026-08-21 round 3).
+        // The drifted profile body must land its gap on the record itself, not only
+        // the tracker row: `suite_get_shaped` folds malformed into Ok, so the shaper
+        // pushes it.
         assert!(
             fund.gaps
                 .iter()
@@ -4107,13 +3703,9 @@ mod tests {
 
     #[test]
     fn unreadable_rows_read_malformed_and_served_empty_reads_empty() {
-        // Codex round 2's two boundary classes. First: a served, NON-empty
-        // array in which not a single row is readable is drift (`malformed`),
-        // never a benign `empty` — the shapers drop unreadable rows silently,
-        // so the sites re-split on the body. Second, the inverse: a served
-        // EMPTY array (`[]` — an unknown symbol, a non-fund) is the honest
-        // `empty`, never `malformed`, matching the documented rule that a
-        // parsed response with no usable data reads empty.
+        // The shapers drop unreadable rows silently, so the sites re-split on the
+        // body: a served non-empty array with no readable row is drift, a served `[]`
+        // (an unknown symbol, a non-fund) is the honest empty.
         let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
         let ctx = crate::progress::RunContext::new(
             "run",
@@ -4230,13 +3822,10 @@ mod tests {
 
     #[test]
     fn strict_list_fetches_error_on_wholly_unreadable_bodies_but_not_filtered_ones() {
-        // Codex round 3: the EOD / deep-EOD / earnings / news shapers drop
-        // unreadable rows silently, so a served `[{}]` read as an honest
-        // empty — and for earnings/news the quick check then typed the family
-        // FreshClear instead of Unknown, potentially suppressing a selective
-        // rerun. Drift now surfaces as `Err` + a malformed row. The news leg
-        // splits on READABILITY, not row count: its shaper also date-filters,
-        // and readable-but-older-than-`from` rows must stay the honest empty.
+        // A wholly unreadable earnings/news body read as empty would type the quick
+        // check's family FreshClear instead of Unknown, suppressing a selective rerun.
+        // The news leg splits on readability, not row count: its shaper also
+        // date-filters, and readable-but-older-than-`from` rows stay the honest empty.
         let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
         let ctx = crate::progress::RunContext::new(
             "run",
@@ -4312,12 +3901,8 @@ mod tests {
 
     #[test]
     fn noncanonical_dates_normalize_before_lexicographic_consumers() {
-        // Codex round 5: `datable` accepted non-zero-padded dates but the
-        // SOURCE text kept flowing into lexicographic consumers, where
-        // "2026-9-30" sorts after "2026-12-31" and compares fresh against an
-        // October last-pass date. Accepted dates now normalize to canonical
-        // fixed-width ISO at the readability seam, the same pattern the
-        // dividends shaper already uses.
+        // In source form "2026-9-30" sorts after "2026-12-31" and compares fresh
+        // against an October last-pass date.
         let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
         let ctx = crate::progress::RunContext::new(
             "run",
@@ -4381,14 +3966,9 @@ mod tests {
 
     #[test]
     fn invalid_date_strings_are_unreadable_rows_not_ok_data() {
-        // Codex round 4: readability requires a DATABLE date, not merely a
-        // string. A garbage date like "not-a-date" compares lexicographically
-        // above any ISO last-pass date ('n' > '2'), so it could fabricate a
-        // fresh earnings/news event through the quick check's gate, and a
-        // "bad"-dated EOD row violated DatedValue's ISO contract. Blank and
-        // non-date strings are now unreadable; a datable row among garbage
-        // still rides (partial-skip semantics), and a `T`-separated datetime
-        // prefix stays readable.
+        // A garbage date like "not-a-date" compares lexicographically above any ISO
+        // last-pass date ('n' > '2'), so as a readable row it could fabricate a fresh
+        // earnings/news event through the quick check's gate.
         let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
         let ctx = crate::progress::RunContext::new(
             "run",
@@ -4506,12 +4086,7 @@ mod tests {
 
     #[test]
     fn company_quote_and_eod_parse_into_financials() {
-        // The per-company pull makes six calls — quote, EOD, quarterly income,
-        // balance sheet, analyst estimates, dividends — so the mock scripts six
-        // replies. Quote carries price/market cap/shares; EOD is returned out of
-        // order and must come back chronological so the engine's first/last is
-        // honest; the v2 surface (statements, balance sheet, consensus, dividends)
-        // parses into its typed fields.
+        // The EOD body is served out of order and must come back chronological.
         let server = MockHttp::serve(vec![
             Canned::Reply {
                 status: 200,
@@ -4566,28 +4141,21 @@ mod tests {
         assert_eq!(fin.current_price, Some(195.0));
         assert_eq!(fin.market_cap, Some(3.0e12));
         assert_eq!(fin.shares_outstanding, Some(1.5e10));
-        // Chronological: the older 180 first, the newer 195 last.
         assert_eq!(fin.price_history, vec![180.0, 195.0]);
-        // The v2 surface parses into its typed fields, the statement lines included.
         assert_eq!(fin.quarterly_income.len(), 1);
         assert_eq!(fin.quarterly_income[0].net_income, Some(24.0e9));
         assert_eq!(fin.quarterly_income[0].gross_profit, Some(44.0e9));
         assert_eq!(fin.quarterly_income[0].cost_of_revenue, Some(51.0e9));
         assert_eq!(fin.quarterly_income[0].operating_income, Some(29.0e9));
-        // The cash-flow leg parses into its typed rows (the pre-profit surface).
         assert_eq!(fin.quarterly_cash_flow.len(), 1);
         assert_eq!(fin.quarterly_cash_flow[0].free_cash_flow, Some(20.0e9));
         assert_eq!(fin.quarterly_cash_flow[0].operating_cash_flow, Some(28.0e9));
         assert_eq!(fin.quarterly_cash_flow[0].capex, Some(-8.0e9));
-        // The balance sheet fills the leverage leg; equity prefers the
-        // stockholders' (parent-only) line over totalEquity. The liquid-resource
-        // lines ride beside them.
+        // Equity prefers the stockholders' (parent-only) line over totalEquity.
         assert_eq!(fin.total_debt, Some(110.0e9));
         assert_eq!(fin.total_equity, Some(62.0e9));
         assert_eq!(fin.cash_and_equivalents, Some(30.0e9));
         assert_eq!(fin.short_term_investments, Some(32.0e9));
-        // The rows ride beside the flat lines (the soft forensic flags' comparator),
-        // and the scores parse into their pair.
         assert_eq!(fin.quarterly_balance_sheet.len(), 1);
         assert_eq!(fin.quarterly_balance_sheet[0].net_receivables, Some(60.0e9));
         assert_eq!(fin.quarterly_balance_sheet[0].inventory, Some(7.0e9));
@@ -4615,8 +4183,6 @@ mod tests {
 
     #[test]
     fn quick_check_adapters_round_trip_price_earnings_and_news() {
-        // The quick check's three per-symbol pulls: the bare live price, the
-        // earnings rows (newest first), and the since-filtered symbol news.
         let server = MockHttp::serve(vec![
             Canned::Reply {
                 status: 200,
@@ -4640,7 +4206,6 @@ mod tests {
         assert_eq!(src.fetch_live_price("AAPL").unwrap(), 201.5);
         let earnings = src.fetch_symbol_earnings("AAPL").unwrap();
         assert_eq!(earnings.len(), 2);
-        // Newest first regardless of the feed's order.
         assert_eq!(earnings[0].date, "2026-07-30");
         assert_eq!(earnings[1].eps_actual, Some(1.61));
         // The since filter holds client-side even if the server ignores `from`.
@@ -4668,11 +4233,8 @@ mod tests {
 
     #[test]
     fn quick_check_adapters_error_on_a_malformed_200_body() {
-        // A non-array 200 (schema drift, an error object the gate didn't catch)
-        // must surface as `Err`, never read as "no new evidence" — earnings,
-        // news, and the strict consensus read alike; the fail-soft dividends
-        // read records its gap, so a malformed body can never be mistaken for
-        // a confirmed non-payer (a dividend elimination) downstream.
+        // The fail-soft dividends read records its gap, so a malformed body can never
+        // be mistaken for a confirmed non-payer downstream.
         let server = MockHttp::serve(vec![
             Canned::Reply { status: 200, headers: vec![], body: r#"{"message":"maintenance"}"# },
             Canned::Reply { status: 200, headers: vec![], body: r#"{"message":"maintenance"}"# },
@@ -4693,11 +4255,8 @@ mod tests {
 
     #[test]
     fn strict_estimates_split_undatable_rows_from_an_honest_past_only_set() {
-        // `Ok(None)` on the strict read is what the Revision family clears on,
-        // so it must mean an honest empty/past-only consensus — a body whose
-        // rows carry undatable dates is drift and must be `Err` (family
-        // `unknown`), or a stale verdict could carry uninspected behind a
-        // fabricated fresh_clear.
+        // `Ok(None)` is what the Revision family clears on, so undatable rows must be
+        // `Err` or a stale verdict could carry uninspected behind a fabricated clear.
         let server = MockHttp::serve(vec![
             Canned::Reply {
                 status: 200,
@@ -4713,17 +4272,14 @@ mod tests {
         let src = test_source(&server.base_url);
         let err = src.fetch_analyst_estimates_strict("AAPL").unwrap_err();
         assert!(err.to_string().contains("undatable"), "{err}");
-        // Past-only rows are the honest no-forward-consensus read.
         assert!(src.fetch_analyst_estimates_strict("AAPL").unwrap().is_none());
     }
 
     #[test]
     fn ttm_dividend_pull_requests_the_full_history_margin() {
-        // The TTM pull requests the full history margin: the feed's newest
-        // rows can be future-dated declarations that consume slots without
-        // landing in the window, and a monthly payer alone fills a 12-row cap —
-        // a truncated pull silently understates the trailing sum (and with it
-        // the hurdle's payout leg), so the margin is pinned here.
+        // Future-dated declarations consume slots without landing in the window and a
+        // monthly payer alone fills a 12-row cap, so a truncated pull silently
+        // understates the trailing sum.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
             headers: vec![],
@@ -4742,8 +4298,6 @@ mod tests {
 
     #[test]
     fn company_financials_degrade_to_gaps_on_premium_and_transport_failures() {
-        // Quote 402 (premium gate) then EOD malformed body: both degrade to gaps, never
-        // a fabricated level, and the engine grades over what SEC supplies instead.
         let server = MockHttp::serve(vec![
             Canned::Reply {
                 status: 402,
@@ -4759,9 +4313,6 @@ mod tests {
         let fin = test_source(&server.base_url).fetch_company_financials("AAPL");
         assert!(fin.current_price.is_none());
         assert!(fin.price_history.is_empty());
-        // Eight endpoints, eight tagged gaps — the v2-surface calls, the
-        // pre-profit cash-flow leg and the financial-scores leg degrade the same
-        // way the quote and EOD do.
         assert_eq!(fin.gaps.len(), 8, "eight failed pulls, eight gaps: {:?}", fin.gaps);
     }
 
@@ -4850,8 +4401,6 @@ mod tests {
 
     #[test]
     fn fetch_quotes_round_trips_a_402_into_an_out_of_scope_gap() {
-        // A premium-gated endpoint replies 402: the wire path must classify it as an
-        // OutOfScope gap and yield no quote — the status/body split rides the real socket.
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 402,
             headers: vec![],
@@ -4889,10 +4438,8 @@ mod tests {
             quotes[0].change.kind,
             crate::data_sources::ChangeKind::Percent
         );
-        // The requested symbol's unit rides onto the quote from the table, not the wire.
         assert_eq!(quotes[0].unit, "index points");
 
-        // No name -> local fallback; legacy `changesPercentage` accepted.
         let v2: Value =
             serde_json::from_str(r#"[{"symbol":"^DJI","price":40000.0,"changesPercentage":-1.5}]"#)
                 .unwrap();
@@ -4900,7 +4447,6 @@ mod tests {
         assert_eq!(q2[0].name, "Dow Jones");
         assert!((q2[0].change.value + 1.5).abs() < 1e-9);
 
-        // An empty array is "no quotes", not an error.
         assert!(
             quotes_from_value(serde_json::from_str("[]").unwrap(), "x", "index points")
                 .unwrap()
@@ -4910,15 +4456,12 @@ mod tests {
 
     #[test]
     fn quotes_from_value_requires_price_and_change() {
-        // A required field absent (schema drift / partial response) fails the parse —
-        // neither a false 0.0 nor a silent skip; the loop records a Malformed gap.
         let no_price: Value =
             serde_json::from_str(r#"[{"symbol":"^GSPC","changePercentage":0.4}]"#).unwrap();
         assert!(quotes_from_value(no_price, "x", "index points").is_err());
         let no_change: Value =
             serde_json::from_str(r#"[{"symbol":"^GSPC","price":5500.0}]"#).unwrap();
         assert!(quotes_from_value(no_change, "x", "index points").is_err());
-        // A non-array 2xx body (object) is also malformed.
         let object: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
         assert!(quotes_from_value(object, "x", "index points").is_err());
     }
@@ -4938,7 +4481,6 @@ mod tests {
         assert!((sectors[0].change_pct - 1.2619).abs() < 1e-9);
         assert!((sectors[1].change_pct + 0.1942).abs() < 1e-9);
 
-        // A per-exchange variant could repeat a sector; only the first is kept.
         let dup: Value = serde_json::from_str(
             r#"[
                 {"sector":"Technology","exchange":"NASDAQ","averageChange":1.0},
@@ -4953,8 +4495,6 @@ mod tests {
 
     #[test]
     fn sectors_from_value_requires_average_change() {
-        // Fail-closed: a row missing averageChange fails the parse (a Malformed gap in
-        // the loop), rather than being silently dropped as a false "flat" move.
         let v: Value = serde_json::from_str(
             r#"[{"sector":"Technology","averageChange":1.5},{"sector":"Energy"}]"#,
         )
@@ -4964,8 +4504,6 @@ mod tests {
 
     #[test]
     fn sector_candidate_dates_skips_weekends_from_a_sunday() {
-        // A run on a Sunday: candidates skip Sat/Sun and start at the prior
-        // Friday, then walk back over weekdays only.
         let sunday = NaiveDate::from_ymd_opt(2026, 6, 7).unwrap();
         assert_eq!(sunday.weekday(), Weekday::Sun, "fixture sanity");
         let got: Vec<String> = sector_candidate_dates(sunday, 5)
@@ -4987,8 +4525,6 @@ mod tests {
 
     #[test]
     fn sector_candidate_dates_from_a_weekday_includes_today_then_skips_the_weekend() {
-        // A Wednesday start includes Wednesday, Tue, Mon, then skips the weekend to the
-        // prior Fri, Thu.
         let wednesday = NaiveDate::from_ymd_opt(2026, 6, 10).unwrap();
         assert_eq!(wednesday.weekday(), Weekday::Wed, "fixture sanity");
         let got: Vec<String> = sector_candidate_dates(wednesday, 5)
@@ -5047,7 +4583,6 @@ mod tests {
 
     #[test]
     fn index_performance_from_eod_too_short_is_none() {
-        // Only the latest close (nothing a week back) can't anchor the weekly return.
         let only = vec![(NaiveDate::from_ymd_opt(2026, 6, 10).unwrap(), 100.0)];
         assert!(index_performance_from_eod("^GSPC", "S&P 500", &only).is_none());
         assert!(index_performance_from_eod("^GSPC", "S&P 500", &[]).is_none());
@@ -5055,8 +4590,7 @@ mod tests {
 
     #[test]
     fn eod_to_performance_parses_sorts_and_rejects_bad_shapes() {
-        // Out-of-order rows are sorted newest-first before anchoring: latest is 06-10
-        // (110), week-ago as-of 06-03 is 100 -> +10%.
+        // Served out of order: latest is 06-10 (110), week-ago as-of 06-03 is 100.
         let v: Value = serde_json::from_str(
             r#"[
                 {"symbol":"^GSPC","date":"2026-06-03","price":100.0,"volume":1},
@@ -5074,19 +4608,14 @@ mod tests {
             p.weekly_pct
         );
 
-        // A non-array body is a contract violation.
         let obj: Value = serde_json::from_str(r#"{"unexpected":true}"#).unwrap();
         assert!(eod_to_performance(obj, "^GSPC", "S&P 500").is_err());
-        // An unparseable date fails closed rather than being dropped.
         let bad_date: Value = serde_json::from_str(r#"[{"date":"June 10","price":1.0}]"#).unwrap();
         assert!(eod_to_performance(bad_date, "^GSPC", "S&P 500").is_err());
     }
 
     #[test]
     fn movers_parse_tags_category_and_filters_noise() {
-        // The mover lists key the move as `changesPercentage` (plural); parsing stamps the
-        // list's category. filter_movers drops the sub-$5 micro-cap and the off-exchange
-        // row, keeping major-exchange names in FMP's arrival order.
         let body = serde_json::json!([
             {"symbol":"NVDA","name":"NVIDIA","price":142.0,"changesPercentage":4.2,"exchange":"NASDAQ"},
             {"symbol":"SCAG","name":"Scage","price":0.84,"changesPercentage":194.0,"exchange":"NASDAQ"},
@@ -5103,8 +4632,6 @@ mod tests {
 
     #[test]
     fn movers_singular_alias_parses_and_name_falls_back() {
-        // The quote-endpoint spelling `changePercentage` (singular) is accepted as an
-        // alias, and a missing name falls back to the symbol.
         let body = serde_json::json!([{"symbol":"MSFT","price":410.0,"changePercentage":1.5,"exchange":"NASDAQ"}]);
         let parsed = movers_from_value(body, MoverCategory::MostActive).unwrap();
         assert_eq!(parsed[0].name, "MSFT");
@@ -5113,9 +4640,6 @@ mod tests {
 
     #[test]
     fn movers_filter_excludes_funds_and_leveraged_etfs() {
-        // The raw lists are dominated by leveraged/inverse ETFs that clear the price +
-        // exchange gate but aren't single-company signals; the name heuristic drops them
-        // while keeping ordinary companies.
         let movers = vec![
             StockMover {
                 category: MoverCategory::Gainer,
@@ -5157,9 +4681,8 @@ mod tests {
 
     #[test]
     fn movers_filter_keeps_companies_with_bull_or_bear_in_name() {
-        // Regression: bare "bull "/"bear " markers would drop real companies. Build-A-Bear
-        // stays; the leveraged directional ETF is still caught (by "direxion" / "3x" /
-        // " etf"), so dropping the bare markers cost no coverage.
+        // Build-A-Bear stays; the leveraged directional ETF is still caught by
+        // "direxion" / "3x" / " etf".
         let movers = vec![
             StockMover {
                 category: MoverCategory::Gainer,
@@ -5200,8 +4723,6 @@ mod tests {
 
     #[test]
     fn earnings_filter_keeps_large_caps_sorted_by_revenue() {
-        // A forward row (null actuals) and a past row (both) are kept when large-cap; the
-        // sub-threshold and missing-revenue rows are dropped; output is revenue-descending.
         let body = serde_json::json!([
             {"symbol":"ADBE","date":"2026-06-11","epsEstimated":5.83,"epsActual":null,
              "revenueEstimated":6453568000.0,"revenueActual":null},
@@ -5238,8 +4759,6 @@ mod tests {
 
     #[test]
     fn sector_pe_from_value_labels_by_wire_exchange_and_dedupes() {
-        // A response whose rows all match the requested board is labelled by the (validated)
-        // wire exchange and deduped by (sector, exchange), keep first.
         let v = serde_json::json!([
             {"date":"2026-06-05","sector":"Technology","exchange":"NASDAQ","pe":38.4},
             {"date":"2026-06-05","sector":"Energy","exchange":"NASDAQ","pe":12.1},
@@ -5260,10 +4779,6 @@ mod tests {
 
     #[test]
     fn sector_pe_from_value_drops_out_of_band_pe_to_none_keeping_the_row() {
-        // The band `(0.0, SECTOR_PE_MAX]`: a non-positive aggregate (FMP's 0.0 / a negative for
-        // a sector with no positive summed earnings) and one inflated past the ceiling both drop
-        // the *pe* to `None` — but the (sector, exchange) row survives so the model still sees
-        // the sector was scanned. An in-band value rides through as `Some`.
         let v = serde_json::json!([
             {"sector":"Technology","exchange":"NASDAQ","pe":38.4},
             {"sector":"Energy","exchange":"NASDAQ","pe":0.0},
@@ -5290,9 +4805,6 @@ mod tests {
 
     #[test]
     fn sector_pe_from_value_rejects_off_board_rows() {
-        // The guard against FMP ignoring the exchange filter: an NYSE request that comes back
-        // with a NASDAQ row fails the whole leg (→ a Malformed gap) rather than silently
-        // accepting off-board data, which would duplicate one board and drop the other.
         let v = serde_json::json!([
             {"sector":"Technology","exchange":"NYSE","pe":24.6},
             {"sector":"Energy","exchange":"NASDAQ","pe":12.1}
@@ -5302,8 +4814,6 @@ mod tests {
 
     #[test]
     fn sector_pe_from_value_requires_exchange_and_pe() {
-        // Fail-closed: a row missing the wire exchange OR pe fails the parse (a Malformed gap
-        // in the loop) rather than being stamped with a guessed exchange or a false 0.0.
         assert!(sector_pe_from_value(
             serde_json::json!([{"sector":"Technology","pe":1.0}]),
             "NASDAQ"
@@ -5316,7 +4826,6 @@ mod tests {
         .is_err());
     }
 
-    /// Build an industry-PE map fixture keyed by (industry, exchange), as the wire-keyed map.
     fn pe_map(rows: &[(&str, &str, f64)]) -> HashMap<(String, String), f64> {
         rows.iter()
             .map(|(ind, ex, pe)| ((ind.to_string(), ex.to_string()), *pe))
@@ -5325,10 +4834,7 @@ mod tests {
 
     #[test]
     fn industries_join_caps_top_and_bottom_and_attaches_pe() {
-        // Five performance rows; INDUSTRY_TOP_N caps each side, but with only 5 rows the
-        // top-N and bottom-N slices must not double-count — assert no industry repeats and
-        // the strongest + weakest are present, sorted move-descending. The exchange label and
-        // the PE both come from the wire row, joined on (industry, exchange).
+        // Five rows: fewer than 2×N, so the top and bottom slices must not double-count.
         let perf = vec![
             ("Semiconductors".to_string(), "NASDAQ".to_string(), 4.0),
             ("Banks".to_string(), "NASDAQ".to_string(), 1.0),
@@ -5353,7 +4859,6 @@ mod tests {
             ]
         );
         assert!(out.iter().all(|i| i.exchange == "NASDAQ"));
-        // PE joins where present; absent industries carry None rather than dropping the row.
         assert_eq!(out[0].pe, Some(41.2));
         assert_eq!(out[1].pe, None);
         assert_eq!(out[4].pe, Some(18.0));
@@ -5361,8 +4866,6 @@ mod tests {
 
     #[test]
     fn industries_join_is_same_exchange_only() {
-        // A PE that exists for the same industry on a DIFFERENT board must not attach: the
-        // (industry, exchange) key keeps a row's P/E and performance on the same board.
         let perf = vec![("Semiconductors".to_string(), "NYSE".to_string(), 3.0)];
         let pe = pe_map(&[("Semiconductors", "NASDAQ", 63.9)]); // NASDAQ PE only
         let out = top_bottom_industries(perf, &pe);
@@ -5373,29 +4876,24 @@ mod tests {
 
     #[test]
     fn industries_join_picks_extremes_when_list_exceeds_cap() {
-        // 2*INDUSTRY_TOP_N + 4 industries: keep only the N strongest and N weakest, drop the
-        // flat middle, with no overlap.
+        // 2*INDUSTRY_TOP_N + 4 industries, so a flat middle exists to drop.
         let mut perf: Vec<(String, String, f64)> = (0..2 * INDUSTRY_TOP_N + 4)
             .map(|i| (format!("Ind{i}"), "NYSE".to_string(), i as f64)) // ascending move
             .collect();
         perf.reverse(); // arrival order need not be sorted
         let out = top_bottom_industries(perf, &HashMap::new());
         assert_eq!(out.len(), 2 * INDUSTRY_TOP_N);
-        // Strongest is the highest move; weakest is the lowest; the middle is dropped.
         assert_eq!(
             out.first().unwrap().industry,
             format!("Ind{}", 2 * INDUSTRY_TOP_N + 3)
         );
         assert_eq!(out.last().unwrap().industry, "Ind0");
-        // No industry appears twice.
         let unique: HashSet<&str> = out.iter().map(|i| i.industry.as_str()).collect();
         assert_eq!(unique.len(), out.len());
     }
 
     #[test]
     fn industry_perf_and_pe_parse_keep_wire_exchange_and_dedupe() {
-        // A matching-board response is labelled by its (validated) wire exchange and deduped by
-        // (industry, exchange), keep first.
         let perf_v = serde_json::json!([
             {"date":"2026-06-05","industry":"Semiconductors","exchange":"NASDAQ","averageChange":2.4},
             {"date":"2026-06-05","industry":"Banks","exchange":"NASDAQ","averageChange":1.1},
@@ -5415,7 +4913,6 @@ mod tests {
 
     #[test]
     fn industry_snapshots_reject_off_board_rows() {
-        // Same off-board guard as sector P/E, for both industry legs.
         let perf_v = serde_json::json!([{"industry":"Semiconductors","exchange":"NASDAQ","averageChange":2.4}]);
         assert!(industry_perf_from_value(perf_v, "NYSE").is_err());
         let pe_v = serde_json::json!([{"industry":"Semiconductors","exchange":"NASDAQ","pe":41.2}]);
@@ -5424,9 +4921,6 @@ mod tests {
 
     #[test]
     fn industry_pe_map_drops_non_positive_ratios() {
-        // FMP reports pe: 0.0 (or negative) for an industry with no positive aggregate
-        // earnings; those are dropped so the join yields None (no meaningful P/E) rather
-        // than a misleading near-zero "cheap" multiple reaching the model.
         let v = serde_json::json!([
             {"industry":"Oil & Gas Energy","exchange":"NASDAQ","pe":0.0},
             {"industry":"Biotech","exchange":"NASDAQ","pe":-3.0},
@@ -5435,7 +4929,6 @@ mod tests {
         let map = industry_pe_map_from_value(v, "NASDAQ").unwrap();
         assert_eq!(map.len(), 1);
         assert!(map.contains_key(&("Semiconductors".to_string(), "NASDAQ".to_string())));
-        // The join carries None for the dropped industries.
         let perf = vec![
             ("Oil & Gas Energy".to_string(), "NASDAQ".to_string(), -16.3),
             ("Semiconductors".to_string(), "NASDAQ".to_string(), -5.5),
@@ -5455,11 +4948,6 @@ mod tests {
 
     #[test]
     fn industry_pe_map_drops_implausibly_high_ratios() {
-        // An industry near an earnings trough divides by a denominator approaching zero from
-        // above, inflating its aggregate P/E past any plausible level (a live run surfaced
-        // pe ≈ 461). Anything above INDUSTRY_PE_MAX is dropped — the symmetric upper bound to
-        // the non-positive drop — so the join yields None rather than an absurd "expensive"
-        // multiple, while an in-band aggregate survives.
         let v = serde_json::json!([
             {"industry":"Software Application","exchange":"NASDAQ","pe":461.0},
             {"industry":"Semiconductors","exchange":"NASDAQ","pe":63.9}
@@ -5467,7 +4955,6 @@ mod tests {
         let map = industry_pe_map_from_value(v, "NASDAQ").unwrap();
         assert_eq!(map.len(), 1);
         assert!(!map.contains_key(&("Software Application".to_string(), "NASDAQ".to_string())));
-        // The join carries None for the dropped industry, Some for the in-band one.
         let perf = vec![
             (
                 "Software Application".to_string(),
@@ -5491,10 +4978,7 @@ mod tests {
 
     #[test]
     fn industry_pe_map_band_is_closed_at_the_ceiling() {
-        // The upper bound is inclusive: `(0.0, INDUSTRY_PE_MAX]`. An aggregate sitting exactly
-        // on INDUSTRY_PE_MAX is still a plausible valuation and is kept; the first multiple
-        // *past* it is dropped. This pins the gate's `<=` against an accidental flip to `<`
-        // (which would silently drop the boundary value) if the ceiling is ever tuned.
+        // Pins the gate's `<=` against an accidental flip to `<` when the ceiling is tuned.
         let just_over = INDUSTRY_PE_MAX + 0.01;
         let v = serde_json::json!([
             {"industry":"At Ceiling","exchange":"NASDAQ","pe":INDUSTRY_PE_MAX},
@@ -5511,8 +4995,6 @@ mod tests {
 
     #[test]
     fn risk_premium_filters_to_us_exactly() {
-        // Exact-match: "United Kingdom" / "United Arab Emirates" share the "United" prefix
-        // but must not pass; only "United States" survives.
         let v = serde_json::json!([
             {"country":"United States","continent":"North America","countryRiskPremium":0.23,"totalEquityRiskPremium":4.46},
             {"country":"United Kingdom","continent":"Europe","countryRiskPremium":0.78,"totalEquityRiskPremium":5.01},
@@ -5530,9 +5012,7 @@ mod tests {
         let src = FmpDataSource::from_env().expect("FMP_API_KEY set");
         let data = src.baseline_scan(ReportCadence::default()).expect("live baseline scan");
 
-        // Print the resolved mapping so a maintainer can confirm each symbol /
-        // endpoint actually came back (run with `-- --ignored --nocapture`); the
-        // offline tests can only check fixture shapes, not the live symbols.
+        // Print the resolved mapping (run with `-- --ignored --nocapture`).
         let dump = |label: &str, quotes: &[Quote]| {
             eprintln!("{label} ({}):", quotes.len());
             for q in quotes {
@@ -5549,11 +5029,8 @@ mod tests {
             eprintln!("  {:<24} change_pct={}", s.sector, s.change_pct);
         }
 
-        // Every named symbol must resolve individually — not just "the group is
-        // non-empty". A group-level check lets one symbol leaving the free tier
-        // (e.g. GCUSD going premium) hide behind its siblings; the per-symbol
-        // assert is what actually catches a symbol regressing, the lesson of the
-        // removed FRED gold series.
+        // Every named symbol must resolve individually: a group-level check lets one
+        // symbol leaving the free tier hide behind its siblings.
         let assert_resolved = |label: &str, quotes: &[Quote], symbols: &[(&str, &str, &str)]| {
             for (sym, _, _) in symbols {
                 assert!(
@@ -5566,9 +5043,8 @@ mod tests {
         assert_resolved("internals", &data.internals, INTERNAL_SYMBOLS);
         assert!(!data.sectors.is_empty(), "no sector rows resolved");
 
-        // Index performance (multi-horizon EOD enrichment) — dump and assert each index
-        // resolved, the per-symbol discipline the quote groups use. Soft enrichment at
-        // runtime, but the smoke holds it to the same bar so a regressed EOD path surfaces.
+        // Soft enrichment at runtime, but the smoke holds each index to the per-symbol
+        // bar so a regressed EOD path surfaces.
         eprintln!("index_performance ({}):", data.index_performance.len());
         for p in &data.index_performance {
             eprintln!(
@@ -5584,10 +5060,8 @@ mod tests {
             );
         }
 
-        // Movers + earnings: the micro-breadth groups. Dump and assert each resolved at
-        // least one filtered row — a trading day always has large-cap movers and reporters
-        // in the window, so empty means the endpoint left the free tier or the filters are
-        // too tight. (Silver is asserted by `assert_resolved` over INTERNAL_SYMBOLS above.)
+        // A trading day always has large-cap movers and reporters in the window, so an
+        // empty list means the endpoint left the free tier or the filters are too tight.
         eprintln!("movers ({}):", data.movers.len());
         for m in &data.movers {
             eprintln!(
@@ -5615,9 +5089,8 @@ mod tests {
             "no earnings resolved — the calendar may have left the free tier or the revenue floor is too high"
         );
 
-        // Valuation + finer-rotation groups. Dump, assert each resolved, and sanity-check
-        // magnitude (not mere existence) — the lesson of the frozen NASDAQVOLNDX series:
-        // a stale / wrong value still "resolves", so the smoke pins it to a sane range.
+        // Sanity-check magnitude, not mere existence: a stale / wrong value still
+        // "resolves".
         eprintln!("sector_pe ({}):", data.sector_pe.len());
         for s in &data.sector_pe {
             eprintln!("  {:<8} {:<24} pe={:?}", s.exchange, s.sector, s.pe);
@@ -5648,8 +5121,7 @@ mod tests {
             data.industries.iter().any(|i| i.pe.is_some()),
             "no industry carried a P/E — the industry-PE join may have regressed"
         );
-        // Both boards must resolve — a silent drop of one exchange would otherwise hide behind
-        // the other and re-introduce the single-exchange-as-aggregate bias this layer fixes.
+        // Both boards must resolve; a silent drop of one would hide behind the other.
         for ex in SNAPSHOT_EXCHANGES {
             assert!(
                 data.sector_pe.iter().any(|s| s.exchange == *ex),
@@ -5672,18 +5144,11 @@ mod tests {
         );
     }
 
-    /// Industry-P/E distribution probe — dumps the live per-exchange aggregate P/E
-    /// distribution so [`INDUSTRY_PE_MAX`] can be re-tuned from real data rather than
-    /// guessed. Mirrors `tuning_freshness_headroom_probe` on the FRED side: it only
-    /// reports (no assertions), and unlike `fmp_baseline_smoke` it is a calibration aid,
-    /// not a gate. For each board it walks the same weekday candidates production uses,
-    /// takes the first date that resolves, and prints every industry's raw aggregate P/E
-    /// sorted high→low, flagging which fall above the current ceiling (`> INDUSTRY_PE_MAX`,
-    /// the trough-artifact band) and which are non-positive (`<= 0.0`, no positive aggregate
-    /// earnings) — both of which the production map drops to `None`. Set the ceiling above
-    /// the highest *plausible* in-band aggregate but below the artifact cluster. Hits the
-    /// live API (≤2 calls per board, trivial against the 250/day free cap); run once per
-    /// change:
+    /// Calibration aid for [`INDUSTRY_PE_MAX`], not a gate: prints each board's raw
+    /// aggregate P/E distribution sorted high→low, flagging the above-ceiling and
+    /// non-positive rows production drops. Set the ceiling above the highest plausible
+    /// in-band aggregate but below the artifact cluster. Hits the live API (≤2 calls per
+    /// board); run once per change:
     ///   source <your-keys-env-file> && cargo test --manifest-path \
     ///     src-tauri/Cargo.toml tuning_industry_pe_distribution_probe -- --ignored --nocapture
     #[test]
@@ -5725,13 +5190,9 @@ mod tests {
                 if raws.is_empty() {
                     continue;
                 }
-                // The probe deliberately bypasses the *band* filter (the `>0` / `<=ceiling` drop
-                // it exists to calibrate) so the full artifact tail stays visible — but it must
-                // still honor the *exchange* guard production enforces (`industry_pe_map_from_value`
-                // bails on an off-board row), or a response where FMP ignored the `exchange` filter
-                // (a no-`exchange` call silently defaults to NASDAQ) would pollute one board's
-                // distribution with the other's and tune the ceiling against corrupted evidence.
-                // Keep only matching-board rows; surface any off-board count so misbehavior is loud.
+                // Bypass the band filter this probe calibrates, but honor the exchange guard
+                // production enforces, or a response where FMP ignored `exchange` would
+                // pollute one board's distribution with the other's.
                 let total = raws.len();
                 let mut rows: Vec<(String, f64)> = raws
                     .into_iter()
@@ -5739,7 +5200,6 @@ mod tests {
                     .map(|r| (r.industry, r.pe))
                     .collect();
                 let off_board = total - rows.len();
-                // Sort high→low so the artifact tail is obvious at the top.
                 rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                 let above = rows.iter().filter(|(_, pe)| *pe > INDUSTRY_PE_MAX).count();
                 let non_positive = rows.iter().filter(|(_, pe)| *pe <= 0.0).count();
@@ -5772,18 +5232,10 @@ mod tests {
         }
     }
 
-    /// Sector-P/E distribution probe — the sector-cut sibling of
-    /// `tuning_industry_pe_distribution_probe`, so [`SECTOR_PE_MAX`] can be re-tuned from real
-    /// data rather than the conservative industry-shared 120.0 it ships at. Same shape: report
-    /// only (no assertions, a calibration aid not a gate), walk the production weekday
-    /// candidates per board, take the first date that resolves, and print every sector's raw
-    /// aggregate P/E sorted high→low, flagging those above the current ceiling (the
-    /// trough-artifact band) and the non-positive ones (no positive aggregate earnings) — both
-    /// of which production drops to `None`. A sector aggregate sums over far more constituents
-    /// than an industry's, so expect a *tighter* plausible band and a *rarer* artifact tail;
-    /// set the ceiling above the highest plausible in-band sector aggregate, below any artifact
-    /// cluster. Hits the live API (≤2 calls per board, trivial against the 250/day free cap);
-    /// run once per change:
+    /// The sector-cut sibling of `tuning_industry_pe_distribution_probe`, calibrating
+    /// [`SECTOR_PE_MAX`]; a sector aggregate sums over far more constituents, so expect a
+    /// tighter plausible band and a rarer artifact tail. Hits the live API (≤2 calls per
+    /// board); run once per change:
     ///   source <your-keys-env-file> && cargo test --manifest-path \
     ///     src-tauri/Cargo.toml tuning_sector_pe_distribution_probe -- --ignored --nocapture
     #[test]
@@ -5825,10 +5277,8 @@ mod tests {
                 if raws.is_empty() {
                     continue;
                 }
-                // Bypass the *band* filter (the drop this probe exists to calibrate) but honor
-                // the *exchange* guard production enforces (`sector_pe_from_value` bails on an
-                // off-board row), or a response where FMP ignored the `exchange` filter would
-                // pollute one board's distribution with the other's. Surface any off-board count.
+                // Bypass the band filter this probe calibrates, but honor the exchange guard
+                // production enforces (see the industry probe).
                 let total = raws.len();
                 let mut rows: Vec<(String, f64)> = raws
                     .into_iter()
@@ -5868,15 +5318,11 @@ mod tests {
         }
     }
 
-    /// One-shot burst probe settling the *shape* of the paid plan's per-minute rate
-    /// limit (2026-08-05 plan ruling: docs first — FMP's own pages 403 to scrapers
-    /// and third-party references disagree — then this probe). Fires up to ~240
-    /// cheap `/stable/quote` calls across 4 threads inside one minute window and
-    /// records the FIRST rejection's status, `Retry-After` / `X-RateLimit-*`
-    /// headers, and body head — the fact that decides whether the minute limit is
-    /// an HTTP 429 (the retry ladder covers it as-is) or a 200 `Error Message`
-    /// body (needs a narrowly-matched body classification). Burns ~1 minute of the
-    /// 200/min paid budget, once, per the live-smoke discipline; run:
+    /// One-shot burst probe for the shape of the paid plan's per-minute limit: fires up
+    /// to ~240 cheap quote calls across 4 threads inside one minute and records the first
+    /// rejection's status, rate-limit headers and body head (an HTTP 429 the retry ladder
+    /// covers as-is; a 200 `Error Message` body needs a body classification). Burns ~1
+    /// minute of the paid budget; run:
     ///   source <your-keys-env-file> && cargo test --manifest-path \
     ///     src-tauri/Cargo.toml fmp_minute_limit_probe -- --ignored --nocapture
     #[test]
@@ -5974,11 +5420,9 @@ mod tests {
         }
     }
 
-    /// Free-vs-premium probe for candidate Step-3 baseline endpoints whose tier the
-    /// FMP docs (403 to scrapers, identical boilerplate per page) won't settle.
-    /// Prints the HTTP status (200 ≈ free, 402 = premium) plus a sample of the body so
-    /// a maintainer can read the real field names before any adapter is written. Hits
-    /// the live API (~15 one-shot calls, trivial against the 250/day free cap); run:
+    /// Free-vs-premium probe for candidate endpoints (200 ≈ free, 402 = premium, 404 =
+    /// wrong path); prints a body sample so the real field names can be read before an
+    /// adapter is written. Hits the live API (~15 calls); run:
     ///   source <your-keys-env-file> && cargo test --manifest-path \
     ///     src-tauri/Cargo.toml fmp_freetier_probe -- --ignored --nocapture
     #[test]
@@ -6028,7 +5472,6 @@ mod tests {
         };
 
         let base = "https://financialmodelingprep.com/stable";
-        // Movers — expected FREE; confirm exact %-change key + whether sector/exchange present.
         probe("biggest-gainers", &format!("{base}/biggest-gainers"), &[]);
         probe("biggest-losers", &format!("{base}/biggest-losers"), &[]);
         probe("most-active", &format!("{base}/most-active"), &[]);
@@ -6037,16 +5480,13 @@ mod tests {
             &format!("{base}/most-actives"),
             &[],
         );
-        // Earnings calendar — docs say "Free: historical up to 1 month"; confirm forward dates populate.
         probe(
             "earnings-calendar",
             &format!("{base}/earnings-calendar"),
             &[("from", from.as_str()), ("to", to.as_str())],
         );
-        // Constituent lists (keystone: free ticker→sector map). Confirm free + sector field.
         probe("sp-500 constituents", &format!("{base}/sp-500"), &[]);
         probe("dow-jones constituents", &format!("{base}/dow-jones"), &[]);
-        // Sector/industry valuation + finer rotation — date-keyed.
         probe(
             "sector-pe-snapshot",
             &format!("{base}/sector-pe-snapshot"),
@@ -6062,13 +5502,11 @@ mod tests {
             &format!("{base}/industry-pe-snapshot"),
             &[("date", date.as_str())],
         );
-        // Valuation context constant (near-static, per-country ERP).
         probe(
             "market-risk-premium",
             &format!("{base}/market-risk-premium"),
             &[],
         );
-        // Commodities: gold already free via /quote; do copper/silver resolve on free?
         probe(
             "commodities-quote GCUSD (gold)",
             &format!("{base}/commodities-quote"),
@@ -6084,12 +5522,9 @@ mod tests {
             &format!("{base}/commodities-quote"),
             &[("symbol", "SIUSD")],
         );
-        // 1-call consolidation candidate: does it cover the 4 indices (and ^VIX)?
         probe("all-index-quotes", &format!("{base}/all-index-quotes"), &[]);
 
-        // --- Corrected paths for the endpoints that 404'd above (404 = wrong path,
-        // not premium; premium is 402, which none of these returned) ---
-        // Constituent lists use the `*-constituent` paths, not the bare index name.
+        // Constituent lists use the `*-constituent` paths; the bare index names 404.
         probe(
             "sp500-constituent",
             &format!("{base}/sp500-constituent"),
@@ -6105,13 +5540,11 @@ mod tests {
             &format!("{base}/nasdaq-constituent"),
             &[],
         );
-        // Batch index quotes — the likely real name of the 1-call index consolidation.
         probe(
             "batch-index-quotes",
             &format!("{base}/batch-index-quotes"),
             &[],
         );
-        // Copper / silver via the generic quote endpoint we already use for GCUSD gold.
         probe(
             "quote HGUSD (copper)",
             &format!("{base}/quote"),
@@ -6124,15 +5557,9 @@ mod tests {
         );
     }
 
-    /// Free-vs-premium probe for FMP's news endpoints — the Step-7 company-news
-    /// follow-on. `fmp-articles` (FMP's own ticker-tagged editorial feed) is the
-    /// expected-free candidate (per docs screenshots, never live-verified); the
-    /// `news/*` family was recorded as premium from docs research, also never probed.
-    /// Same conventions as `fmp_freetier_probe`: 200 ≈ free, 402 = premium, 404 =
-    /// wrong path. Prints body samples so the adapter's field mapping (title / link /
-    /// site / date / content / tickers) and pagination behavior can be read off the
-    /// wire. Hits the live API (~5 one-shot calls, trivial against the 250/day cap);
-    /// run once:
+    /// Free-vs-premium probe for FMP's news endpoints, the conventions of
+    /// `fmp_freetier_probe`; prints body samples so the field mapping and paging can be
+    /// read off the wire. Hits the live API (~5 calls); run once:
     ///   source <your-keys-env-file> && cargo test --manifest-path \
     ///     src-tauri/Cargo.toml fmp_news_probe -- --ignored --nocapture
     #[test]
@@ -6170,15 +5597,12 @@ mod tests {
         };
 
         let base = "https://financialmodelingprep.com/stable";
-        // The candidate: FMP's own editorial articles. Probe with explicit paging
-        // params so the adapter knows whether `page`/`limit` are honored.
+        // Explicit paging params, to learn whether `page` / `limit` are honored.
         probe(
             "fmp-articles (page+limit)",
             &format!("{base}/fmp-articles"),
             &[("page", "0"), ("limit", "5")],
         );
-        // Re-confirm the news/* family tiers (recorded premium from docs research,
-        // never live-probed).
         probe(
             "news/general-latest",
             &format!("{base}/news/general-latest"),
@@ -6201,13 +5625,9 @@ mod tests {
         );
     }
 
-    /// CEF-detection probe for the fund-depth slice: what do `/profile` and
-    /// `/etf/info` return for a closed-end fund? Decides the detection signal —
-    /// the profile's `isEtf` / `isFund` flags, the `etf/info` surface, or name
-    /// fragments — and whether `etf/info` serves CEFs at all. Three known CEFs
-    /// (PDI bond CEF, GAB / BST equity CEFs) plus SPY as the open-end control.
-    /// Same conventions as `fmp_freetier_probe`. Hits the live API (8 one-shot
-    /// calls); run once:
+    /// What `/profile` and `/etf/info` return for a closed-end fund: three known CEFs
+    /// (PDI, GAB, BST) plus SPY as the open-end control, the conventions of
+    /// `fmp_freetier_probe`. Hits the live API (8 calls); run once:
     ///   source <your-keys-env-file> && cargo test --manifest-path \
     ///     src-tauri/Cargo.toml fmp_cef_probe -- --ignored --nocapture
     #[test]
@@ -6255,71 +5675,49 @@ mod tests {
 }
 
 // ---- Local-suite per-holding surface (`docs/data-sources.md §Portfolio Analysis
-// — endpoint surface`): the statement / consensus / dividend / fund endpoints the
-// fund slice widened the adapter with. Each is fail-soft — a premium gate, transport
-// error, or malformed body records a tagged gap rather than failing — and every
-// actual call streams one tracker row.
+// — endpoint surface`): each endpoint fail-soft, recording a tagged gap rather than
+// failing, and every actual call streaming one tracker row.
 
-/// FMP endpoint paths added by the fund slice (all on the `/stable` base).
 const FMP_INCOME_PATH: &str = "/income-statement";
-/// Per-symbol earnings rows (actual vs estimate) — the quick check's
-/// new-earnings-actual evidence leg (`docs/portfolio-analysis.md` §Starting
-/// parameters; distinct from the report's market-wide `/earnings-calendar`).
+/// Per-symbol, distinct from the report's market-wide `/earnings-calendar`.
 const FMP_SYMBOL_EARNINGS_PATH: &str = "/earnings";
-/// Symbol-scoped stock news — the full run's per-holding news leads, read as
-/// research seeds (`CompanyDataSource::news_items`); the quick check has no
-/// news leg.
 const FMP_NEWS_STOCK_SYMBOL_PATH: &str = "/news/stock";
-/// How many per-symbol earnings rows the quick check reads — enough to cover the
-/// window since the last full pass with room to spare.
+/// Enough to cover the window since the last full pass with room to spare.
 const SYMBOL_EARNINGS_LIMIT: &str = "8";
-/// News items requested per tech-flagged holding.
 const SYMBOL_NEWS_LIMIT: &str = "20";
 const FMP_BALANCE_SHEET_PATH: &str = "/balance-sheet-statement";
-/// Quarterly cash-flow statements — the pre-profit overlay's TTM burn / runway /
-/// capex source (`docs/portfolio-analysis.md` §Starting parameters); stock surface
-/// only, like the other statements.
+/// Stock surface only (`docs/portfolio-analysis.md` §Starting parameters).
 const FMP_CASH_FLOW_PATH: &str = "/cash-flow-statement";
-/// Altman Z + Piotroski (`financial-scores`) — the soft forensic flags' score
-/// inputs (`docs/portfolio-analysis.md` §Starting parameters); stock surface only.
+/// Altman Z + Piotroski; stock surface only (`docs/portfolio-analysis.md` §Starting
+/// parameters).
 const FMP_FINANCIAL_SCORES_PATH: &str = "/financial-scores";
 const FMP_ANALYST_ESTIMATES_PATH: &str = "/analyst-estimates";
-/// Estimates page size — must exceed the served forward-year count (~5–6 today)
-/// with margin, since the endpoint pages farthest-future-first and a too-small
-/// limit cuts the *nearest* forward year off the page.
+/// Must exceed the served forward-year count (~5–6) with margin: the endpoint pages
+/// farthest-future-first, so a too-small limit cuts the nearest forward year off.
 const ESTIMATES_PAGE_LIMIT: &str = "10";
 const FMP_DIVIDENDS_PATH: &str = "/dividends";
-/// The company profile — the stamped sector identity's label source
-/// (`portfolio::sector`).
 const FMP_PROFILE_PATH: &str = "/profile";
-/// Dividend rows requested for the dividend pull — the trailing-TTM sum and the
-/// latest payments. A monthly payer over a 13-month window needs ~15, and
-/// the newest rows can be future-dated announced-but-unpaid declarations that
-/// consume slots without landing in the window; the margin covers both plus
-/// specials (a truncated pull would silently understate the trailing sum).
+/// A monthly payer over a 13-month window needs ~15 rows, and the newest rows can be
+/// future-dated declarations that consume slots without landing in the window; the
+/// margin covers both plus specials, since a truncated pull silently understates the
+/// trailing sum.
 const DIVIDEND_HISTORY_LIMIT: &str = "60";
 
-/// The dividend-history gap's stable prefix ([`FmpDataSource::fetch_ttm_dividends`]):
-/// the quick check matches it to tell a failed retrieval (gap recorded, keep the
-/// stored payout leg) from a genuine non-payer (`None` with no gap — a real
-/// dividend elimination that must reach the hurdle as zero).
+/// The quick check matches this prefix to tell a failed retrieval (keep the stored
+/// payout leg) from a genuine non-payer (`None` with no gap, which must reach the
+/// hurdle as zero).
 pub const DIVIDENDS_GAP_PREFIX: &str = "FMP dividends unavailable";
 
-/// Stable prefixes of the fund-weightings gap messages
-/// ([`FmpDataSource::fetch_fund_data`]): the quick check treats these legs as
-/// bearing on **equity** funds alone — no engine read takes a non-equity
-/// fund's exposure from them, so its empty equity weightings are the
-/// expected shape, never a failed leg
+/// The quick check treats these legs as bearing on equity funds alone, so a non-equity
+/// fund's empty weightings are the expected shape, never a failed leg
 /// (`docs/portfolio-analysis.md` §Evidence floor, §The quick check).
 pub const FUND_SECTOR_WEIGHTS_GAP_PREFIX: &str = "FMP sector weightings";
 pub const FUND_COUNTRY_WEIGHTS_GAP_PREFIX: &str = "FMP country weightings";
 
-/// The fund-structure profile gap's stable prefix
-/// ([`FmpDataSource::fetch_fund_data`] — the closed-end detection's source leg).
+/// The closed-end detection's source leg.
 pub const FUND_PROFILE_GAP_PREFIX: &str = "FMP profile (fund structure)";
-/// The `etf/info` gap's stable prefix ([`FmpDataSource::fetch_fund_data`]): the
-/// quick check's coarse mandate comparison runs only when this leg is healthy —
-/// an unreadable mandate could fake an asset-class transition.
+/// The quick check's mandate comparison runs only when this leg is healthy: an
+/// unreadable mandate could fake an asset-class transition.
 pub const FUND_INFO_GAP_PREFIX: &str = "FMP etf/info";
 const FMP_ETF_INFO_PATH: &str = "/etf/info";
 const FMP_ETF_SECTOR_WEIGHTS_PATH: &str = "/etf/sector-weightings";
@@ -6327,13 +5725,11 @@ const FMP_ETF_COUNTRY_WEIGHTS_PATH: &str = "/etf/country-weightings";
 const FMP_SECTOR_PE_SNAPSHOT_PATH: &str = "/sector-pe-snapshot";
 const FMP_HISTORICAL_SECTOR_PE_PATH: &str = "/historical-sector-pe";
 
-// The per-holding **evidence surface** (`docs/data-sources.md` §Portfolio
-// Analysis — endpoint surface; `crate::portfolio::evidence`): the rows FETCHED
-// VALUES renders as the providers return them and the engine never reads.
-// Only the paths the block renders are pulled (ruled 2026-10-08): the TTM
-// pair, not the period key-metrics / ratios rows; `grades` and
-// `grades-consensus`, not `grades-historical`; `ratings-snapshot`, not
-// `ratings-historical`.
+// The per-holding evidence surface (`docs/data-sources.md` §Portfolio Analysis —
+// endpoint surface; `crate::portfolio::evidence`): rows rendered as served and never
+// read by the engine. Only the paths the block renders are pulled: the TTM pair, not
+// the period key-metrics / ratios rows; `grades` and `grades-consensus`, not
+// `grades-historical`; `ratings-snapshot`, not `ratings-historical`.
 const FMP_RATIOS_TTM_PATH: &str = "/ratios-ttm";
 const FMP_KEY_METRICS_TTM_PATH: &str = "/key-metrics-ttm";
 const FMP_OWNER_EARNINGS_PATH: &str = "/owner-earnings";
@@ -6351,55 +5747,41 @@ const FMP_SHARES_FLOAT_PATH: &str = "/shares-float";
 const FMP_PRODUCT_SEGMENTATION_PATH: &str = "/revenue-product-segmentation";
 const FMP_GEOGRAPHIC_SEGMENTATION_PATH: &str = "/revenue-geographic-segmentation";
 const FMP_SPLITS_PATH: &str = "/splits";
-/// The run-level M&A feed (`mergers-acquisitions-latest`), walked newest
-/// first by page ([`FmpDataSource::fetch_recent_mergers`]).
 const FMP_MERGERS_LATEST_PATH: &str = "/mergers-acquisitions-latest";
-/// Rows requested from the dated list feeds (grades, insider, congressional)
-/// before the window filter and the ruled count cap — one page each.
+/// Rows requested from the dated list feeds before the window filter and the count
+/// cap; one page each.
 const EVIDENCE_LIST_LIMIT: &str = "100";
-/// Earnings rows requested for the surprise history — the ruled eight
-/// reported quarters plus a year of room for the upcoming announcement rows
-/// the feed leads with (reviewer nit, ruled 2026-10-08).
+/// Eight reported quarters plus a year of room for the upcoming announcement rows the
+/// feed leads with.
 const EVIDENCE_EARNINGS_LIMIT: &str = "16";
-/// Owner-earnings and enterprise-value rows requested — the latest renders.
 const EVIDENCE_LATEST_ROW_LIMIT: &str = "4";
 
-/// Quarters of income-statement history requested — the v2 anchor window (12) plus
-/// the four extra quarters its oldest TTM print needs.
+/// The anchor window (12) plus the four extra quarters its oldest TTM print needs.
 const INCOME_QUARTERS_LIMIT: &str = "16";
 
-/// Fiscal years of annual income-statement history requested — the commodity
-/// cyclical's mid-cycle window, the latest five fiscal years
-/// (`docs/trade-opportunities.md` §Starting parameters).
+/// The commodity cyclical's mid-cycle window (`docs/trade-opportunities.md` §Starting
+/// parameters).
 const ANNUAL_INCOME_YEARS_LIMIT: &str = "5";
 
-/// Quarters of cash-flow history requested — the income pull's sixteen, so the
-/// shared engine's factor reads (FCF yield, FCF conversion, owner earnings)
-/// carry an own-history series as deep as the income-side ones
-/// (`portfolio::factors`); the pre-profit overlay's TTM window reads the newest
-/// four.
+/// The income pull's sixteen, so the factor reads (`portfolio::factors`) carry an
+/// own-history series as deep as the income-side ones; the pre-profit overlay reads
+/// the newest four.
 const CASH_FLOW_QUARTERS_LIMIT: &str = "16";
 
-/// Quarters of balance-sheet history requested — the newest print (the leverage
-/// leg, the P/B denominator and the runway's liquid-resource lines) plus the
-/// fifteen behind it: the soft forensic flags' year-over-year receivables and
-/// inventory comparator sits at index 4 under the contiguity gate, and the
-/// shared engine's factor reads (GP / assets, asset growth, ROIC) carry an
-/// own-history series as deep as the income pull's (`portfolio::factors`). The
-/// prompts' FETCHED VALUES still renders the latest eight quarters, joined to
-/// the income rows by period end (`docs/portfolio-workflow.md` §Step 6c).
+/// The income pull's sixteen: the soft forensic flags' year-over-year comparator sits
+/// at index 4 under the contiguity gate, and the factor reads (`portfolio::factors`)
+/// need the depth. FETCHED VALUES renders the latest eight, joined to the income rows
+/// by period end (`docs/portfolio-workflow.md` §Step 6c).
 const BALANCE_SHEET_QUARTERS_LIMIT: &str = "16";
 
-/// The tracker-row status a suite fetch's *parse* earned. HTTP-level gaps
-/// never reach this enum — they keep the `GapReason` kebab vocabulary on the
-/// row ([`FmpDataSource::suite_get_shaped`]).
+/// The tracker-row status a suite fetch's parse earned; HTTP-level gaps never reach
+/// this enum, keeping the `GapReason` vocabulary on the row.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum RowShape {
-    /// Usable data landed.
     Ok,
-    /// The body parsed but carried nothing usable — an honest empty answer.
+    /// The body parsed but carried nothing usable.
     Empty,
-    /// The body was served but our schema couldn't read it.
+    /// The body was served but the schema couldn't read it.
     Malformed,
 }
 
@@ -6413,8 +5795,6 @@ impl RowShape {
     }
 }
 
-/// A suite fetch's shaped product: the value the caller keeps, the row status
-/// the parse earned, and — where the site has one — a cause for the row.
 struct Shaped<T> {
     value: T,
     shape: RowShape,
@@ -6446,8 +5826,6 @@ impl<T> Shaped<T> {
         }
     }
 
-    /// Attach the parse's cause as the row detail (the cause-on-the-row
-    /// contract's shaped arm).
     fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
         self
@@ -6455,11 +5833,9 @@ impl<T> Shaped<T> {
 }
 
 impl FmpDataSource {
-    /// One GET interpreted with its cause retained: the disposition, plus — on
-    /// a gap — the sentence that names why ([`http_gap_detail`] for HTTP-level
-    /// gaps, the reqwest chain for transport errors). The one home for the
-    /// cause-on-the-row contract, shared by [`Self::suite_get_shaped`] and the
-    /// baseline call sites' [`crate::data_sources::emit_series_row`] rows.
+    /// The disposition plus, on a gap, the sentence naming why ([`http_gap_detail`],
+    /// or the reqwest chain on a transport error); the one home for the
+    /// cause-on-the-row contract.
     fn get_interpreted(
         &self,
         path: &str,
@@ -6481,23 +5857,10 @@ impl FmpDataSource {
         }
     }
 
-    /// One suite GET whose tracker row reflects the **shaped** outcome: the
-    /// caller's parse (`shape`) runs over a served body and decides the row's
-    /// status — `ok` only when usable data landed, `empty` / `malformed`
-    /// otherwise (the `emit_series_row` semantics the quote/EOD rows adopted
-    /// first) — closing the gap where a row read "ok" while the caller
-    /// recorded an empty or unreadable payload.
-    ///
-    /// The HTTP-level failure contract is unchanged: the gap's kebab label as
-    /// the status (the documented tracker vocabulary, like the baseline rows)
-    /// and the cause as the detail — the transport error on the Err arm, and
-    /// the HTTP status plus FMP's own error sentence on an HTTP-level gap (a
-    /// 200 `{"Error Message"}` plan/quota signal, a 401/403, a malformed
-    /// body). A degraded suite fetch was previously an undifferentiated
-    /// `empty` with no reason anywhere
-    /// (`docs/verification/2026-08-10-big-run-attempt-1.md` §Residue). A gap
-    /// returns `Err(reason)` so the caller writes its own gap message, exactly
-    /// as the old disposition arm did.
+    /// The tracker row reflects the shaped outcome: `ok` only when the caller's parse
+    /// landed usable data, else `empty` / `malformed` with its cause as the detail. An
+    /// HTTP-level gap keeps the `GapReason` label as the status and its cause as the
+    /// detail, and returns `Err(reason)` so the caller writes its own gap message.
     fn suite_get_shaped<T>(
         &self,
         kind: &str,
@@ -6533,8 +5896,7 @@ impl FmpDataSource {
         }
     }
 
-    /// Quarterly income prints (newest first) — the v2 anchor window's trailing
-    /// driver source. Fail-soft: a gap leaves the list empty with a tagged reason.
+    /// Newest first; a gap leaves the list empty with a tagged reason.
     pub fn fetch_quarterly_income(
         &self,
         symbol: &str,
@@ -6551,11 +5913,9 @@ impl FmpDataSource {
                 ("period", "quarter"),
                 ("limit", INCOME_QUARTERS_LIMIT),
             ],
-            // The shared shaper folds a non-array body into an empty list AND
-            // silently drops unreadable (dateless) rows, so both drift checks
-            // run here: valid-JSON schema drift and a served array with no
-            // readable row must read `malformed`, never a benign `empty`
-            // (Codex rounds 1–2).
+            // The shared shaper folds a non-array body into an empty list and drops
+            // unreadable rows silently, so both drift checks run here: schema drift and
+            // a served array with no readable row read `malformed`, never `empty`.
             |value| {
                 let Some(body) = value.as_array() else {
                     gaps.push("FMP quarterly income statements were malformed".to_string());
@@ -6593,12 +5953,9 @@ impl FmpDataSource {
         }
     }
 
-    /// Annual income prints — the commodity cyclical's mid-cycle margin window
-    /// (the driver override, `portfolio::engine`). The same endpoint as the
-    /// quarterly pull with `period=annual`, and the same fail-soft and drift
-    /// rules: a gap leaves the list empty with a tagged reason, and the
-    /// override falls back to the shared ladder. The Trade Opportunities spine
-    /// is its caller.
+    /// The commodity cyclical's mid-cycle margin window (`portfolio::engine`); the same
+    /// fail-soft and drift rules as the quarterly pull, a gap leaving the override to
+    /// fall back to the shared ladder.
     pub fn fetch_annual_income(
         &self,
         symbol: &str,
@@ -6652,15 +6009,9 @@ impl FmpDataSource {
         }
     }
 
-    /// The latest quarterly balance sheet — the risk sub-score's leverage leg
-    /// (`totalDebt` / equity) and the P/B denominator, FMP-first with the SEC annual
-    /// equity as fallback (`docs/portfolio-analysis.md` §Starting parameters — the
-    /// grade-band slice's F5 closure; before it, `total_debt` had no source at all and
-    /// the risk read rested on volatility alone). The rows behind the newest one
-    /// carry the soft forensic flags' year-over-year receivables and inventory
-    /// comparator; the newest row's lines are read off the rows by
-    /// [`BalanceSheetLines::from_newest`]. Fail-soft: a gap leaves the list empty
-    /// with a tagged reason.
+    /// Newest first (`docs/portfolio-analysis.md` §Starting parameters); the newest
+    /// row's lines are read off by [`BalanceSheetLines::from_newest`]. A gap leaves the
+    /// list empty with a tagged reason.
     pub fn fetch_balance_sheet(
         &self,
         symbol: &str,
@@ -6677,8 +6028,7 @@ impl FmpDataSource {
                 ("period", "quarter"),
                 ("limit", BALANCE_SHEET_QUARTERS_LIMIT),
             ],
-            // Both drift checks (non-array body; served array with no readable
-            // row) — see fetch_quarterly_income.
+            // Both drift checks, as in `fetch_quarterly_income`.
             |value| {
                 let Some(body) = value.as_array() else {
                     gaps.push("FMP balance sheet was empty or malformed".to_string());
@@ -6713,10 +6063,8 @@ impl FmpDataSource {
         }
     }
 
-    /// Altman Z + Piotroski (`financial-scores`) — the soft forensic flags' score
-    /// inputs (`docs/portfolio-analysis.md` §Starting parameters). Fail-soft to
-    /// `None` with a tagged gap; a served row carrying neither score is no usable
-    /// data, so the flags read unevaluable rather than clear.
+    /// Fail-soft to `None` with a tagged gap; a served row carrying neither score is no
+    /// usable data, so the flags read unevaluable rather than clear.
     pub fn fetch_financial_scores(
         &self,
         symbol: &str,
@@ -6755,9 +6103,8 @@ impl FmpDataSource {
         }
     }
 
-    /// Quarterly cash-flow prints (newest first) — the pre-profit overlay's TTM burn /
-    /// runway / capex-intensity source (`docs/portfolio-analysis.md` §Starting
-    /// parameters). Fail-soft: a gap leaves the list empty with a tagged reason.
+    /// Newest first (`docs/portfolio-analysis.md` §Starting parameters); a gap leaves
+    /// the list empty with a tagged reason.
     pub fn fetch_quarterly_cash_flow(
         &self,
         symbol: &str,
@@ -6774,8 +6121,7 @@ impl FmpDataSource {
                 ("period", "quarter"),
                 ("limit", CASH_FLOW_QUARTERS_LIMIT),
             ],
-            // Both drift checks (non-array body; served array with no readable
-            // row) — see fetch_quarterly_income.
+            // Both drift checks, as in `fetch_quarterly_income`.
             |value| {
                 let Some(body) = value.as_array() else {
                     gaps.push("FMP quarterly cash-flow statements were malformed".to_string());
@@ -6813,23 +6159,18 @@ impl FmpDataSource {
         }
     }
 
-    /// The NTM forward consensus (the time-weighted blend of the two nearest coming
-    /// fiscal-year rows — [`consensus_from_value`]) — the v2 driver ladder's source.
-    /// Fail-soft to `None` with a tagged gap.
-    ///
-    /// The page limit must exceed the served forward-year count with margin: the
-    /// endpoint pages farthest-future-first, so a too-small limit cuts the
-    /// *nearest* forward year and the NTM read silently becomes a full-weight
-    /// far-year read (the ordering itself is a big-run watch).
+    /// The NTM forward consensus ([`consensus_from_value`]), fail-soft to `None` with a
+    /// tagged gap. A too-small page limit would cut the nearest forward year
+    /// ([`ESTIMATES_PAGE_LIMIT`]) and the NTM read silently becomes a full-weight
+    /// far-year read.
     pub fn fetch_analyst_estimates(
         &self,
         symbol: &str,
         gaps: &mut Vec<String>,
     ) -> Option<crate::portfolio::engine::ConsensusEstimate> {
-        // The **ET session** date: `consensus_from_value` selects the two nearest
-        // forward fiscal-year rows and time-weights them by twelve-month overlap
-        // from here, so an evening-ET run under a UTC date shifts the blend a day
-        // and, at a fiscal-year boundary, the row selection itself.
+        // The ET session: the blend time-weights by twelve-month overlap from here, so
+        // a UTC date on an evening run shifts it a day and, at a fiscal-year boundary,
+        // the row selection itself.
         let today = crate::market_clock::et_session_date(Utc::now())
             .format("%Y-%m-%d")
             .to_string();
@@ -6839,12 +6180,9 @@ impl FmpDataSource {
             "Analyst estimates",
             FMP_ANALYST_ESTIMATES_PATH,
             &[("symbol", symbol), ("period", "annual"), ("limit", ESTIMATES_PAGE_LIMIT)],
-            // Drift checks before the shaper: `consensus_from_value` folds a
-            // non-array body into `None` and drops undatable rows silently, so
-            // the no-forward-consensus gap message would lie about a drifted
-            // response. The `None` arm splits on the strict sibling's rule: a
-            // non-empty body where no row carries a datable date is drift; a
-            // datable-but-past-only (or empty) body is the honest empty.
+            // `consensus_from_value` folds a non-array body into `None` and drops
+            // undatable rows silently, so the drift checks run here: a non-empty body
+            // with no datable row is drift, a past-only or empty body the honest empty.
             |value| {
                 let Some(body) = value.as_array() else {
                     gaps.push("FMP analyst estimates were malformed (non-array body)".to_string());
@@ -6887,19 +6225,14 @@ impl FmpDataSource {
         }
     }
 
-    /// The strict form of [`Self::fetch_analyst_estimates`] for the quick check's
-    /// revision preflight: a failed retrieval is `Err` (the caller types the family
-    /// `unknown`), while a successful body carrying no forward-dated consensus is an
-    /// honest `Ok(None)` — the typed split the fail-soft gap-list form can't offer
-    /// without string-matching its message text.
+    /// The strict form of [`Self::fetch_analyst_estimates`]: a failed retrieval is
+    /// `Err` (the caller types the family `unknown`), a body carrying no forward-dated
+    /// consensus an honest `Ok(None)`.
     pub fn fetch_analyst_estimates_strict(
         &self,
         symbol: &str,
     ) -> Result<Option<crate::portfolio::engine::ConsensusEstimate>> {
-        // The **ET session** date: `consensus_from_value` selects the two nearest
-        // forward fiscal-year rows and time-weights them by twelve-month overlap
-        // from here, so an evening-ET run under a UTC date shifts the blend a day
-        // and, at a fiscal-year boundary, the row selection itself.
+        // The ET session (see `fetch_analyst_estimates`).
         let today = crate::market_clock::et_session_date(Utc::now())
             .format("%Y-%m-%d")
             .to_string();
@@ -6910,20 +6243,14 @@ impl FmpDataSource {
             FMP_ANALYST_ESTIMATES_PATH,
             &[("symbol", symbol), ("period", "annual"), ("limit", ESTIMATES_PAGE_LIMIT)],
             |value| {
-                // Strict shape check: a malformed 200 must surface as a failed
-                // retrieval (family `unknown`), never read as "no consensus".
                 if !value.is_array() {
                     let msg = "FMP analyst estimates returned a non-array body — malformed or \
                                drifted response";
                     return Shaped::malformed(Err(anyhow::anyhow!(msg))).with_detail(msg);
                 }
-                // Every row must carry a datable `date`: the shared shaper drops
-                // undatable rows silently (tolerable on the fail-soft path, which
-                // records a gap either way), but HERE `Ok(None)` is the honest
-                // empty/past-only read the Revision family clears on — a drifted
-                // body of unreadable dates must surface as `Err` (family
-                // `unknown`), never masquerade as "no forward consensus".
-                // Non-zero-padded dates ("2026-9-30") parse fine and stay valid.
+                // The shared shaper drops undatable rows silently, but here `Ok(None)` is
+                // the read the Revision family clears on, so a body of unreadable dates
+                // must surface as `Err`. Non-zero-padded dates parse fine and stay valid.
                 for row in value.as_array().into_iter().flatten() {
                     let Some(d) = row.get("date").and_then(Value::as_str) else {
                         let msg = "an estimates row carried no date — malformed or drifted \
@@ -6952,24 +6279,18 @@ impl FmpDataSource {
         }
     }
 
-    /// Trailing-twelve-month dividends per share — the backward-looking payout
-    /// proxy the twelve-month total return adds, not a forward estimate. `None`
-    /// (with no gap) for a non-payer; a failed call records the gap.
+    /// Trailing, not a forward estimate. `None` with no gap for a non-payer; a failed
+    /// call records the gap.
     pub fn fetch_ttm_dividends(&self, symbol: &str, gaps: &mut Vec<String>) -> Option<f64> {
         self.fetch_dividend_pull(symbol, gaps).ttm
     }
 
-    /// The one `dividends` read, both of its yields ([`DividendPull`]): the
-    /// trailing-twelve-month sum the engine's payout leg adds and the latest
-    /// payments as reported for FETCHED VALUES (`docs/portfolio-workflow.md`
-    /// §Step 6c). Fail-soft to the empty pull with a tagged gap; a confirmed
-    /// non-payer is the empty pull with no gap.
+    /// Fail-soft to the empty pull with a tagged gap; a confirmed non-payer is the
+    /// empty pull with no gap (`docs/portfolio-workflow.md` §Step 6c).
     pub fn fetch_dividend_pull(&self, symbol: &str, gaps: &mut Vec<String>) -> DividendPull {
-        // The **ET session** date, not the UTC date: the window is bounded on both
-        // sides against dividend rows dated by market day, so an evening-ET run
-        // rolling `today` forward both admits a next-session declaration and slides
-        // the 365-day cutoff off the oldest in-window payment — re-opening the
-        // fifth-payment inflation the exclusive lower bound closed.
+        // The ET session: the window is bounded on both sides against rows dated by
+        // market day, so a UTC date on an evening run both admits a next-session
+        // declaration and slides the 365-day cutoff off the oldest in-window payment.
         let today = crate::market_clock::et_session_date(Utc::now());
         match self.suite_get_shaped(
             "company-dividends",
@@ -6977,14 +6298,12 @@ impl FmpDataSource {
             "Dividend history",
             FMP_DIVIDENDS_PATH,
             &[("symbol", symbol), ("limit", DIVIDEND_HISTORY_LIMIT)],
-            // Any unreadable body — non-array, a dateless row, an in-window row
-            // with a non-numeric amount — must record the gap: `None` with no
-            // gap is the confirmed-non-payer contract, and a drifted body must
-            // never read as a dividend elimination downstream.
+            // Any unreadable body must record the gap: `None` with no gap is the
+            // confirmed-non-payer contract, and a drifted body must never read as a
+            // dividend elimination downstream.
             |value| match dividends_from_value(value, today) {
                 Ok(pull) if pull.ttm.is_some() || !pull.recent.is_empty() => Shaped::ok(pull),
-                // The confirmed non-payer: parsed fine, no payment on or before
-                // today, deliberately no gap.
+                // The confirmed non-payer, deliberately no gap.
                 Ok(pull) => Shaped::empty(pull),
                 Err(e) => {
                     let detail = format!("{e:#}");
@@ -7001,13 +6320,10 @@ impl FmpDataSource {
         }
     }
 
-    /// The profile's identity fields for a stock — one fetch feeding the
-    /// listing-resolution guard (issuer name / exchange —
-    /// `docs/portfolio-analysis.md §Asset eligibility`) and the outcome episodes'
-    /// entry-stamped sector identity. Fail-soft, split three ways: a resolved
-    /// body; a definitive 2xx no-such-symbol (`Unresolved` — FMP answered and
-    /// knows no profile); or any gate, transport failure, or unreadable body
-    /// (`Unverified` — never mistaken for a missing listing).
+    /// Fail-soft, split three ways (`docs/portfolio-analysis.md §Asset eligibility`):
+    /// a resolved body; a definitive 2xx no-such-symbol (`Unresolved`); or any gate,
+    /// transport failure, or unreadable body (`Unverified`, never mistaken for a
+    /// missing listing).
     pub fn fetch_profile_identity(&self, symbol: &str) -> crate::portfolio::listing::ProfileLookup {
         use crate::portfolio::listing::ProfileLookup;
         match self.suite_get_shaped(
@@ -7020,7 +6336,6 @@ impl FmpDataSource {
                 let lookup = profile_identity_from_value(value);
                 match &lookup {
                     ProfileLookup::Resolved(_) => Shaped::ok(lookup),
-                    // FMP answered and knows no profile — an honest empty.
                     ProfileLookup::Unresolved => Shaped::empty(lookup),
                     ProfileLookup::Unverified(msg) => {
                         let detail = msg.clone();
@@ -7036,20 +6351,14 @@ impl FmpDataSource {
         }
     }
 
-    /// Deep **dated** daily closes over `lookback_days` — the suite's only deep
-    /// price source (`docs/verification/2026-08-12-stooq-removal-decision.md`:
-    /// the bulk per-holding price load deliberately rides the paid FMP key; the
-    /// per-minute limit and the 429 ladder cover it).
+    /// The suite's only deep price source; the bulk per-holding load deliberately
+    /// rides the paid FMP key, which the 429 ladder covers.
     pub fn fetch_dated_eod(
         &self,
         symbol: &str,
         lookback_days: i64,
     ) -> Result<Vec<crate::portfolio::engine::DatedValue>> {
-        // Deliberately the UTC date, not the ET session: this is a fetch range's
-        // inclusive upper bound, so a one-day forward roll asks for an untraded
-        // day that serves no row and shifts a rolling multi-day lookback by one.
-        // Only session-KEYED reads (snapshot dates, staleness bounds, evidence
-        // boundaries) need converting.
+        // Fetch-range upper bound deliberately stays UTC (see `fetch_index_performance`).
         let to = Utc::now().date_naive();
         let from = (to - Duration::days(lookback_days))
             .format("%Y-%m-%d")
@@ -7063,9 +6372,8 @@ impl FmpDataSource {
             &[("symbol", symbol), ("from", &from), ("to", &to)],
             |value| match dated_eod_from_value(value) {
                 Ok(rows) if !rows.is_empty() => Shaped::ok(Ok(rows)),
-                // Drift, not emptiness: rows were served but none carried a
-                // readable date + price. `Err` so the caller records the
-                // labeled fallback rather than reading an honest no-history.
+                // Drift, not emptiness: `Err` so the caller records the labeled
+                // fallback rather than reading an honest no-history.
                 Ok(_) if value.as_array().is_some_and(|a| !a.is_empty()) => {
                     let msg = "no served row was readable — malformed or drifted response";
                     Shaped::malformed(Err(anyhow::anyhow!("FMP dated EOD: {msg}")))
@@ -7085,17 +6393,14 @@ impl FmpDataSource {
         }
     }
 
-    /// Deep dated daily **bars with volume** over `lookback_days` — the same
-    /// endpoint as [`Self::fetch_dated_eod`], keeping each row's share volume for
-    /// the tradability flag (`portfolio::tradability`). The Trade Opportunities
-    /// spine is its caller; Portfolio reads closes alone.
+    /// [`Self::fetch_dated_eod`] keeping each row's share volume for the tradability
+    /// flag (`portfolio::tradability`).
     pub fn fetch_dated_bars(
         &self,
         symbol: &str,
         lookback_days: i64,
     ) -> Result<Vec<crate::portfolio::engine::DailyBar>> {
-        // Deliberately the UTC date, not the ET session: a fetch range's
-        // inclusive upper bound, as in `fetch_dated_eod`.
+        // Fetch-range upper bound deliberately stays UTC (see `fetch_index_performance`).
         let to = Utc::now().date_naive();
         let from = (to - Duration::days(lookback_days))
             .format("%Y-%m-%d")
@@ -7109,8 +6414,7 @@ impl FmpDataSource {
             &[("symbol", symbol), ("from", &from), ("to", &to)],
             |value| match dated_bars_from_value(value) {
                 Ok(rows) if !rows.is_empty() => Shaped::ok(Ok(rows)),
-                // Drift, not emptiness: rows were served but none carried a
-                // readable date + price.
+                // Drift, not emptiness.
                 Ok(_) if value.as_array().is_some_and(|a| !a.is_empty()) => {
                     let msg = "no served row was readable — malformed or drifted response";
                     Shaped::malformed(Err(anyhow::anyhow!("FMP dated bars: {msg}")))
@@ -7130,12 +6434,10 @@ impl FmpDataSource {
         }
     }
 
-    /// The one FMP commodity quote — gold `GCUSD` for the run-level commodity
-    /// context (`docs/data-sources.md §Portfolio Analysis — endpoint surface`:
-    /// FRED's free gold series were discontinued, so gold is the one commodity
-    /// priced through FMP `quote`). Level basis, dated on the run's pinned ET
-    /// `session` — the quote is live at fetch time, not a dated close. `Err` is
-    /// the caller's typed gap; never a run failure.
+    /// Gold, the one commodity priced through FMP (`docs/data-sources.md §Portfolio
+    /// Analysis — endpoint surface`). Level basis, dated on the run's pinned ET
+    /// `session`: the quote is live at fetch time, not a dated close. `Err` is the
+    /// caller's typed gap, never a run failure.
     pub fn fetch_commodity_quote(
         &self,
         symbol: &str,
@@ -7151,8 +6453,7 @@ impl FmpDataSource {
                 Some(CompanyQuote {
                     price: Some(price), ..
                 }) => Shaped::ok(Ok(price)),
-                // A served zero or negative print is no price (Codex I1): the
-                // row and the caller's typed gap both name what was served.
+                // A served zero or negative print is no price.
                 Some(CompanyQuote {
                     unusable_price: Some(served),
                     ..
@@ -7184,10 +6485,9 @@ impl FmpDataSource {
         }
     }
 
-    /// The bare per-symbol live price — the quick check's per-holding price refresh
-    /// (`docs/portfolio-analysis.md` §The quick check). `Err` on a gate, transport
-    /// failure, or a body carrying no price, so the caller types the family
-    /// `unknown` rather than clearing it silently.
+    /// `Err` on a gate, transport failure, or a body carrying no price, so the quick
+    /// check types the family `unknown` rather than clearing it silently
+    /// (`docs/portfolio-analysis.md` §The quick check).
     pub fn fetch_live_price(&self, symbol: &str) -> Result<f64> {
         match self.suite_get_shaped(
             "quick-quote",
@@ -7198,23 +6498,20 @@ impl FmpDataSource {
             |value| match company_quote_from_value(value) {
                 Some(q) => match (q.price, q.unusable_price) {
                     (Some(p), _) => Shaped::ok(Ok(p)),
-                    // A served zero or negative print is a failed refresh (the
-                    // family types `unknown`), never a price the band monitor
-                    // could read as a crossing (Codex I1).
+                    // A served zero or negative print is a failed refresh, never a
+                    // price the band monitor could read as a crossing.
                     (None, Some(served)) => {
                         let msg = format!(
                             "FMP quote carried no usable price for {symbol} (served {served})"
                         );
                         Shaped::empty(Err(anyhow::anyhow!(msg.clone()))).with_detail(msg)
                     }
-                    // Parsed but priceless — the row no longer reads "ok"
-                    // while the caller errors.
                     (None, None) => Shaped::empty(Err(anyhow::anyhow!(
                         "FMP quote carried no price for {symbol}"
                     ))),
                 },
-                // A served-empty array is an honest empty answer, not drift;
-                // the caller still gets `Err` (family `unknown`) either way.
+                // A served-empty array is an honest empty answer, not drift; the caller
+                // still gets `Err` either way.
                 None if value.as_array().is_some_and(|a| a.is_empty()) => Shaped::empty(Err(
                     anyhow::anyhow!("FMP quote was empty for {symbol}"),
                 )),
@@ -7231,16 +6528,12 @@ impl FmpDataSource {
         }
     }
 
-    /// Per-symbol earnings rows, newest first — the quick check's
-    /// new-earnings-actual evidence leg. `Err` on a failed retrieval (the caller
-    /// types the family `unknown`); an empty list is an honest no-rows read.
+    /// Newest first. `Err` on a failed retrieval (the caller types the family
+    /// `unknown`); an empty list is an honest no-rows read.
     pub fn fetch_symbol_earnings(&self, symbol: &str) -> Result<Vec<SymbolEarningsRow>> {
         self.fetch_symbol_earnings_as("quick-earnings", symbol, SYMBOL_EARNINGS_LIMIT)
     }
 
-    /// The earnings rows under the caller's tracker kind and row limit — the
-    /// quick check's new-earnings-actual leg and the full run's surprise
-    /// history ([`Self::fetch_company_evidence`]) share the read.
     fn fetch_symbol_earnings_as(
         &self,
         kind: &str,
@@ -7255,15 +6548,13 @@ impl FmpDataSource {
             &[("symbol", symbol), ("limit", limit)],
             |value| match symbol_earnings_from_value(value) {
                 Ok(rows) if !rows.is_empty() => Shaped::ok(Ok(rows)),
-                // Drift, not emptiness: rows were served but none carried a
-                // readable date. `Err` so the quick check types the family
+                // Drift, not emptiness: `Err` so the quick check types the family
                 // `unknown` instead of clearing it on a drifted body.
                 Ok(_) if value.as_array().is_some_and(|a| !a.is_empty()) => {
                     let msg = "no served row was readable — malformed or drifted response";
                     Shaped::malformed(Err(anyhow::anyhow!("FMP earnings: {msg}")))
                         .with_detail(msg)
                 }
-                // An empty list is an honest no-rows read.
                 Ok(rows) => Shaped::empty(Ok(rows)),
                 Err(e) => {
                     let detail = format!("{e:#}");
@@ -7278,9 +6569,7 @@ impl FmpDataSource {
         }
     }
 
-    /// Symbol-scoped stock news since `from` (ISO date) — the full run's
-    /// per-holding news leads (`CompanyDataSource::news_items`, fail-soft at the
-    /// caller); the quick check has no news leg. `Err` on a failed retrieval.
+    /// `from` is an ISO date. `Err` on a failed retrieval; fail-soft at the caller.
     pub fn fetch_symbol_news_since(
         &self,
         symbol: &str,
@@ -7299,12 +6588,10 @@ impl FmpDataSource {
             |value| match symbol_news_from_value(value, from) {
                 Ok(items) if !items.is_empty() => Shaped::ok(Ok(items)),
                 Ok(items) => {
-                    // Zero items splits on READABILITY, not row count: the
-                    // shaper's date filter is domain logic, so a body of
-                    // readable-but-older-than-`from` rows is the honest empty.
-                    // Only a non-empty body with no readable row — no
-                    // publishedDate, or none with a datable prefix — is drift.
-                    // The predicate is shared with the shaper.
+                    // Zero items splits on readability, not row count: the shaper's date
+                    // filter is domain logic, so a body of readable-but-older-than-`from`
+                    // rows is the honest empty; only a non-empty body with no readable
+                    // row is drift.
                     let any_readable = value.as_array().is_some_and(|a| {
                         a.iter().any(|row| canonical_news_date(row).is_some())
                     });
@@ -7329,20 +6616,16 @@ impl FmpDataSource {
         }
     }
 
-    /// The full pass's per-fund metadata surface: `etf/info`, the one-per-fund
-    /// `profile` read the closed-end detection consumes, and the sector / country
-    /// weightings (`docs/portfolio-analysis.md` §Asset eligibility). Each endpoint
-    /// fail-softs to a tagged gap on the returned record.
+    /// The full pass's per-fund surface (`docs/portfolio-analysis.md` §Asset
+    /// eligibility), each endpoint fail-soft to a tagged gap on the returned record.
     pub fn fetch_fund_data(&self, symbol: &str) -> crate::portfolio::fund::FundData {
         self.fetch_fund_data_inner(symbol, true)
     }
 
-    /// The quick check's fund refresh: the same surface **without the `profile`
-    /// leg** — the sweep never re-runs closed-end detection, so fetching it would
-    /// spend one unconsumed request per fund per sweep and, on failure, push a
-    /// detection gap into a sweep that runs no detection
-    /// (`docs/data-sources.md` §Portfolio Analysis — endpoint surface: the
-    /// profile row is full-pass only).
+    /// The same surface without the `profile` leg: the sweep never re-runs closed-end
+    /// detection, so fetching it would spend an unconsumed request and, on failure,
+    /// push a detection gap into a sweep that runs no detection (`docs/data-sources.md`
+    /// §Portfolio Analysis — endpoint surface).
     pub fn fetch_fund_refresh_data(&self, symbol: &str) -> crate::portfolio::fund::FundData {
         self.fetch_fund_data_inner(symbol, false)
     }
@@ -7363,16 +6646,14 @@ impl FmpDataSource {
             FMP_ETF_INFO_PATH,
             &[("symbol", symbol)],
             |value| {
-                // A served-empty array is an honest empty answer (the symbol
-                // has no fund info), not drift — same split as the quote row.
+                // A served-empty array (no fund info) is an honest empty, not drift.
                 if value.as_array().is_some_and(|a| a.is_empty()) {
                     return Shaped::empty(());
                 }
                 if !fund_info_into(value, &mut fund) {
                     return Shaped::malformed(()).with_detail("FMP etf/info was malformed");
                 }
-                // A readable body that filled nothing (`{}`) is no usable
-                // data — an honest empty, not ok-on-parse.
+                // A readable body that filled nothing (`{}`) is no usable data.
                 if fund.name.is_none()
                     && fund.asset_class.is_none()
                     && fund.expense_ratio.is_none()
@@ -7388,13 +6669,10 @@ impl FmpDataSource {
             fund.gaps
                 .push(format!("{FUND_INFO_GAP_PREFIX} unavailable ({})", reason.as_str()));
         }
-        // The one-per-fund `/profile` read the closed-end detection consumes
-        // (`isFund` + the description's closed-end fragment — the CEF leg, ruled
-        // 2026-08-21). CEFs are exactly where `etf/info` serves `[]`
-        // (probe-verified 2026-08-21), so the structure signal must come from the
-        // profile; a failed read records the gap and detection honestly reads
-        // not-a-CEF rather than guessing. Full pass only — the sweep's variant
-        // skips this leg.
+        // The `/profile` read closed-end detection consumes (`isFund` plus the
+        // description's closed-end fragment). CEFs are exactly where `etf/info` serves
+        // `[]`, so the structure signal must come from the profile; a failed read
+        // records the gap and detection reads not-a-CEF rather than guessing.
         if with_profile {
             if let Err(reason) = self.suite_get_shaped(
                 "fund-profile",
@@ -7403,14 +6681,11 @@ impl FmpDataSource {
                 FMP_PROFILE_PATH,
                 &[("symbol", symbol)],
                 |value| {
-                    // Every answer that leaves detection unable to run says so
-                    // on the record (Codex rounds 3–4): the gaps are pushed
-                    // here, not on the outer Err arm, because `suite_get_shaped`
-                    // folds served bodies — malformed included — into
-                    // `Ok(shaped.value)` (only transport / HTTP-level gaps
-                    // reach Err). An empty array is FMP's honest "no profile
-                    // for this symbol" — still recorded, since on the fund path
-                    // this is the one read closed-end detection keys on.
+                    // Every answer that leaves detection unable to run says so on the
+                    // record; the gaps are pushed here, not on the outer Err arm, because
+                    // `suite_get_shaped` folds served bodies, malformed included, into
+                    // `Ok`. An empty array is FMP's honest "no profile", still recorded
+                    // since this is the one read closed-end detection keys on.
                     if value.as_array().is_some_and(|a| a.is_empty()) {
                         fund.gaps.push(format!(
                             "{FUND_PROFILE_GAP_PREFIX} was empty — closed-end \
@@ -7431,10 +6706,8 @@ impl FmpDataSource {
                         return Shaped::malformed(())
                             .with_detail("FMP profile body unreadable (drifted response shape)");
                     };
-                    // Every real profile carries the boolean `isFund` (probe
-                    // 2026-08-21; `references/fmp-api.md`), so a served object
-                    // without a readable flag is drift on the one field the
-                    // detection keys on — never an ok-on-parse.
+                    // Every real profile carries the boolean `isFund`, so a served object
+                    // without a readable flag is drift on the one field detection keys on.
                     let Some(is_fund) = obj.get("isFund").and_then(Value::as_bool) else {
                         fund.gaps.push(format!(
                             "{FUND_PROFILE_GAP_PREFIX} was malformed — closed-end \
@@ -7450,10 +6723,9 @@ impl FmpDataSource {
                         .map(str::trim)
                         .filter(|s| !s.is_empty())
                         .map(String::from);
-                    // A fund-flagged profile with no description leaves the
-                    // detection conjunction unanswerable — recorded, never
-                    // guessed. A definitive `isFund: false` is the one silent
-                    // answer: not a fund structure, nothing to detect.
+                    // A fund-flagged profile with no description leaves the detection
+                    // conjunction unanswerable; a definitive `isFund: false` is the one
+                    // silent answer, nothing to detect.
                     if is_fund && fund.profile_description.is_none() {
                         fund.gaps.push(format!(
                             "{FUND_PROFILE_GAP_PREFIX} carried no description — \
@@ -7477,9 +6749,8 @@ impl FmpDataSource {
             "Fund sector weightings",
             FMP_ETF_SECTOR_WEIGHTS_PATH,
             &[("symbol", symbol)],
-            // Drift checks before the shaper (it folds non-array into an empty
-            // list and drops unreadable rows); the gap message follows the
-            // split so a drifted body never reads "were empty".
+            // Drift checks before the shaper, which folds non-array into an empty list
+            // and drops unreadable rows, so a drifted body never reads "were empty".
             |value| {
                 let Some(body) = value.as_array() else {
                     fund.gaps
@@ -7514,7 +6785,7 @@ impl FmpDataSource {
             "Fund country weightings",
             FMP_ETF_COUNTRY_WEIGHTS_PATH,
             &[("symbol", symbol)],
-            // Same drift-before-shaper splits as the sector weightings above.
+            // The same drift splits as the sector weightings.
             |value| {
                 let Some(body) = value.as_array() else {
                     fund.gaps
@@ -7546,18 +6817,12 @@ impl FmpDataSource {
         fund
     }
 
-    /// The per-sector aggregate P/E snapshot for one exchange (run-level, shared
-    /// across funds; `docs/data-sources.md`). `date` is one candidate session,
-    /// computed by the caller — the Portfolio job passes its **ET session date**
-    /// and walks back over earlier weekdays until a candidate serves, so this is
-    /// one call per exchange **per candidate tried**.
-    ///
-    /// In practice the walk should stop at the first: a weekday market holiday
-    /// still returns a full snapshot (2026-07-03 and Juneteenth served with
-    /// carried values — live-verified 2026-07-16), so the second candidate is a
-    /// safety net rather than an expected cost. The walk exists because the
-    /// *empty* answer is a 200, indistinguishable from a served snapshot with no
-    /// rows, and an unnoticed empty surface silently abstains every priced fund.
+    /// Run-level, shared across funds (`docs/data-sources.md`). `date` is one candidate
+    /// ET session; the caller walks back over earlier weekdays until one serves, one
+    /// call per candidate tried. The walk exists because the empty answer is a 200,
+    /// and an unnoticed empty surface would silently abstain every priced fund; a
+    /// weekday holiday still serves a full snapshot with carried values, so the second
+    /// candidate is a safety net rather than an expected cost.
     pub fn fetch_sector_pe_snapshot(
         &self,
         exchange: &str,
@@ -7569,13 +6834,9 @@ impl FmpDataSource {
             "Sector P/E snapshot",
             FMP_SECTOR_PE_SNAPSHOT_PATH,
             &[("exchange", exchange), ("date", date)],
-            // The empty answer is a 200 (see above) — the row now says so,
-            // which is exactly the walk-back's diagnostic. A non-array body,
-            // a served array with no readable row, or an off-board row (the
-            // shaper's `Err`, naming the served board) is drift, not emptiness
-            // — `malformed` on the row, though the return contract
-            // deliberately stays `Ok(vec![])` so the (bounded, harmless) date
-            // walk-back is unchanged.
+            // A non-array body, a served array with no readable row, or an off-board
+            // row is drift, `malformed` on the row; the return contract deliberately
+            // stays `Ok(vec![])` so the bounded date walk-back is unchanged.
             |value| {
                 let Some(body) = value.as_array() else {
                     return Shaped::malformed(vec![])
@@ -7598,9 +6859,7 @@ impl FmpDataSource {
         }
     }
 
-    /// The trailing per-sector P/E history for one sector × exchange (memoized by
-    /// the caller across funds — `docs/data-sources.md`, the historical-sector-pe
-    /// row's cardinality).
+    /// Memoized by the caller across funds (`docs/data-sources.md`).
     pub fn fetch_historical_sector_pe(
         &self,
         sector: &str,
@@ -7619,7 +6878,7 @@ impl FmpDataSource {
                 ("from", from),
                 ("to", to),
             ],
-            // Same drift splits as the snapshot; the return contract stays.
+            // The same drift splits as the snapshot; the return contract stays.
             |value| {
                 let Some(body) = value.as_array() else {
                     return Shaped::malformed(vec![])
@@ -7643,12 +6902,8 @@ impl FmpDataSource {
     }
 }
 
-/// The balance-sheet lines the single-row consumers read off the newest quarterly
-/// print ([`BalanceSheetLines::from_newest`]): the leverage / P/B legs plus the
-/// pre-profit runway numerator's liquid-resource lines (`docs/portfolio-analysis.md`
-/// §Starting parameters). The rows themselves ride
-/// `CompanyFinancials::quarterly_balance_sheet` for the soft forensic flags'
-/// year-over-year comparator.
+/// The lines the single-row consumers read off the newest quarterly print
+/// (`docs/portfolio-analysis.md` §Starting parameters).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct BalanceSheetLines {
     pub total_debt: Option<f64>,
@@ -7658,15 +6913,12 @@ pub struct BalanceSheetLines {
 }
 
 impl BalanceSheetLines {
-    /// The lines off the newest row by period end — the latest filing winning a
-    /// duplicated period, and an equal-date conflict keeping the FIRST-served
-    /// row — exactly the row `engine::canonicalize_statements` retains (its
-    /// stable descending sort plus first-wins dedup), so the flat lines and the
-    /// retained row can never come from different prints. Every line `None` on
-    /// an empty list.
+    /// The newest row by period end, an equal-date conflict keeping the first-served
+    /// row: exactly the row `engine::canonicalize_statements` retains, so the flat
+    /// lines and the retained row can never come from different prints.
     pub fn from_newest(rows: &[crate::portfolio::engine::QuarterlyBalanceSheetRow]) -> Self {
-        // `min_by` under the canonicalization's descending comparator returns
-        // the first of equal rows, where `max_by` would return the last.
+        // `min_by` under the descending comparator returns the first of equal rows,
+        // where `max_by` would return the last.
         rows.iter()
             .min_by(|a, b| {
                 b.period_end
@@ -7683,8 +6935,6 @@ impl BalanceSheetLines {
     }
 }
 
-/// One per-symbol earnings row (`fetch_symbol_earnings`) — the announcement date and
-/// the actual-vs-estimate legs the quick check's evidence-event leg reads.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SymbolEarningsRow {
     /// The announcement date, ISO.
@@ -7694,10 +6944,8 @@ pub struct SymbolEarningsRow {
     pub revenue_actual: Option<f64>,
 }
 
-/// Shape an FMP `/earnings?symbol=` array body into rows, newest first. A row
-/// without a date is skipped (nothing to key the event on). A non-array 200 body
-/// is schema drift or a malformed response — `Err`, never an empty success, so
-/// the quick check types the family `unknown` rather than reading "no new
+/// Newest first; a dateless row is skipped. A non-array body is `Err`, never an empty
+/// success, so the quick check types the family `unknown` rather than reading "no new
 /// evidence" off a body it couldn't interpret.
 fn symbol_earnings_from_value(value: &Value) -> Result<Vec<SymbolEarningsRow>> {
     let Some(rows) = value.as_array() else {
@@ -7706,11 +6954,8 @@ fn symbol_earnings_from_value(value: &Value) -> Result<Vec<SymbolEarningsRow>> {
     let mut out: Vec<SymbolEarningsRow> = rows
         .iter()
         .filter_map(|row| {
-            // A non-date string is an unreadable row, and the kept date is
-            // the CANONICAL render ([`canonical_date`]): the quick check
-            // compares this field lexicographically against its last-pass
-            // date, a gate neither a garbage string nor a non-zero-padded
-            // one must ever pass in source form.
+            // The canonical date render: the quick check compares this field
+            // lexicographically against its last-pass date.
             let date = row.get("date").and_then(Value::as_str).and_then(canonical_date)?;
             Some(SymbolEarningsRow {
                 date,
@@ -7724,25 +6969,21 @@ fn symbol_earnings_from_value(value: &Value) -> Result<Vec<SymbolEarningsRow>> {
     Ok(out)
 }
 
-/// One symbol-scoped news item (`fetch_symbol_news_since`).
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SymbolNewsItem {
     /// `YYYY-MM-DD HH:MM:SS` as FMP serves it; date-prefix comparable.
     pub published_date: String,
     pub title: String,
     pub site: Option<String>,
-    /// The item's article URL — the research loop's news-lead link (a lead the
-    /// loop may deep-read, never evidence). `None` on rows the wire served
-    /// without one, and on rows persisted before the field existed.
+    /// A lead the research loop may deep-read, never evidence; `None` on rows the
+    /// wire served without one.
     #[serde(default)]
     pub url: Option<String>,
 }
 
-/// Shape an FMP `/news/stock?symbols=` array body, keeping items published on or
-/// after `from` (belt and braces over the server-side `from` filter — the leg's
-/// "fresh since the last full pass" test must not lean on a remote filter alone).
-/// A non-array 200 body is `Err`, never an empty success (see
-/// [`symbol_earnings_from_value`]).
+/// Keeps items published on or after `from` client-side: the "fresh since the last
+/// full pass" test must not lean on the server-side `from` filter alone. A non-array
+/// body is `Err`, never an empty success (see [`symbol_earnings_from_value`]).
 fn symbol_news_from_value(value: &Value, from: &str) -> Result<Vec<SymbolNewsItem>> {
     let Some(rows) = value.as_array() else {
         anyhow::bail!("FMP news/stock returned a non-array body — malformed or drifted response");
@@ -7750,12 +6991,9 @@ fn symbol_news_from_value(value: &Value, from: &str) -> Result<Vec<SymbolNewsIte
     Ok(rows
         .iter()
         .filter_map(|row| {
-            // Readability is the shared predicate ([`canonical_news_date`]):
-            // a row whose publishedDate has no datable prefix is dropped as
-            // unreadable, and an admitted one carries the canonical prefix so
-            // the lexicographic filter below compares fixed-width dates.
+            // The canonical prefix, so the lexicographic filter compares fixed-width
+            // dates ("2026-08-01 09:30:00" >= "2026-07-20").
             let published_date = canonical_news_date(row)?;
-            // Date-prefix compare: "2026-08-01 09:30:00" >= "2026-07-20".
             if published_date.as_str() < from {
                 return None;
             }
@@ -7797,15 +7035,11 @@ fn statement_unit_issue(
     })
 }
 
-/// Shape quarterly `/balance-sheet-statement` rows (newest first). A row without a
-/// datable period date is unreadable and skipped, and the period and filing
-/// dates are stored as their CANONICAL fixed-width ISO render
-/// ([`canonical_date`]) — the statement family's rule, so the newest-first sort
-/// and the restatement tie-break (`engine::canonicalize_statements`) stay
-/// lexicographic. Individual missing lines stay `None`. Equity prefers
-/// `totalStockholdersEquity` (the parent-only line P/B conventionally reads) over
-/// `totalEquity` (which folds in minority interest). Pure, so the contract is
-/// unit-testable offline.
+/// Newest first. A row without a datable period date is skipped, and dates are stored
+/// as their canonical render ([`canonical_date`]) so the sort and the restatement
+/// tie-break (`engine::canonicalize_statements`) stay lexicographic. Equity prefers
+/// `totalStockholdersEquity` (the parent-only line P/B reads) over `totalEquity`
+/// (which folds in minority interest).
 fn quarterly_balance_sheet_from_value(
     value: &Value,
 ) -> Vec<crate::portfolio::engine::QuarterlyBalanceSheetRow> {
@@ -7852,10 +7086,8 @@ fn quarterly_balance_sheet_from_value(
         .collect()
 }
 
-/// Shape an FMP `/financial-scores` array body into [`FinancialScores`] from its
-/// first row. `None` only when the body is not the expected non-empty array; a
-/// missing or non-numeric score stays `None`. Pure, so the contract is
-/// unit-testable offline.
+/// `None` only when the body is not a non-empty array; a missing or non-numeric
+/// score stays `None`.
 fn financial_scores_from_value(value: &Value) -> Option<crate::portfolio::engine::FinancialScores> {
     let first = value.as_array()?.first()?;
     Some(crate::portfolio::engine::FinancialScores {
@@ -7864,14 +7096,7 @@ fn financial_scores_from_value(value: &Value) -> Option<crate::portfolio::engine
     })
 }
 
-/// Shape quarterly `/cash-flow-statement` rows (newest first) — the pre-profit
-/// overlay's burn / runway / capex source. A row without a datable period date
-/// is unreadable and skipped, and the period and filing dates are stored as
-/// their CANONICAL fixed-width ISO render ([`canonical_date`]): the newest-first
-/// sort and the restatement tie-break (`engine::canonicalize_statements`) are
-/// lexicographic, and the feed's date family serves non-zero-padded dates on
-/// some rows — observed on the estimates and dividend rows (2026-08-05), never
-/// yet on a statement row (large-scale review 2026-08-24, Priority-1 minor).
+/// Newest first; the same date rules as [`quarterly_balance_sheet_from_value`].
 fn quarterly_cash_flow_from_value(
     value: &Value,
 ) -> Vec<crate::portfolio::engine::QuarterlyCashFlowRow> {
@@ -7886,10 +7111,9 @@ fn quarterly_cash_flow_from_value(
                 .and_then(canonical_date)?;
             Some(crate::portfolio::engine::QuarterlyCashFlowRow {
                 period_end,
-                // Datable-string-first per key: an absent, null, or undatable
-                // `filingDate` falls through to the legacy `fillingDate`
-                // spelling, and to `None` (the period-end + grace anchor) when
-                // neither parses.
+                // Datable-string-first per key: an undatable `filingDate` falls through
+                // to the legacy `fillingDate` spelling, and to `None` (the period-end +
+                // grace anchor) when neither parses.
                 filing_date: row
                     .get("filingDate")
                     .and_then(Value::as_str)
@@ -7900,9 +7124,8 @@ fn quarterly_cash_flow_from_value(
                             .and_then(canonical_date)
                     }),
                 free_cash_flow: row.get("freeCashFlow").and_then(Value::as_f64),
-                // Numeric-first per key (the balance-sheet shaper's rule): a
-                // present-but-null preferred line must still fall through to the
-                // alternate spelling, so the fallback runs after `as_f64`.
+                // Numeric-first per key: a present-but-null preferred line must still
+                // fall through to the alternate spelling.
                 operating_cash_flow: row
                     .get("operatingCashFlow")
                     .and_then(Value::as_f64)
@@ -7919,19 +7142,10 @@ fn quarterly_cash_flow_from_value(
         .collect()
 }
 
-/// Shape quarterly `/income-statement` rows (newest first). Lenient key spellings
-/// pinned by fixtures; live-verified 2026-07-16 — the feed serves the stable
-/// spellings (`filingDate` / `epsDiluted` / `weightedAverageShsOutDil`) and the
-/// full 16 rows on `limit=16`. A row without a datable period date is
-/// unreadable and skipped, and the period and filing dates are stored as their
-/// CANONICAL fixed-width ISO render ([`canonical_date`]): the newest-first sort,
-/// the restatement tie-break, and the anchor date against the ISO closes are
-/// all lexicographic, and the feed's date family serves non-zero-padded dates
-/// on some rows (observed on the estimates and dividend rows, 2026-08-05;
-/// never yet on a statement row) — as source text a "2026-9-30" would sort
-/// after "2026-12-31", the run would read non-contiguous, and TTM adoption
-/// would fail onto the annual basis (large-scale review 2026-08-24,
-/// Priority-1 minor).
+/// Newest first. A row without a datable period date is skipped, and dates are stored
+/// as their canonical render ([`canonical_date`]): the sort, the restatement
+/// tie-break and the anchor date against the ISO closes are all lexicographic, and
+/// the feed family serves non-zero-padded dates on some rows.
 fn quarterly_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::QuarterlyIncomeRow> {
     let Some(rows) = value.as_array() else {
         return vec![];
@@ -7942,10 +7156,9 @@ fn quarterly_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::Q
                 .get("date")
                 .and_then(Value::as_str)
                 .and_then(canonical_date)?;
-            // Datable-string-first per key (the numeric-first rule's string
-            // form): a present-but-null or undatable `filingDate` must still
-            // fall through to the legacy `fillingDate` spelling, or a restated
-            // row loses its tie-break date; `None` when neither parses.
+            // Datable-string-first per key: a null or undatable `filingDate` must still
+            // fall through to the legacy `fillingDate` spelling, or a restated row
+            // loses its tie-break date.
             let filing_date = row
                 .get("filingDate")
                 .and_then(Value::as_str)
@@ -7980,11 +7193,8 @@ fn quarterly_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::Q
         .collect()
 }
 
-/// Shape annual `/income-statement` rows — the quarterly shaper's rules (a row
-/// without a datable period date is unreadable and skipped; dates kept as their
-/// canonical render; the filing date falls through to the legacy spelling),
-/// keeping the two lines the mid-cycle margin reads. Order and duplicates are
-/// left to the mid-cycle read's canonicalization. Pure.
+/// The quarterly shaper's date rules, keeping the two lines the mid-cycle margin
+/// reads; order and duplicates are left to that read's canonicalization.
 fn annual_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::AnnualIncomeRow> {
     let Some(rows) = value.as_array() else {
         return vec![];
@@ -8014,18 +7224,12 @@ fn annual_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::Annu
         .collect()
 }
 
-/// The **next-twelve-months (NTM) consensus read**: blend the two nearest **coming**
-/// fiscal-year estimate rows, each weighted by its overlap with the rolling
-/// twelve-month forward window — so a mostly-reported current fiscal year (whose
-/// consensus ≈ the trailing print) contributes only its remaining months instead of
-/// masquerading as the forward year, the live-run flat-target mechanism
-/// (`docs/portfolio-analysis.md` §Starting parameters; the 2026-07-31 F1 finding).
-/// A single forward row keeps the prior single-row semantics. **No forward-dated
-/// row → `None`**: a past fiscal-year estimate is not a forward consensus, and
-/// letting it masquerade as one would bypass the driver ladder's
-/// `no-admissible-driver` abstention with a stale print. Accepts both the stable
-/// (`epsAvg`) and legacy (`estimatedEpsAvg`) spellings; live 2026-07-16 the feed
-/// serves the stable ones.
+/// The next-twelve-months consensus: the two nearest coming fiscal-year rows blended
+/// by their overlap with the rolling twelve-month window, so a mostly-reported
+/// current fiscal year contributes only its remaining months instead of masquerading
+/// as the forward year (`docs/portfolio-analysis.md` §Starting parameters). No
+/// forward-dated row is `None`: a past fiscal-year estimate masquerading as forward
+/// would bypass the driver ladder's `no-admissible-driver` abstention.
 fn consensus_from_value(
     value: &Value,
     today: &str,
@@ -8037,19 +7241,16 @@ fn consensus_from_value(
             .unwrap_or_default()
             .to_string()
     };
-    // Numeric-first per key (the balance-sheet shaper's rule): a present-but-null
-    // stable key must still fall through to the legacy spelling.
+    // Numeric-first per key: a present-but-null stable key must still fall through
+    // to the legacy spelling.
     let field = |row: &Value, stable: &str, legacy: &str| {
         row.get(stable)
             .and_then(Value::as_f64)
             .or_else(|| row.get(legacy).and_then(Value::as_f64))
     };
-    // Filter / sort / dedup on the PARSED date, never the source text: chrono
-    // accepts non-zero-padded fields ("2026-9-30"), which compare
-    // lexicographically after "2026-12-31" — a raw-string sort would reverse
-    // the near/far legs and invert the NTM blend (the dividend windower's
-    // documented wire quirk, same feed family). An undatable row can't be
-    // ordered or weighted, so it never enters the forward set.
+    // Filter / sort / dedup on the parsed date, never the source text: a raw-string
+    // sort of a non-zero-padded date would reverse the near/far legs and invert the
+    // blend. An undatable row never enters the forward set.
     let today_parsed = chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d").ok()?;
     let mut forward: Vec<(chrono::NaiveDate, &Value)> = rows
         .iter()
@@ -8059,19 +7260,17 @@ fn consensus_from_value(
         })
         .collect();
     forward.sort_by_key(|(d, _)| *d);
-    // One row per fiscal-period date: a duplicated period must not masquerade as
-    // near + far — the blend would re-read the same year at both weights and
-    // exclude the true following fiscal year while recording `periods_used = 2`.
+    // A duplicated period must not masquerade as near + far: the blend would re-read
+    // the same year at both weights and exclude the true following fiscal year.
     forward.dedup_by_key(|(d, _)| *d);
     let (near_date, near): (chrono::NaiveDate, &Value) = *forward.first()?;
     let far_row: Option<(chrono::NaiveDate, &Value)> = forward.get(1).copied();
     let far: Option<&Value> = far_row.map(|(_, r)| r);
 
-    // The near row's weight = the share of the rolling twelve months its fiscal year
-    // still covers (days to its period end / 365, clamped); the far row carries the
-    // rest. At the boundary (the near fiscal year ends today) the weight is 0 — the
-    // value is entirely the far row's while `period_end` still names the near row;
-    // `near_weight` on the record is what keys the provenance.
+    // The near row's weight is the share of the rolling twelve months its fiscal year
+    // still covers; the far row carries the rest. At the boundary the weight is 0 and
+    // the value is entirely the far row's while `period_end` still names the near
+    // row; `near_weight` on the record keys the provenance.
     let near_weight = match far {
         Some(_) => ((near_date - today_parsed).num_days().clamp(0, 365) as f64) / 365.0,
         None => 1.0,
@@ -8079,8 +7278,7 @@ fn consensus_from_value(
     let blended = near_weight < 1.0;
     let blend = |stable: &str, legacy: &str| -> Option<f64> {
         let n = field(near, stable, legacy);
-        // An inactive blend (single forward row, or a far year wholly beyond
-        // the window) reads the near row alone — a far fiscal year must never
+        // An inactive blend reads the near row alone: a far fiscal year must never
         // leak in at full weight through a missing near leg.
         if !blended {
             return n;
@@ -8094,15 +7292,10 @@ fn consensus_from_value(
             (None, f) => f,
         }
     };
-    // Per-field corroboration: how many rows actually CONTRIBUTE to the blended
-    // value — mirroring `blend`'s own arms, never mere presence. `periods_used`
-    // cannot serve here (a leg only one row carries is still used alone inside
-    // an active blend), and presence-counting cannot either: at the fiscal-year
-    // boundary (`today == near_date`) the near weight is exactly 0 and the
-    // value is entirely the far row's, so a present-but-weightless near row
-    // must not masquerade as a second estimate (Codex round 2). Inside an
-    // active blend the far row's weight is always positive; the near row
-    // contributes at weight > 0, or alone when the far row lacks the field.
+    // Per-field corroboration counts the rows that actually contribute, mirroring
+    // `blend`'s arms rather than mere presence: at the fiscal-year boundary the near
+    // weight is exactly 0, so a present-but-weightless near row must not count as a
+    // second estimate.
     let rows_carrying = |stable: &str, legacy: &str| -> u8 {
         let n = field(near, stable, legacy).is_some();
         if !blended {
@@ -8134,9 +7327,8 @@ fn consensus_from_value(
     if let Some((far_date, far)) = far_row.filter(|_| blended) {
         eps_periods.push(eps_period(far_date, far, 1.0 - near_weight));
     }
-    // The three-year leg's growth rows: the near and far rows' raw mids on each
-    // rung, read whenever both rows exist — the growth is the rows' own, not
-    // the NTM blend's (`docs/portfolio-analysis.md` §Starting parameters).
+    // The growth is the rows' own raw mids, not the NTM blend's
+    // (`docs/portfolio-analysis.md` §Starting parameters).
     let growth_rows = |stable: &str, legacy: &str| crate::portfolio::engine::ConsensusGrowthRows {
         near: field(near, stable, legacy).filter(|v| v.is_finite()),
         far: far.and_then(|r| field(r, stable, legacy)).filter(|v| v.is_finite()),
@@ -8160,44 +7352,34 @@ fn consensus_from_value(
     })
 }
 
-/// Sum the per-share dividends dated within the trailing twelve months of `today` —
-/// **bounded on both sides**: rows dated after `today` (announced-but-unpaid
-/// declarations the dividends feed carries) are excluded, since "trailing" means
-/// paid and a future declaration would inflate the trailing-return leg. `None` when
-/// no row lands in the window (a non-payer, or a stale record) — the total-return
-/// leg then adds nothing rather than a fabricated yield.
-/// What one `dividends` read yields ([`FmpDataSource::fetch_dividend_pull`]):
-/// the trailing-twelve-month per-share sum (the engine's payout leg) and the
-/// latest payments as reported, newest first, on or before the session —
-/// at most [`DIVIDENDS_SHOWN`] — for FETCHED VALUES.
+/// The trailing-twelve-month per-share sum and the latest payments as reported,
+/// newest first, at most [`DIVIDENDS_SHOWN`]. `ttm` is bounded on both sides: a
+/// future-dated declaration is not paid and would inflate the trailing-return leg.
+/// `None` when no row lands in the window, so the leg adds nothing rather than a
+/// fabricated yield.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DividendPull {
     pub ttm: Option<f64>,
     pub recent: Vec<DividendRow>,
 }
 
-/// Shape a `dividends` body into [`DividendPull`]: the trailing sum under the
-/// strict contract above, and the latest payments on or before `today` — an
-/// older payment whose amount is unreadable is left out of the list (the
-/// trailing leg's contract is what bails, and only inside its window).
+/// An older payment whose amount is unreadable is left out of `recent`; only an
+/// unreadable row inside the trailing window bails.
 fn dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<DividendPull> {
     let Some(rows) = value.as_array() else {
         anyhow::bail!("non-array body — malformed or drifted response");
     };
     let mut recent: Vec<DividendRow> = Vec::new();
-    // Exclusive lower bound: the window is the 365 days ending today. Inclusive
-    // on both ends it would span 366 distinct days, and a payment dated exactly
-    // `today − 365` would ride beside today's — a fifth quarterly (or second
-    // annual) print inflating the trailing sum.
+    // Exclusive lower bound: inclusive on both ends the window would span 366 days,
+    // and a payment dated exactly `today − 365` would ride beside today's as a fifth
+    // quarterly print.
     let cutoff = today - Duration::days(365);
     let mut sum = 0.0;
     let mut any = false;
     for row in rows {
-        // A row the parser cannot read is `Err`, never a silent skip: `Ok(None)`
-        // must mean the body affirmatively shows no trailing dividends — a
-        // missing or unparseable date can't be windowed, and an in-window row
-        // whose amount is non-numeric (a string-typed "0.26") would otherwise
-        // masquerade as a confirmed dividend elimination downstream.
+        // An unreadable row is `Err`, never a silent skip: `Ok(None)` must mean the
+        // body affirmatively shows no trailing dividends, or a string-typed amount
+        // would masquerade as a confirmed dividend elimination downstream.
         let Some(date) = row.get("date").and_then(Value::as_str) else {
             anyhow::bail!("a dividend row carried no date — malformed or drifted response");
         };
@@ -8212,8 +7394,8 @@ fn dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<Divid
             .get("adjDividend")
             .and_then(Value::as_f64)
             .or_else(|| row.get("dividend").and_then(Value::as_f64));
-        // The reported payments: every row on or before today with a readable
-        // amount, whatever its age (an annual payer's last four span years).
+        // Every row on or before today with a readable amount, whatever its age (an
+        // annual payer's last four span years).
         if parsed <= today {
             if let Some(a) = amount.filter(|a| a.is_finite()) {
                 recent.push(DividendRow {
@@ -8223,9 +7405,8 @@ fn dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<Divid
                 });
             }
         }
-        // Window on the PARSED date, never the source text: chrono accepts
-        // non-zero-padded fields ("2026-5-10"), which compare lexicographically
-        // outside the window and would silently drop an in-window payment.
+        // Window on the parsed date, never the source text: a non-zero-padded date
+        // compares lexicographically outside the window.
         if parsed <= cutoff || parsed > today {
             continue;
         }
@@ -8237,12 +7418,9 @@ fn dividends_from_value(value: &Value, today: chrono::NaiveDate) -> Result<Divid
         sum += a;
         any = true;
     }
-    // Every amount is finite by the parser, but their sum need not be: two
-    // feed-extreme in-window prints overflow it to inf, which rode the required
-    // `forward_dividends` into a persisted `null` the store could not read back
-    // (the 2026-08-24 review's Codex I16, ruled 2026-08-29). An overflowed sum
-    // is a drifted body — `Err`, so the leg reads zero WITH its recorded gap,
-    // never a figure and never a silent non-payer.
+    // Every amount is finite, but their sum need not be; an overflowed sum is a
+    // drifted body, `Err` so the leg reads zero with its recorded gap, never a
+    // figure and never a silent non-payer.
     if any && !sum.is_finite() {
         anyhow::bail!(
             "the in-window dividend amounts overflowed — malformed or drifted response"
@@ -8300,7 +7478,6 @@ fn served_year(row: &Value, key: &str) -> Option<String> {
     served_str(row, key).or_else(|| served_i64(row, key).map(|y| y.to_string()))
 }
 
-/// A served date field's canonical calendar date.
 fn served_date(row: &Value, key: &str) -> Option<String> {
     served_str(row, key).and_then(|s| canonical_date_prefix(&s))
 }
@@ -8422,7 +7599,6 @@ fn enterprise_value_from_value(value: &Value) -> Result<Option<EnterpriseValueRo
     Ok(rows.into_iter().max_by(|a, b| a.date.cmp(&b.date)))
 }
 
-/// `price-target-consensus`.
 fn price_target_consensus_from_value(value: &Value) -> Result<Option<PriceTargetConsensus>> {
     Ok(
         evidence_object(value, "price-target-consensus")?.map(|o| PriceTargetConsensus {
@@ -8449,7 +7625,6 @@ fn price_target_trend_from_value(value: &Value) -> Result<Option<PriceTargetTren
     )
 }
 
-/// `grades-consensus`.
 fn grades_consensus_from_value(value: &Value) -> Result<Option<GradesConsensus>> {
     Ok(
         evidence_object(value, "grades-consensus")?.map(|o| GradesConsensus {
@@ -8481,7 +7656,6 @@ fn rating_actions_from_value(value: &Value, since: &str) -> Result<Vec<RatingAct
     Ok(rows)
 }
 
-/// `ratings-snapshot`.
 fn ratings_snapshot_from_value(value: &Value) -> Result<Option<RatingsSnapshot>> {
     Ok(
         evidence_object(value, "ratings-snapshot")?.map(|o| RatingsSnapshot {
@@ -8586,7 +7760,6 @@ fn merge_congressional_trades(
     rows
 }
 
-/// `shares-float`.
 fn shares_float_from_value(value: &Value) -> Result<Option<SharesFloat>> {
     Ok(
         evidence_object(value, "shares-float")?.map(|o| SharesFloat {
@@ -8685,8 +7858,6 @@ fn ipo_rows_from_value(value: &Value) -> Result<(Vec<IpoRow>, usize)> {
     Ok((out, undated_offerings))
 }
 
-/// One evidence leg's identity ([`FmpDataSource::evidence_leg`]): the tracker
-/// row's kind and label, the endpoint path, and the name its gaps carry.
 struct EvidenceLeg {
     kind: &'static str,
     label: &'static str,
@@ -8695,10 +7866,9 @@ struct EvidenceLeg {
 }
 
 impl FmpDataSource {
-    /// One evidence leg under the shaped-row contract: a parse that lands
-    /// data is `ok`, an honest empty is `empty` with no gap, a malformed body
-    /// and an HTTP-level gap each tag `gaps` with the leg's name. A cancel
-    /// already requested skips the request (no row, a skipped gap).
+    /// An honest empty is `empty` with no gap; a malformed body and an HTTP-level gap
+    /// each tag `gaps` with the leg's name. A cancel already requested skips the
+    /// request (no row, a skipped gap).
     fn evidence_leg<T>(
         &self,
         leg: EvidenceLeg,
@@ -8736,14 +7906,9 @@ impl FmpDataSource {
         }
     }
 
-    /// The per-holding **evidence surface** for a graded stock
-    /// (`crate::portfolio::evidence`): the TTM ratio pair, owner earnings,
-    /// enterprise value, the price-target consensus and summary, the grades
-    /// and their consensus, the ratings snapshot, the insider trades and
-    /// statistics, the Senate and House trades, the float, the two revenue
-    /// segmentations, the splits and the earnings rows — in that order, one
-    /// tracker row each, every leg fail-soft to a tagged gap on the record.
-    /// `session` is the run's ET session date: the windows count back from it.
+    /// The per-holding evidence surface (`crate::portfolio::evidence`), one tracker
+    /// row per leg, every leg fail-soft to a tagged gap on the record. `session` is
+    /// the run's ET session date; the windows count back from it.
     pub fn fetch_company_evidence(&self, symbol: &str, session: NaiveDate) -> CompanyEvidence {
         use crate::portfolio::evidence::{
             window_start, CONGRESSIONAL_TRADES_WINDOW_MONTHS, INSIDER_TRADES_WINDOW_MONTHS,
@@ -9015,13 +8180,9 @@ impl FmpDataSource {
         e
     }
 
-    /// The run-level M&A feed walked newest first, page by page, until a row
-    /// leaves the trailing window, a page served short of the limit ends the
-    /// feed (measured on the rows served, not the rows read), or the page cap
-    /// is spent ([`MA_PAGE_CAP`]) — the deals inside the window and the
-    /// walk's gap: a first-page failure leaves no feed; a later page's
-    /// failure or the cap leaves the rows gathered with the gap saying so.
-    /// Wholly fail-soft.
+    /// The deals inside the trailing window and the walk's gap: a first-page failure
+    /// leaves no feed; a later page's failure or the page cap leaves the rows gathered
+    /// with the gap saying so. Wholly fail-soft.
     pub fn fetch_recent_mergers(&self, session: NaiveDate) -> (Vec<MaDeal>, Option<String>) {
         use crate::portfolio::evidence::{window_start, MA_WINDOW_MONTHS};
         let since = window_start(session, MA_WINDOW_MONTHS);
@@ -9039,13 +8200,11 @@ impl FmpDataSource {
         (deals, gap)
     }
 
-    /// The M&A feed walked newest first from its first page — the one walk Portfolio's
-    /// run-level feed and the report's primary-market read share. It stops on a page holding
-    /// a row dated before `since` (`YYYY-MM-DD`), on a page served short of [`MA_PAGE_LIMIT`]
-    /// (measured on the rows served, not the rows read), on a failed page, or once
-    /// [`MA_PAGE_CAP`] pages are spent, returning every row read on the walked pages, the
-    /// rows they served but no reader could read, and how the walk ended ([`MaWalk`]). Each
-    /// page is one tracker row under `kind` / `symbol` / `label`.
+    /// The one M&A walk Portfolio's run-level feed and the report's primary-market read
+    /// share: newest first, stopping on a page holding a row dated before `since`
+    /// (`YYYY-MM-DD`), on a page served short of [`MA_PAGE_LIMIT`] (measured on the
+    /// rows served, not the rows read), on a failed page, or once [`MA_PAGE_CAP`] pages
+    /// are spent. One tracker row per page.
     fn walk_mergers(&self, since: &str, kind: &str, symbol: &str, label: &str) -> MaWalk {
         use crate::portfolio::evidence::MA_PAGE_LIMIT;
         let mut deals: Vec<MaDeal> = Vec::new();
@@ -9064,9 +8223,8 @@ impl FmpDataSource {
                 FMP_MERGERS_LATEST_PATH,
                 &[("page", &page_param), ("limit", &limit_param)],
                 |value| match ma_deals_from_value(value) {
-                    // The page's row count is the SERVED count: a dropped
-                    // unreadable row must not read as a short page and end
-                    // the walk (Codex, 2026-10-08).
+                    // The page's row count is the served count: a dropped unreadable
+                    // row must not read as a short page and end the walk.
                     Ok(rows) if rows.is_empty() => Shaped::empty(Ok((rows, served_row_count(value)))),
                     Ok(rows) => Shaped::ok(Ok((rows, served_row_count(value)))),
                     Err(e) => {
@@ -9109,13 +8267,12 @@ impl FmpDataSource {
     }
 }
 
-/// The rows a feed page served, readable or not — the walk's page measure.
+/// Readable or not; the walk's page measure.
 fn served_row_count(value: &Value) -> usize {
     value.as_array().map(Vec::len).unwrap_or(0)
 }
 
-/// The M&A walk's gap sentence: no feed at all off the first page, a
-/// truncated feed off a later one.
+/// No feed at all off the first page, a truncated feed off a later one.
 fn ma_walk_gap(page: usize, detail: &str) -> String {
     if page == 0 {
         format!("FMP M&A feed unavailable ({detail})")
@@ -9124,13 +8281,10 @@ fn ma_walk_gap(page: usize, detail: &str) -> String {
     }
 }
 
-/// Shape a `/profile` body (array-of-one or bare object) into the guard's lookup.
-/// Pure. Only FMP's definitive no-such-symbol shape — an **empty array** — reads
-/// `Unresolved`; any other non-object body (a drifted or malformed-but-valid-JSON
-/// response) is `Unverified`, so an unreadable shape can never terminally not-rate
-/// a holding (`docs/portfolio-analysis.md` §Asset eligibility). A present object
-/// with blank or missing fields resolves with those fields `None` (the guard types
-/// them unverifiable, and the sector consumer types `sector-unscorable`).
+/// Only FMP's definitive no-such-symbol shape, an empty array, reads `Unresolved`;
+/// any other non-object body is `Unverified`, so an unreadable shape can never
+/// terminally not-rate a holding (`docs/portfolio-analysis.md` §Asset eligibility).
+/// A present object with blank or missing fields resolves with those fields `None`.
 fn profile_identity_from_value(value: &Value) -> crate::portfolio::listing::ProfileLookup {
     use crate::portfolio::listing::{ProfileIdentity, ProfileLookup};
     if value.as_array().is_some_and(|a| a.is_empty()) {
@@ -9165,23 +8319,18 @@ fn profile_identity_from_value(value: &Value) -> crate::portfolio::listing::Prof
     })
 }
 
-/// Fill a [`crate::portfolio::fund::FundData`] from an `etf/info` body (array-of-one
-/// or bare object). The expense ratio arrives in **percent units** (0.09 = 9 bps)
-/// and normalizes to a decimal ratio at this seam — live-verified 2026-07-16
-/// (SPY 0.09 / ARKK 0.75 / VFIAX 0.04, mutual funds served too). The live body
-/// carries `assetsUnderManagement` and no `aum` key — the fallback chain covers it.
-/// Returns whether the body was readable, so the caller's tracker row can
-/// distinguish a shaped fill from a malformed body.
+/// The expense ratio arrives in percent units (0.09 = 9 bps) and normalizes to a
+/// decimal ratio at this seam. Returns whether the body was readable, so the
+/// caller's tracker row can distinguish a shaped fill from a malformed body.
 fn fund_info_into(value: &Value, fund: &mut crate::portfolio::fund::FundData) -> bool {
     let obj = value.as_array().and_then(|a| a.first()).or(Some(value));
     let Some(obj) = obj.filter(|o| o.is_object()) else {
         fund.gaps.push("FMP etf/info was malformed".to_string());
         return false;
     };
-    // Blank / whitespace-only strings normalize to `None` at this seam: the
-    // sweep's comparability gates key on presence, and a blank name or asset
-    // class read as "present" would fabricate a stored-true → fresh-false
-    // overlay clear or a fallback-shaped classification comparison.
+    // Blank strings normalize to `None` here: the sweep's comparability gates key on
+    // presence, and a blank asset class read as "present" would fabricate an overlay
+    // clear.
     let clean_str = |key: &str| {
         obj.get(key)
             .and_then(Value::as_str)
@@ -9195,8 +8344,8 @@ fn fund_info_into(value: &Value, fund: &mut crate::portfolio::fund::FundData) ->
         .get("expenseRatio")
         .and_then(Value::as_f64)
         .map(|percent| percent / 100.0);
-    // Numeric-first per key: live serves only `assetsUnderManagement`, so a drifted
-    // `aum: null` beside it must not erase the value the fallback exists to read.
+    // Numeric-first per key: a drifted `aum: null` beside `assetsUnderManagement` must
+    // not erase the value.
     fund.aum = obj
         .get("aum")
         .and_then(Value::as_f64)
@@ -9205,27 +8354,15 @@ fn fund_info_into(value: &Value, fund: &mut crate::portfolio::fund::FundData) ->
     true
 }
 
-/// Shape a weightings array (`[{sector|country, weightPercentage}]`) into
-/// `(label, fraction)` pairs. The field is PERCENT by wire contract — the key is
-/// named `weightPercentage`, and FMP's own examples serve both forms in percent
-/// units (`"97.82%"` on country-weightings, numeric `1.8` — SPY's ~2% Basic
-/// Materials sleeve — on sector-weightings), so every value divides by 100.
-/// No unit heuristic: a sum- or element-shaped guess misreads exactly the
-/// sparse sets where the stakes are highest (a lone `1.4` row read as a
-/// "fraction" priced a whole fund off a 1.4% sleeve). Were a fraction-served
-/// set ever to appear, the ÷100 makes it tiny and the absolute coverage /
-/// us_share guards abstain — the fail-safe direction, visible as a coverage
-/// gap, never a fabricated grade.
-///
-/// A row's served percent is usable only when it is finite and within
-/// `0..=100` — the fraction contract [`crate::portfolio::fund::FundData`]
-/// states — and any other row is unreadable and dropped, an all-unreadable
-/// body reading `malformed` at the callers (`docs/data-sources.md` §Financial
-/// Modeling Prep). `f64::from_str` accepts `"NaN"` / `"inf"` and overflows
-/// `"1e999"` to inf, and before the guard a NaN United States row read as a
-/// 100% US share through `us_share`'s `min(1.0)` (Rust's `min` returns the
-/// non-NaN operand) beside the NaN `covered` the composite now skips — the
-/// 2026-08-24 review's Codex I7 (ruled 2026-08-29).
+/// `(label, fraction)` pairs. `weightPercentage` is percent by wire contract, served
+/// as `"97.82%"` or numeric `1.8` alike, so every value divides by 100 with no unit
+/// heuristic: a sum- or element-shaped guess misreads exactly the sparse sets where
+/// the stakes are highest (a lone `1.4` row read as a fraction priced a whole fund
+/// off a 1.4% sleeve), while a fraction-served set would read tiny and trip the
+/// coverage guards, the fail-safe direction. A served percent is usable only when
+/// finite and within `0..=100` (`docs/data-sources.md` §Financial Modeling Prep):
+/// `f64::from_str` accepts `"NaN"` / `"inf"`, and a NaN United States row would read
+/// as a 100% US share through `us_share`'s `min(1.0)`.
 fn weights_from_value(value: &Value, label_key: &str) -> Vec<(String, f64)> {
     let Some(rows) = value.as_array() else {
         return vec![];
@@ -9245,31 +8382,14 @@ fn weights_from_value(value: &Value, label_key: &str) -> Vec<(String, f64)> {
         .collect()
 }
 
-/// Shape `sector-pe-snapshot` / `historical-sector-pe` rows under the suite's
-/// dated-row rule (`docs/data-sources.md` §Financial Modeling Prep): the date is
-/// stored as its CANONICAL fixed-width render ([`canonical_date`]), never the
-/// source text, and a row whose date is missing or does not parse is unreadable
-/// and dropped — on both endpoints, the snapshot included (the 2026-08-24
-/// review's Codex I14, ruled 2026-08-28). Stored as served, a dateless row
-/// read as `""`, before every sample date, and held an exchange's history slot
-/// wherever no dated print qualified, and a non-zero-padded print sorted out of
-/// calendar order under the sampler's then-lexicographic compare.
-///
-/// The shaper holds the report adapter's integrity contract too
-/// ([`sector_pe_from_value`] — the 2026-08-24 review's Codex I9, ruled
-/// 2026-08-29). Every row's `exchange` must be present and equal to the board
-/// the call was pinned to: a row served under another board, or without one,
-/// is evidence the exchange filter was ignored, so the whole body is `Err`
-/// naming the served board (the callers' `malformed` row) rather than one
-/// board's prints silently standing in for the other's. A `pe` is a usable
-/// print only when finite and inside `(0.0, SECTOR_PE_MAX]` — FMP's `0.0` for
-/// a sector with no positive summed earnings, a denominator-near-zero artifact
-/// past the ceiling, a drifted `"NaN"` — and an out-of-band print is dropped
-/// like an unreadable row. The fund type's `pe` is required, so a dropped
-/// print holds no slot: the history sampler falls to the next in-quarter print
-/// where one exists. Before this the shaper echoed the requested board on a
-/// missing field, accepted a disagreeing one, and took any parseable P/E, so
-/// "usable P/E" meant different things across the one job.
+/// The suite's dated-row rule (`docs/data-sources.md` §Financial Modeling Prep): the
+/// date is stored canonical ([`canonical_date`]) and a dateless row is dropped, since
+/// a dateless row stored as `""` would sort before every sample date and hold a
+/// history slot. The same off-board guard as [`sector_pe_from_value`]: a row served
+/// under another board, or none, fails the whole body naming the served board. A
+/// `pe` is usable only when finite and inside `(0.0, SECTOR_PE_MAX]`; the fund
+/// type's `pe` is required, so a dropped print holds no slot and the history
+/// sampler falls to the next in-quarter print.
 fn sector_pe_rows_from_value(
     value: &Value,
     requested_exchange: &str,
@@ -9472,13 +8592,9 @@ mod suite_tests {
 
     #[test]
     fn quarterly_statement_dates_store_the_canonical_render() {
-        // The shapers stored `date` / `filingDate` as source text while every
-        // consumer is lexicographic — `canonicalize_statements`' newest-first
-        // sort and restatement tie-break, the anchor date against ISO closes —
-        // so a non-zero-padded "2026-9-30" (the feed family's documented wire
-        // quirk) would sort after "2026-12-31", the run would read
-        // non-contiguous, and TTM adoption would fail onto the annual basis
-        // (large-scale review 2026-08-24, P1 minor).
+        // As source text "2026-9-30" sorts after "2026-12-31" under every lexicographic
+        // consumer, the run reads non-contiguous and TTM adoption fails onto the
+        // annual basis.
         let income = r#"[
           {"reportedCurrency":"USD","date":"2026-9-30","filingDate":"2026-11-5","revenue":1.0},
           {"reportedCurrency":"USD","date":"2026-6-30","filingDate":"soon","fillingDate":"2026-8-1","revenue":2.0},
@@ -9531,9 +8647,8 @@ mod suite_tests {
 
     #[test]
     fn quarterly_statement_dates_all_undatable_read_malformed() {
-        // A served array with no readable row is the fetch layer's existing
-        // `malformed` branch — an undatable date is unreadable exactly as a
-        // dateless row is, never a benign `empty`.
+        // An undatable date is unreadable exactly as a dateless row is, never a
+        // benign `empty`.
         let body = r#"[{"reportedCurrency":"USD","date":"soon","revenue":1.0},{"reportedCurrency":"USD","date":"Q3","revenue":2.0}]"#;
         let server = MockHttp::serve(vec![Canned::Reply {
             status: 200,
@@ -9566,11 +8681,9 @@ mod suite_tests {
 
     #[test]
     fn quarterly_statement_dates_unpadded_still_adopt_the_ttm_basis() {
-        // The finding's harm, end to end: four consecutive quarters served with
-        // mixed padding. As source text "2026-9-30" sorted after "2026-12-31"
-        // newest-first, `quarters_contiguous` read the misordered run as a gap,
-        // and adoption failed onto the annual basis with nothing wrong in the
-        // data — a silent basis drop and a spurious basis-change gate.
+        // Four consecutive quarters served with mixed padding: as source text
+        // `quarters_contiguous` read the misordered run as a gap and adoption failed
+        // onto the annual basis with nothing wrong in the data.
         let body = r#"[
           {"date":"2026-12-31","revenue":10.0,"netIncome":1.0},
           {"date":"2026-9-30","revenue":10.0,"netIncome":1.0},
@@ -9595,8 +8708,8 @@ mod suite_tests {
 
     #[test]
     fn quarterly_income_null_stable_eps_falls_through_to_the_legacy_spelling() {
-        // FMP serves JSON nulls: a present-but-null `epsDiluted` must not block
-        // the legacy `epsdiluted` value (the balance-sheet shaper's rule).
+        // FMP serves JSON nulls: a present-but-null `epsDiluted` must not block the
+        // legacy `epsdiluted` value.
         let value: Value = serde_json::from_str(
             r#"[{"date":"2026-03-31","epsDiluted":null,"epsdiluted":1.55,"revenue":95e9}]"#,
         )
@@ -9649,10 +8762,7 @@ mod suite_tests {
 
     #[test]
     fn statement_rows_keep_the_factor_machinerys_lines_and_absent_reads_none() {
-        // The shared engine's widened inputs (`portfolio::factors`,
-        // `portfolio::value_creation`): R&D, pre-tax income and tax on the
-        // income row, total assets on the balance sheet, D&A on the cash flow —
-        // each read as served, and an absent or null line reads `None`.
+        // An absent or null line reads `None`.
         let income: Value = serde_json::from_str(
             r#"[
             {"date":"2026-03-31","revenue":95e9,"researchAndDevelopmentExpenses":8.5e9,
@@ -9688,8 +8798,6 @@ mod suite_tests {
 
     #[test]
     fn statement_pulls_request_sixteen_quarters_on_every_leg() {
-        // The factor reads' own-history depth: the balance-sheet and cash-flow
-        // pulls match the income pull's sixteen quarters.
         assert_eq!(INCOME_QUARTERS_LIMIT, "16");
         assert_eq!(BALANCE_SHEET_QUARTERS_LIMIT, "16");
         assert_eq!(CASH_FLOW_QUARTERS_LIMIT, "16");
@@ -9773,12 +8881,9 @@ mod suite_tests {
 
     #[test]
     fn consensus_blends_the_two_nearest_forward_years_by_ntm_overlap() {
-        // Today 2026-07-16; the near fiscal year ends 2026-09-30 (76 days out, mostly
-        // reported — its consensus ≈ the trailing print), the far one 2027-09-30. The
-        // NTM read weights the near row by its remaining share of the rolling twelve
-        // months (76/365) and the far row by the rest — so real forward growth
-        // reaches the driver instead of the near-realized current year (the
-        // 2026-07-31 F1 flat-target mechanism). The stale 2025 row never enters.
+        // Today 2026-07-16; the near fiscal year ends 2026-09-30 (76 days out), the far
+        // one 2027-09-30, so the near row weighs 76/365 and the far row the rest. The
+        // stale 2025 row never enters.
         let body = r#"[
           {"date":"2025-09-30","epsAvg":6.1,"epsLow":5.9,"epsHigh":6.3,
            "revenueAvg":400e9,"revenueLow":390e9,"revenueHigh":410e9},
@@ -9815,10 +8920,8 @@ mod suite_tests {
 
     #[test]
     fn consensus_orders_on_parsed_dates_never_the_source_text() {
-        // A non-zero-padded month ("2026-9-30") sorts lexicographically AFTER
-        // "2026-12-31" — a raw-string sort would make December the near leg and
-        // September the far leg, inverting the NTM blend's weights. Parsed
-        // dates order correctly and the near row is September.
+        // "2026-9-30" sorts lexicographically after "2026-12-31": a raw-string sort
+        // would make December the near leg and invert the blend's weights.
         let body = r#"[
           {"date":"2026-12-31","epsAvg":9.0},
           {"date":"2026-9-30","epsAvg":6.0}
@@ -9889,9 +8992,8 @@ mod suite_tests {
 
     #[test]
     fn consensus_counts_field_carrying_rows_not_blended_rows() {
-        // The clamp-release corroboration trap (Codex round 1, finding 2): two
-        // forward rows blend (`periods_used = 2`) but only the near row carries
-        // an EPS mid — the release must see one EPS row, not two.
+        // Two forward rows blend (`periods_used = 2`) but only the near row carries an
+        // EPS mid; the clamp release must see one EPS row, not two.
         let body = r#"[
           {"date":"2026-09-30","epsAvg":6.8,"revenueAvg":1.0e9},
           {"date":"2027-09-30","revenueAvg":1.1e9}
@@ -9906,11 +9008,10 @@ mod suite_tests {
 
     #[test]
     fn consensus_boundary_day_near_row_carries_no_corroboration() {
-        // `today == near_date`: the near weight is exactly 0 and the blended
-        // value is entirely the far row's — a present-but-weightless near row
-        // must not count as a second estimate (Codex round 2). The far-leg
-        // fallback stays a real contributor: revenue exists only on the near
-        // row, is used alone despite the zero weight, and counts as one.
+        // `today == near_date`: the near weight is exactly 0, so a present-but-
+        // weightless near row must not count as a second estimate. The fallback stays
+        // a real contributor: revenue exists only on the near row, is used alone
+        // despite the zero weight, and counts as one.
         let body = r#"[
           {"date":"2026-09-30","epsAvg":6.8,"revenueAvg":1.0e9},
           {"date":"2027-09-30","epsAvg":7.4}
@@ -9992,8 +9093,8 @@ mod suite_tests {
 
     #[test]
     fn dated_eod_round_trips_sorted_dated_closes() {
-        // The dated form keeps the dates the undated per-company EOD read
-        // discards — the v2 anchor join needs them for the latest-on-or-before join.
+        // The dated form keeps the dates the undated read discards; the anchor's
+        // latest-on-or-before join needs them.
         let body = r#"[
           {"date":"2026-07-14","price":195.0},
           {"date":"2026-07-10","price":192.5},
@@ -10120,13 +9221,9 @@ mod suite_tests {
 
     #[test]
     fn ttm_dividends_reject_an_overflowed_in_window_sum_as_a_drifted_body() {
-        // Codex I16 (ruled 2026-08-29): every amount is finite by the parser,
-        // but two feed-extreme in-window prints overflow their sum to inf,
-        // which rode the required `forward_dividends` into a persisted `null`
-        // the store could not read back. An overflowed sum is a drifted body —
-        // `Err` at the shaper, so the pull records the dividends gap with the
-        // reason, its tracker row reads `malformed`, and the leg reads zero WITH
-        // the gap, never a figure and never a silent non-payer.
+        // Two feed-extreme in-window prints overflow their sum to inf, which would ride
+        // the required `forward_dividends` into a persisted `null`; an overflowed sum
+        // is a drifted body, so the leg reads zero with the gap.
         let today = chrono::NaiveDate::from_ymd_opt(2026, 8, 3).unwrap();
         let body = r#"[{"date":"2026-05-10","adjDividend":1.7976931348623157e308},
                        {"date":"2026-02-10","adjDividend":1.7976931348623157e308}]"#;
@@ -10176,10 +9273,9 @@ mod suite_tests {
 
     #[test]
     fn eod_closes_that_are_not_usable_prices_are_dropped_at_both_parses() {
-        // Codex I16, reviewer round (ruled 2026-08-29): the quote's usability
-        // rule at the EOD parse too. A zero or negative close is not a price —
-        // it rode into returns and drawdowns, and a zero entry close made an
-        // episode row's required `price_return` a persisted `null`.
+        // A zero or negative close is not a price: it would ride into returns and
+        // drawdowns, and a zero entry close makes an episode's required
+        // `price_return` a persisted `null`.
         let body: Value = serde_json::from_str(
             r#"[{"date":"2026-08-03","price":195.0},
                 {"date":"2026-08-02","price":0},
@@ -10330,7 +9426,6 @@ mod suite_tests {
         // Percent-unit expense ratio normalizes to a decimal ratio at the seam.
         assert!((fund.expense_ratio.unwrap() - 0.0003).abs() < 1e-12);
         assert_eq!(fund.nav, Some(280.5));
-        // The profile's fund-structure fields fill for the closed-end detection.
         assert_eq!(fund.profile_is_fund, Some(false));
         assert!(fund
             .profile_description
@@ -10344,11 +9439,7 @@ mod suite_tests {
 
     #[test]
     fn weights_are_percent_by_wire_contract_in_both_forms() {
-        // The field is percent by contract (FMP's own examples: numeric 1.8 =
-        // SPY's ~2% Basic Materials sleeve; "97.82%" strings on countries) —
-        // every value divides by 100, sparse or full, suffixed or not. No unit
-        // heuristic: sum- and element-shaped guesses misread exactly the
-        // sparse sets where a wrong read prices a fund off a sliver.
+        // Every value divides by 100, sparse or full, suffixed or not.
         let numeric: Value = serde_json::from_str(
             r#"[{"sector":"Technology","weightPercentage":32.5},
                 {"sector":"Basic Materials","weightPercentage":1.8}]"#,
@@ -10361,9 +9452,8 @@ mod suite_tests {
             serde_json::from_str(r#"[{"sector":"Technology","weightPercentage":"1.4%"}]"#).unwrap();
         let out = weights_from_value(&suffixed, "sector");
         assert!((out[0].1 - 0.014).abs() < 1e-12, "{:?}", out);
-        // The sparse numeric row divides too — the case every heuristic
-        // misread (1.4 kept as a "fraction" priced the fund off a 1.4% sleeve
-        // at 100% reported coverage).
+        // The sparse numeric row divides too: 1.4 kept as a fraction priced a fund
+        // off a 1.4% sleeve.
         let sparse: Value =
             serde_json::from_str(r#"[{"sector":"Technology","weightPercentage":1.4}]"#).unwrap();
         let out = weights_from_value(&sparse, "sector");
@@ -10372,13 +9462,8 @@ mod suite_tests {
 
     #[test]
     fn weight_rows_outside_the_finite_0_to_100_range_are_dropped() {
-        // Codex I7 (ruled 2026-08-29): `f64::from_str` accepts "NaN" / "inf" and
-        // overflows "1e999", and nothing bounded the served percent — a NaN
-        // sector weight rode `covered` into the percentile sorts, and a NaN
-        // United States row read as a 100% US share (`min(1.0)` returns the
-        // non-NaN operand). A row is usable only finite and within 0..=100,
-        // the endpoints included; anything else is dropped like an unreadable
-        // row.
+        // `f64::from_str` accepts "NaN" / "inf" and overflows "1e999"; a row is usable
+        // only finite and within 0..=100, the endpoints included.
         let body: Value = serde_json::from_str(
             r#"[{"sector":"Technology","weightPercentage":"NaN%"},
                 {"sector":"Energy","weightPercentage":"inf"},
@@ -10399,12 +9484,9 @@ mod suite_tests {
 
     #[test]
     fn a_nan_us_weight_row_no_longer_reads_as_full_us_exposure() {
-        // Codex I7 (ruled 2026-08-29), the production ingress end to end: the
-        // shaper drops the NaN United States row, so the classification's US
-        // share reads over the rows that are weights — 0% here, where the NaN
-        // row read 100% and passed the ≥70% guard — and an all-unreadable
-        // weighting body reads `malformed` on its tracker row with the gap,
-        // never a benign empty.
+        // End to end: the shaper drops the NaN United States row, so the US share
+        // reads 0% where the NaN row would read 100% and pass the ≥70% guard, and an
+        // all-unreadable weighting body reads `malformed`, never a benign empty.
         let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
         let ctx = crate::progress::RunContext::new(
             "run",
@@ -10466,10 +9548,8 @@ mod suite_tests {
 
     #[test]
     fn fund_info_blank_strings_normalize_to_none() {
-        // "" / whitespace-only name or assetClass reads as absent, never
-        // present: the sweep's comparability gates key on `is_some()`, and a
-        // blank name would fabricate a stored-true → fresh-false overlay clear
-        // while a blank asset class would dodge the degraded-family path.
+        // Blank reads as absent: the sweep's comparability gates key on `is_some()`,
+        // and a blank name would fabricate an overlay clear.
         let info = r#"[{"symbol":"VTI","name":"   ","assetClass":"","expenseRatio":0.03}]"#;
         let server = MockHttp::serve(vec![
             Canned::Reply { status: 200, headers: vec![], body: info },
@@ -10506,12 +9586,8 @@ mod suite_tests {
 
     #[test]
     fn fund_profile_shapes_all_leave_a_detection_trail() {
-        // Codex 2026-08-21 round 4, finding 1: every profile answer that leaves
-        // closed-end detection unable to run must say so on the record — a
-        // served empty, an unreadable body, a fieldless or flag-drifted object,
-        // and a fund-flagged profile with no description to screen. The one
-        // silent answer is a definitive `isFund: false` (not a fund structure —
-        // nothing to detect).
+        // Every profile answer that leaves closed-end detection unable to run must say
+        // so on the record; the one silent answer is a definitive `isFund: false`.
         let case = |profile_body: &'static str| {
             let server = MockHttp::serve(vec![
                 Canned::Reply { status: 200, headers: vec![], body: "[]" },
@@ -10552,12 +9628,9 @@ mod suite_tests {
 
     #[test]
     fn the_sweep_fund_refresh_never_fetches_the_profile() {
-        // The quick check's variant skips the `profile` leg (full-pass only —
-        // the sweep never re-runs closed-end detection): exactly three requests
-        // land — info, sectors, countries. Were a fourth made, the served
-        // bodies would shift one leg late and the countries call would fail on
-        // the exhausted mock, so the two clean "were empty" weighting gaps pin
-        // the request count.
+        // Exactly three requests land (info, sectors, countries). A fourth would shift
+        // the served bodies one leg late and fail the countries call on the exhausted
+        // mock, so the two clean "were empty" weighting gaps pin the request count.
         let info = r#"[{"symbol":"VTI","name":"Vanguard Total Stock Market ETF",
             "assetClass":"Equity","expenseRatio":0.03}]"#;
         let server = MockHttp::serve(vec![
@@ -10579,13 +9652,8 @@ mod suite_tests {
 
     #[test]
     fn fund_sector_pe_rows_hold_the_sibling_adapters_integrity_contract() {
-        // Codex I9 (ruled 2026-08-29): the fund shaper shares the report
-        // adapter's contract. A `pe` is usable only finite and inside
-        // (0, SECTOR_PE_MAX] — the ceiling itself kept, FMP's 0.0, a negative,
-        // a denominator-near-zero artifact (a live run surfaced ≈461) and a
-        // drifted "NaN" dropped like unreadable rows; a string P/E still
-        // parses. Before this any parseable P/E rode into the blend and the
-        // history sampler.
+        // A `pe` is usable only finite and inside (0, SECTOR_PE_MAX], the ceiling
+        // itself kept; a string P/E still parses.
         let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
         let ctx = crate::progress::RunContext::new(
             "run",
@@ -10602,12 +9670,8 @@ mod suite_tests {
           {"date":"2026-07-15","sector":"Health Care","exchange":"NYSE","pe":"NaN"},
           {"date":"2026-07-15","sector":"Broken","exchange":"NYSE"}
         ]"#;
-        // Every row's exchange must be present AND equal to the requested
-        // board: an off-board row (FMP ignoring the `exchange` filter) or an
-        // absent field reads the whole body malformed, the served board
-        // named, the Ok(vec![]) return keeping the walk-back unchanged —
-        // where the shaper echoed the request on a missing field and accepted
-        // a disagreeing one.
+        // An off-board row or an absent exchange reads the whole body malformed, the
+        // served board named, the Ok(vec![]) return keeping the walk-back unchanged.
         let off_board = r#"[
           {"date":"2026-07-15","sector":"Technology","exchange":"NYSE","pe":30.1},
           {"date":"2026-07-15","sector":"Energy","exchange":"NASDAQ","pe":11.4}
@@ -10693,13 +9757,9 @@ mod suite_tests {
 
     #[test]
     fn sector_pe_rows_store_the_canonical_date_and_drop_undatable_rows() {
-        // Codex I14 (ruled 2026-08-28): the sector-P/E family joins the dated-row
-        // rule as written. Stored as served, a non-zero-padded "2026-6-15" (the
-        // feed family's documented wire quirk) sorted after "2026-12-31" under the
-        // fund sampler's lexicographic compare, and a dateless row read as `""` —
-        // before every sample date, so it held an exchange's history slot wherever
-        // no dated print qualified. Now the render is canonical, and a missing or
-        // unparseable date drops the row on the snapshot and the history alike.
+        // Stored as served, "2026-6-15" sorts after "2026-12-31" under the sampler's
+        // lexicographic compare, and a dateless row reads as `""`, before every sample
+        // date, holding a history slot wherever no dated print qualified.
         let rec = std::sync::Arc::new(crate::progress::RecordingReporter::default());
         let ctx = crate::progress::RunContext::new(
             "run",
@@ -10742,9 +9802,8 @@ mod suite_tests {
         assert_eq!(rows.len(), 1, "the snapshot drops its dateless row too: {rows:?}");
         assert_eq!(rows[0].date, "2026-07-15");
 
-        // A served array with no readable row is the existing `malformed` branch
-        // on both endpoints — never a benign `empty` — while the `Ok(vec![])`
-        // return contract keeps the snapshot's bounded date walk-back unchanged.
+        // A served array with no readable row is `malformed` on both endpoints, never a
+        // benign `empty`, while the `Ok(vec![])` return keeps the walk-back unchanged.
         let rows = source
             .fetch_historical_sector_pe("Technology", "NYSE", "2022-01-01", "2026-07-15")
             .unwrap();
@@ -11249,7 +10308,6 @@ mod suite_tests {
         );
     }
 
-    /// A full M&A feed page of `n` rows on one transaction date.
     fn ma_page(n: usize, date: &str) -> &'static str {
         let rows: Vec<String> = (0..n)
             .map(|i| {
@@ -11289,9 +10347,8 @@ mod suite_tests {
         assert_eq!(deals.len(), MA_PAGE_LIMIT + 1);
         assert_eq!(gap, None);
         assert_eq!(server.request_paths().len(), 2);
-        // A full page with one unreadable (dateless) row is still a full
-        // page: the walk continues to the next page rather than ending on
-        // the 99 rows it could read (Codex, 2026-10-08).
+        // A full page with one unreadable (dateless) row is still a full page: the
+        // walk continues rather than ending on the 99 rows it could read.
         let full99 = ma_page(MA_PAGE_LIMIT - 1, "2026-09-01");
         let mixed: &'static str = Box::leak(
             format!("{},{{\"symbol\":\"NODATE\"}}]", &full99[..full99.len() - 1]).into_boxed_str(),

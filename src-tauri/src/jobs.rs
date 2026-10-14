@@ -1,17 +1,8 @@
-//! Job lifecycle: the application-layer orchestration that wraps a single report
-//! run with the four-state contract from `docs/scheduling.md §Job States`.
-//!
-//! This module owns the *lifecycle*, distinct from `pipeline`, which owns
-//! producing one report. `run_job` enforces the single-workflow-at-a-time guard
-//! (`docs/scheduling.md §Concurrent Job Protection`), records every outcome to
-//! the `job_runs` table, and surfaces a failed run into the Persistent Warning
-//! Area (`docs/interface.md`). Like `pipeline`, it is Tauri-free so it can be
-//! driven directly by an integration test against a stub agent — the Tauri
-//! command is only a thin async wrapper that resolves paths and shares the guard.
-//!
-//! Report generation is on demand only — there is no scheduler, so this module
-//! produces just the four manual-run states (Successful / Failed / Skipped /
-//! Cancelled); there is no missed-job detection or `MissedScheduledJob` warning.
+//! Job lifecycle around a single report run (`docs/scheduling.md §Job States`):
+//! the single-workflow guard (`docs/scheduling.md §Concurrent Job Protection`),
+//! the `job_runs` record, and the failed-job warning (`docs/interface.md`).
+//! Tauri-free like `pipeline`. Generation is on demand, so there is no scheduler
+//! and no `Missed` state.
 
 use std::sync::{Arc, Mutex};
 
@@ -29,31 +20,20 @@ use crate::pipeline::{
 use crate::progress::RunContext;
 use crate::storage;
 
-/// The only job type today; the schema carries it so additional recurring jobs
-/// can share the table later.
 const MARKET_SIGNAL_JOB: &str = "market_signal";
 
-/// `app_settings` key recording a dismissed Persistent Warning Area warning
-/// (`docs/interface.md §Persistent Warning Area` — "Dismissing a warning
-/// permanently removes it. A subsequent event in the same category produces a fresh
-/// warning."). Stores the *identity* of the dismissed warning — the failed run's
-/// `job_runs.id` — so a later, distinct failure re-surfaces. Only the non-blocking
-/// failed-job category is dismissible; the blocking configuration gaps are gate
-/// state, not notices.
+/// `app_settings` key holding the identity (the failed run's `job_runs.id`) of
+/// the dismissed warning, so a later, distinct failure re-surfaces
+/// (`docs/interface.md §Persistent Warning Area`).
 const DISMISSED_FAILED_JOB_RUN_ID_KEY: &str = "dismissed_failed_job_run_id";
 
-/// Reason recorded and returned when a run is rejected by the concurrency guard.
 const SKIP_REASON: &str = "another report run is already in progress";
 
-/// Human title for the run tracker, emitted as the run starts.
 const RUN_LABEL: &str = "Market Signal report";
 
-/// How a job run ended (`docs/scheduling.md §Job States`). There is no `Missed`
-/// state — report generation is on demand, so a report is never "due" while
-/// unattended. `Cancelled` is the user-initiated stop from the live run tracker —
-/// recorded like `Skipped` (it never produced a report and never raises a
-/// failed-job warning), but kept distinct so the status panel and history can tell
-/// an aborted run from a concurrency skip.
+/// How a job run ended (`docs/scheduling.md §Job States`). `Cancelled` is
+/// recorded like `Skipped` (no report, no failed-job warning) but kept distinct
+/// so history can tell an aborted run from a concurrency skip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobState {
     Successful,
@@ -85,11 +65,8 @@ pub struct JobRun<'a> {
     pub detail: Option<&'a str>,
 }
 
-/// The result of `run_job`. Carries the report on success and the human-readable
-/// message on failure / skip, so the command layer can map it straight to the
-/// frontend's `Result<GeneratedReport, String>` contract. The success payload is
-/// boxed: `GeneratedReport` dwarfs the two `String` variants, so without
-/// indirection every `JobOutcome` would be sized to the largest variant.
+/// The success payload is boxed because `GeneratedReport` dwarfs the `String`
+/// variants.
 #[derive(Debug)]
 pub enum JobOutcome {
     Successful(Box<GeneratedReport>),
@@ -98,44 +75,35 @@ pub enum JobOutcome {
     Cancelled(String),
 }
 
-/// What kind of workflow holds the single run slot. Carried by the guard and
-/// surfaced through `JobStatus`, so the footer can label the in-flight work
-/// honestly — a Schwab connect or a Portfolio run must never read as a report
-/// generation. Kebab-case on the wire; mirrored in the frontend `JobStatus`.
+/// What kind of workflow holds the single run slot, so the footer labels the
+/// in-flight work honestly. Kebab-case on the wire; mirrored in the frontend
+/// `JobStatus`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RunKind {
     Report,
     Portfolio,
-    /// The engine-only Portfolio quick check (`docs/portfolio-analysis.md §The
-    /// quick check`) — no model call, no web research, no Schwab call, but it
-    /// holds the slot like any job so it can't race a run's own retrieval or
+    /// The engine-only quick check (`docs/portfolio-analysis.md §The quick
+    /// check`) holds the slot so it can't race a run's own retrieval or
     /// persistence.
     PortfolioQuickCheck,
     SchwabConnect,
-    /// A standalone, view-only holdings pull (`docs/portfolio-analysis.md
-    /// §Triggering`) — a quick Schwab fetch, never an analysis run. It holds the
-    /// slot so it can't race a job's own pull or token refresh.
+    /// A view-only holdings pull (`docs/portfolio-analysis.md §Triggering`)
+    /// holds the slot so it can't race a job's own pull or token refresh.
     HoldingsPull,
-    /// A whole-corpus data export or import (`docs/data-portability.md`). Holds
-    /// the slot so an archive can never capture — or replace — a half-written
-    /// mid-run store, and so no job starts against a store mid-replacement.
+    /// An export or import (`docs/data-portability.md`) holds the slot so an
+    /// archive never captures or replaces a half-written mid-run store.
     DataPortability,
 }
 
-/// The single-workflow-at-a-time guard. A shared slot (cloneable via the inner
-/// `Arc`) so the Tauri command can `manage` one instance and hand a clone to
-/// each blocking run. The locked check-and-set is what makes two racing runs
-/// resolve to exactly one runner and one skip; the slot remembers *which* kind
-/// of workflow claimed it, for the status read.
+/// The single-workflow-at-a-time guard. The locked check-and-set is what makes
+/// two racing runs resolve to exactly one runner and one skip.
 #[derive(Clone, Default)]
 pub struct RunGuard(Arc<Mutex<Option<RunKind>>>);
 
 impl RunGuard {
-    /// Try to claim the single run slot for a `kind` of workflow. Returns a
-    /// `RunToken` held for the run's duration when the slot was free, or `None`
-    /// when a run is already in flight. Releasing happens on the token's `Drop`,
-    /// so success, failure, and panic all free the slot.
+    /// `None` when a run is already in flight. Releasing happens on the token's
+    /// `Drop`, so success, failure, and panic all free the slot.
     pub fn try_begin(&self, kind: RunKind) -> Option<RunToken> {
         let mut slot = self.lock();
         if slot.is_some() {
@@ -145,19 +113,17 @@ impl RunGuard {
         Some(RunToken(self.0.clone()))
     }
 
-    /// Whether a run currently holds the slot.
     pub fn is_running(&self) -> bool {
         self.running_kind().is_some()
     }
 
-    /// The kind of workflow holding the slot right now, if any. A best-effort
-    /// status read for the UI, not a synchronization point.
+    /// A best-effort status read for the UI, not a synchronization point.
     pub fn running_kind(&self) -> Option<RunKind> {
         *self.lock()
     }
 
-    /// The slot, poison-tolerant: the critical sections are plain assignments, but
-    /// a panic elsewhere must never wedge the guard permanently closed (or open).
+    /// Poison-tolerant: a panic elsewhere must never wedge the guard
+    /// permanently closed (or open).
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<RunKind>> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -172,15 +138,10 @@ impl Drop for RunToken {
     }
 }
 
-/// Run one job end to end with the lifecycle contract: claim the concurrency
-/// slot (or record a Skipped run and return), produce the report, then record
-/// the Successful or Failed outcome. Returns `Err` only on an infrastructure
-/// failure (the database itself) — a failed *report* is a normal `Ok(Failed)`
-/// outcome, not an error.
-///
-/// The schema is initialized up front so the Skipped and Failed paths — which
-/// may short-circuit before `generate_report` touches the database — still have
-/// `job_runs` (and `reports`) to write to.
+/// Returns `Err` only on an infrastructure failure (the database itself); a
+/// failed report is a normal `Ok(Failed)`. The schema is initialized up front
+/// so the Skipped and Failed paths, which may short-circuit before
+/// `generate_report` touches the database, still have `job_runs` to write to.
 #[allow(clippy::too_many_arguments)] // each is a distinct injected stage/dependency or path, documented at the call sites
 pub fn run_job(
     agent: &dyn MainAgent,
@@ -195,8 +156,7 @@ pub fn run_job(
     let conn = storage::open(&paths.db_path)?;
     storage::init_schema(&conn)?;
 
-    // Claim the single run slot. `_token` is held until this function returns;
-    // its Drop frees the slot after the outcome is recorded.
+    // `_token` is held until the outcome is recorded; its Drop frees the slot.
     let _token = match guard.try_begin(RunKind::Report) {
         Some(t) => t,
         None => {
@@ -216,10 +176,8 @@ pub fn run_job(
         }
     };
 
-    // The run owns the slot now. Reset the cancel flag and open the tracker's lifecycle
-    // here — *after* the guard claim — so a concurrency-skipped run (which returned
-    // above) never emits a `run-started` and never resets the cancellation of the run
-    // that actually holds the slot.
+    // After the guard claim, so a concurrency-skipped run never emits
+    // `run-started` and never resets the cancellation of the run holding the slot.
     ctx.reset_cancel();
     ctx.run_started(RUN_LABEL);
 
@@ -227,9 +185,7 @@ pub fn run_job(
     match generate_report(agent, data, research, analysts, embedder, paths, ctx) {
         Ok(report) => {
             let finished_at = now_rfc3339();
-            // Emit the terminal tracker event even if the job-history write fails, so a
-            // (rare) database error can't leave the UI stuck showing a run in progress.
-            // The DB error still propagates after, as the infrastructure failure it is.
+            // `run-finished` is emitted before any job-history write error can propagate.
             let recorded = record_run(
                 &conn,
                 &JobRun {
@@ -245,11 +201,9 @@ pub fn run_job(
             recorded?;
             Ok(JobOutcome::Successful(Box::new(report)))
         }
-        // A cancel requested mid-run surfaces as an error from `generate_report`; the
-        // shared cancel flag tells a user-initiated stop apart from a genuine failure.
-        // A cancel that lands after the report was already persisted is honored as the
-        // Ok(report) above — the work is done — so this branch only fires on a true
-        // mid-run stop.
+        // A mid-run cancel surfaces as an error from `generate_report`; the cancel
+        // flag tells it from a genuine failure. A cancel landing after the report
+        // persisted is honored as the Ok(report) above.
         Err(_) if ctx.is_cancelled() => {
             let finished_at = now_rfc3339();
             let detail = "run cancelled by user".to_string();
@@ -289,7 +243,6 @@ pub fn run_job(
     }
 }
 
-/// Insert one job-run row.
 pub fn record_run(conn: &Connection, run: &JobRun) -> Result<()> {
     conn.execute(
         "INSERT INTO job_runs
@@ -307,13 +260,9 @@ pub fn record_run(conn: &Connection, run: &JobRun) -> Result<()> {
     Ok(())
 }
 
-/// Build the Persistent Warning Area's `FailedJob` category from job history, or
-/// `None` when there is nothing to warn about. The rule: look at the most recent
-/// run that actually *executed* (Successful or Failed — a Skipped run never ran,
-/// so it neither raises nor clears the indicator); warn only when that run
-/// Failed. A later successful run therefore clears the warning. The category is
-/// non-blocking (`WarningKind::FailedJob.is_blocking()` is false), so the
-/// caller's `is_blocked` is unaffected.
+/// The `FailedJob` warning, or `None`. Warns only when the most recent run that
+/// actually executed (Successful or Failed; a Skipped run neither raises nor
+/// clears it) Failed. Non-blocking.
 pub fn failure_warning(conn: &Connection) -> Result<Option<WarningCategory>> {
     let latest = conn
         .query_row(
@@ -334,9 +283,8 @@ pub fn failure_warning(conn: &Connection) -> Result<Option<WarningCategory>> {
 
     match latest {
         Some((id, state, finished_at, detail)) if state == JobState::Failed.as_str() => {
-            // Suppressed if the user dismissed this exact failed run; a later
-            // failure carries a higher `id`, so the marker no longer matches and a
-            // fresh warning surfaces.
+            // A later failure carries a higher `id`, so the dismiss marker no
+            // longer matches and a fresh warning surfaces.
             if storage::get_setting(conn, DISMISSED_FAILED_JOB_RUN_ID_KEY)?.as_deref()
                 == Some(id.to_string().as_str())
             {
@@ -357,17 +305,11 @@ pub fn failure_warning(conn: &Connection) -> Result<Option<WarningCategory>> {
     }
 }
 
-/// Dismiss one Persistent Warning Area warning by the *identity the frontend
-/// rendered* (`docs/interface.md §Persistent Warning Area`). `dismiss_id` is the
-/// `WarningCategory.dismiss_id` echoed back from the shown row — the failed run's id
-/// for `FailedJob` — written verbatim into the `app_settings` marker.
-/// `failure_warning` then suppresses only the warning whose *current* identity
-/// equals the marker, so dismissing a stale row records that stale identity
-/// (already gone) and a later, distinct failure still surfaces fresh. Keying off
-/// the rendered id — rather than re-deriving "current" at click time — is what
-/// makes a stale click safe. The three blocking configuration categories are gate
-/// state rather than dismissible notices, so a dismiss of one is a no-op (the UI
-/// also offers no control for them).
+/// Dismiss by the identity the frontend rendered (`docs/interface.md
+/// §Persistent Warning Area`), never one re-derived at click time, so a stale
+/// click records a stale identity and a later, distinct failure still surfaces.
+/// The blocking configuration categories are gate state, not dismissible
+/// notices, so a dismiss of one is a no-op.
 pub fn dismiss_warning_category(conn: &Connection, kind: WarningKind, dismiss_id: &str) -> Result<()> {
     match kind {
         WarningKind::FailedJob => {
@@ -382,10 +324,8 @@ pub fn dismiss_warning_category(conn: &Connection, kind: WarningKind, dismiss_id
     Ok(())
 }
 
-/// One section's "last X" stamps (`docs/scheduling.md §Job Status Visibility`):
-/// the most recent run per terminal state for a single `job_type`. Timestamps
-/// are the canonical UTC RFC3339 strings; the frontend renders them in local
-/// time.
+/// One section's "last X" stamps (`docs/scheduling.md §Job Status
+/// Visibility`), UTC RFC3339; the frontend renders them in local time.
 #[derive(Debug, Clone, Serialize)]
 pub struct SectionStamps {
     pub last_successful_at: Option<String>,
@@ -395,18 +335,12 @@ pub struct SectionStamps {
     pub last_cancelled_at: Option<String>,
 }
 
-/// A snapshot of job status for the UI (`docs/scheduling.md §Job Status
-/// Visibility`): whether a run is in flight now — and, when one is, which kind
-/// of workflow holds the slot, so the footer's running label matches the actual
-/// work — plus the "last X" stamps *per section*, keyed by `job_type`, so the
-/// footer under each surface reports that section's own job (a portfolio run
-/// must never stamp LAST RUN under report chrome). The run-slot fields stay
-/// global: the single slot is shared across workflows. The engine-only
-/// Portfolio quick check reaches neither section's stamps — the equality filter
-/// on `job_type` excludes its `portfolio_quick_check` rows implicitly — since a
-/// between-run sweep is not the analysis freshness the footer reports; its
-/// failures still surface through the failed-jobs warning, which deliberately
-/// keeps no `job_type` filter.
+/// Job status for the UI (`docs/scheduling.md §Job Status Visibility`). The
+/// stamps are per section, keyed by `job_type`, so a portfolio run never stamps
+/// LAST RUN under report chrome; the run-slot fields stay global. The quick
+/// check's rows reach neither section (a between-run sweep is not analysis
+/// freshness); its failures still surface through `failure_warning`, which
+/// deliberately keeps no `job_type` filter.
 #[derive(Debug, Clone, Serialize)]
 pub struct JobStatus {
     pub is_running: bool,
@@ -415,12 +349,9 @@ pub struct JobStatus {
     pub portfolio: SectionStamps,
 }
 
-/// Assemble the current `JobStatus` from job history and the live run guard.
-/// Each "last X" is the most recent run of that state *and section* by
-/// insertion order (`id`), independent of the others — a later failure does not
-/// erase the last successful run's timestamp, and vice versa. Both sections
-/// ride one payload (rather than a per-call section parameter) so a view switch
-/// never waits on — or briefly mislabels across — a re-fetch.
+/// Each "last X" is independent of the others: a later failure does not erase
+/// the last successful stamp. Both sections ride one payload so a view switch
+/// never waits on, or briefly mislabels across, a re-fetch.
 pub fn job_status(conn: &Connection, guard: &RunGuard) -> Result<JobStatus> {
     let stamps_for = |job_type: &str| -> Result<SectionStamps> {
         let last_of = |state: &str| -> Result<Option<(String, Option<String>)>> {
@@ -450,10 +381,8 @@ pub fn job_status(conn: &Connection, guard: &RunGuard) -> Result<JobStatus> {
     })
 }
 
-/// Current time as an RFC3339 string. UTC remains the canonical persisted form
-/// for `job_runs` timestamps (sortable and unambiguous); local-time conversion
-/// is a display concern handled at the seams that show time to the user — the
-/// report filename (`pipeline`) and the frontend.
+/// UTC is the canonical persisted form for `job_runs` timestamps; local time is
+/// a display concern at the seams that show time to the user.
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
@@ -520,7 +449,6 @@ mod tests {
 
     #[test]
     fn failed_job_category_is_non_blocking() {
-        // The warning must never gate a run; that is a config-gate concern.
         assert!(!WarningKind::FailedJob.is_blocking());
     }
 
@@ -540,9 +468,6 @@ mod tests {
 
     #[test]
     fn job_status_scopes_stamps_to_each_sections_job_type() {
-        // The footer under each surface reports that section's own job: a
-        // portfolio run's finish must never stamp LAST RUN under report chrome
-        // (the first live run surfaced exactly that), and vice versa.
         let conn = mem();
         insert(&conn, JobState::Successful, None);
         record_run(
@@ -567,11 +492,6 @@ mod tests {
 
     #[test]
     fn job_status_ignores_quick_check_rows() {
-        // The engine-only quick check must not move the footer's last-run stamps:
-        // "last successful run" reads as analysis freshness, and a between-run
-        // sweep is not that. The per-section job_type equality filter excludes
-        // its rows from *both* sections. Its failures reach the user through the
-        // failed-jobs warning instead (`failure_warning` has no job_type filter).
         let conn = mem();
         record_run(
             &conn,
@@ -620,7 +540,6 @@ mod tests {
     fn run_guard_slot_is_exclusive_and_freed_on_drop() {
         let guard = RunGuard::default();
         let token = guard.try_begin(RunKind::SchwabConnect).unwrap();
-        // Any second claim loses while the slot is held, regardless of kind.
         assert!(guard.try_begin(RunKind::Report).is_none());
         assert_eq!(guard.running_kind(), Some(RunKind::SchwabConnect));
         drop(token);
@@ -630,7 +549,6 @@ mod tests {
 
     #[test]
     fn running_kind_serializes_kebab_case_for_the_frontend() {
-        // Pins the wire contract the frontend `JobStatus.running_kind` mirrors.
         let guard = RunGuard::default();
         let _token = guard.try_begin(RunKind::SchwabConnect).unwrap();
         let st = job_status(&mem(), &guard).unwrap();
@@ -647,9 +565,7 @@ mod tests {
         );
     }
 
-    /// The rendered identity of the current warning of `kind` — the `dismiss_id` the
-    /// frontend would echo back. Panics if no such warning is shown, since these
-    /// tests dismiss a warning they just asserted is present.
+    /// The `dismiss_id` the frontend would echo back for the shown warning.
     fn shown_dismiss_id(category: Option<WarningCategory>) -> String {
         category
             .expect("a warning is shown")
@@ -676,7 +592,6 @@ mod tests {
         let id = shown_dismiss_id(failure_warning(&conn).unwrap());
         dismiss_warning_category(&conn, WarningKind::FailedJob, &id).unwrap();
         assert!(failure_warning(&conn).unwrap().is_none());
-        // A second, distinct failure (a new id) is a fresh event the marker can't match.
         insert(&conn, JobState::Failed, Some("second"));
         let w = failure_warning(&conn)
             .unwrap()
@@ -688,9 +603,6 @@ mod tests {
     fn dismissing_a_blocking_category_is_a_noop() {
         let conn = mem();
         insert(&conn, JobState::Failed, Some("boom"));
-        // A blocking config category is gate state, not a dismissible notice: its
-        // dismiss writes no marker, whatever id is passed, so the failed-job warning
-        // is untouched.
         dismiss_warning_category(&conn, WarningKind::ApiTokens, "1").unwrap();
         assert!(
             failure_warning(&conn).unwrap().is_some(),

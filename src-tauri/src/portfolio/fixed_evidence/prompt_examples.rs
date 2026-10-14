@@ -1,35 +1,18 @@
 //! The docs' rendered prompt examples — `docs/prompts/portfolio/`, one Markdown
 //! file per Portfolio Analysis call shape, generated from the code so the set
-//! is exact for the current `PROMPT_VERSION` and is regenerated on every stamp
-//! bump (ruled 2026-09-27; `docs/prompts/README.md` is the reader's guide).
-//!
-//! The non-research data is the fixed evidence set's: TSLA for the stock
-//! shapes, SPMO for the fund shapes, the synthetic BND for role/risk. Every
-//! parsed article or research field is a shape-preserving `[stub: …]`
-//! placeholder, and the latest report's sections under MARKET ANALYSIS are
-//! stubbed the same way; ids, dates, URLs, hosts and section headers stay, so
-//! the tiers and the glosses that read them render as on a run. The FETCHED
-//! VALUES rows the fixed set does not carry — the issuer line, the served
-//! 52-week range, the 8-K list, the short-interest print, the street, the
-//! insider and congressional trades, the surprises, the ratio lines, owner
-//! earnings, enterprise value, the float, the M&A match and the segments —
-//! are synthetic values layered onto the stock shapes here alone
-//! ([`layer_synthetic_evidence`]; ruled 2026-10-08), their names stubbed, so
-//! every row renders in the docs while the fixture JSON and the live
-//! admission harness stay untouched. The
-//! continuity shapes carry a hand-written prior — attempt 6's persisted
-//! verdict, its model arm re-shaped by hand into a thesis document and an
-//! appendix, re-dated two weeks before the run, with a prior spot 3% under
-//! today's and its anchor bar — since attempt 6 wrote no second run.
+//! is exact for the current `PROMPT_VERSION` (`docs/prompts/README.md` is the
+//! reader's guide). The data is the fixed evidence set's — TSLA for the stock
+//! shapes, SPMO for the fund shapes, the synthetic BND for role/risk — every
+//! research field a shape-preserving `[stub: …]` placeholder, the FETCHED
+//! VALUES rows the set lacks layered on synthetically
+//! ([`layer_synthetic_evidence`]), and the continuity shapes over a
+//! hand-written prior.
 //!
 //! Regenerate from `src-tauri/` with
 //! `MARKET_SIGNAL_PROMPT_EXAMPLES_DIR=../docs/prompts/portfolio cargo test
-//! portfolio_prompt_examples_write -- --ignored`; the writer removes files no
-//! longer in the set and rewrites only the files whose text changed up to the
-//! header's stamp, so an untouched prompt's file is never written and its
-//! header keeps the stamp at which it last changed (user rule, 2026-09-28).
-//! The non-ignored `portfolio_prompt_examples_render` builds the same set on
-//! every gate, so the generator cannot rot beside the prompts it renders.
+//! portfolio_prompt_examples_write -- --ignored`. The non-ignored
+//! `portfolio_prompt_examples_render` builds the same set on every gate, so
+//! the generator cannot rot beside the prompts it renders.
 
 use super::*;
 use crate::local_model::{prompt_material_chars, ChatMessage, ChatRequest};
@@ -101,18 +84,15 @@ pub(super) fn debut_dossier(f: &Fixture) -> HoldingDossier {
     d
 }
 
-/// The synthetic FETCHED VALUES rows for the stock shapes (the module docs):
-/// round figures sized off the fixture's spot and dated against its
-/// 2026-09-16 session, every name a `[stub: …]`, no fabricated URL. The
-/// splits are the issuer's real ones, dated before the prior session, so no
-/// split-context line renders off them.
+/// The synthetic FETCHED VALUES rows for the stock shapes: round figures sized
+/// off the fixture's spot and dated against its 2026-09-16 session, every name
+/// a `[stub: …]`, no fabricated URL. The splits are the issuer's real ones,
+/// dated before the prior session, so no split-context line renders off them.
 fn layer_synthetic_evidence(d: &mut HoldingDossier, spot: f64) {
     use crate::portfolio::evidence::*;
     let round = |x: f64| (x * 100.0).round() / 100.0;
-    // The issuer identity — the name the fixture never carried (attempt 6's
-    // persisted row held none, so the header read "name unavailable") beside
-    // the exchange, sector and industry: identity, not economics, keyed on
-    // the one stock the examples render (ruled 2026-10-08).
+    // The issuer identity the fixture never carried — identity, not economics
+    // — keyed on the one stock the examples render.
     if d.position.symbol == "TSLA" {
         d.company_name = Some("Tesla, Inc.".into());
         d.issuer = Some(crate::portfolio::dossier::IssuerProfile {
@@ -511,13 +491,12 @@ fn review_dossier(f: &Fixture) -> HoldingDossier {
     d
 }
 
-/// The synthetic accuracy record the stock review example renders (ruled
-/// 2026-10-09): four earlier forecasts on the holding, two checks the prior
-/// analysis read (ids 4 and 7) and two this run wrote after it (9, scored on
-/// the analyst's price alone, and 10, a horizon with no forecast), so the
-/// three-month scores read both ways and the lines show both outcomes. The
-/// prices and closes are hand-written; the checks and scores are the
-/// accuracy pass's own arithmetic.
+/// The synthetic accuracy record the stock review example renders: four
+/// earlier forecasts on the holding, two checks the prior analysis read (ids 4
+/// and 7) and two this run wrote after it (9, scored on the analyst's price
+/// alone, and 10, a horizon with no forecast), so the three-month scores read
+/// both ways and the lines show both outcomes. The prices and closes are
+/// hand-written; the checks and scores are the accuracy pass's own arithmetic.
 fn layer_synthetic_accuracy(d: &mut HoldingDossier) {
     use crate::portfolio::outcome::{
         check_horizon, Check, HorizonPrices, Horizon, PriceRecord, StoredCheck, StoredEpisode,
@@ -624,8 +603,6 @@ fn examples() -> Vec<Example> {
     let mut fx = synthetic_role_risk_fixture();
     stub_house_view(&mut fx.dossier);
     let tsla_debut = debut_dossier(&tsla);
-    // The holding-constant brief as the pipeline assembles it, the leads
-    // replaced by the hand-written sample leads (stubbed).
     let mut brief = pipeline::research_brief(&tsla_debut, rates(), None);
     brief.leads = research_samples::stock_leads(true);
     let mut continuity = pipeline::research_brief(&continuity_dossier(&tsla), rates(), None);
@@ -1516,12 +1493,10 @@ fn render_contents(examples: &[Example]) -> String {
 
 /// A file's text with the header's stamp token replaced by a fixed
 /// placeholder, so two renders that differ only in `PROMPT_VERSION` compare
-/// equal. The writer then touches only the files whose prompt changed, and a
-/// file whose prompt did not move keeps its header, so its stamp reads as the
-/// one at which it last changed and a regeneration's diff shows only the
-/// prompts that moved (user rule, 2026-09-28). Only the header line is
-/// normalized: a stamp cited in an example's own prose is history, not the
-/// current stamp.
+/// equal: a file whose prompt did not move keeps the stamp at which it last
+/// changed, and a regeneration's diff shows only the prompts that moved. Only
+/// the header line is normalized: a stamp cited in an example's own prose is
+/// history, not the current stamp.
 fn stamp_normalized(text: &str) -> String {
     text.lines()
         .map(|line| {
@@ -1586,10 +1561,7 @@ fn portfolio_prompt_examples_write() {
     );
 }
 
-/// The set builds and renders on every gate: every shape present, every file
-/// name unique, a system then a user message on every request, the stubs in
-/// place wherever research renders, and none of the samples' hand-written
-/// prose leaking past them.
+/// The set builds and renders on every gate, so the generator cannot rot.
 #[test]
 fn portfolio_prompt_examples_render() {
     let examples = examples();

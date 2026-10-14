@@ -1,21 +1,10 @@
-//! The Settings store: persist user configuration — agent models, API tokens,
-//! provider credentials, and the local-suite model config — into `app_settings`,
-//! and project it back for the Settings view (`docs/configuration.md`,
-//! `docs/interface.md §Settings`).
-//!
-//! Two halves, mirroring `research`: the pure logic lives here; the thin
-//! `#[tauri::command]` wrappers live in `lib.rs`. One load-bearing rule: a secret
-//! never round-trips to the webview. `view_from_config` collapses each credential
-//! to a `configured` boolean and never carries the stored key. Model slugs and
-//! the local-suite values (endpoint, roster ids) are not secret, so they are
-//! returned for the form to pre-fill.
-//!
-//! Three independent submissions (`docs/configuration.md §API Tokens` — the
-//! two-token gate is scoped to the cloud submission, never to Settings as a
-//! whole): `save` (agent models + API tokens, token-gated),
-//! `save_provider_credentials` (FMP / FRED / Tavily, ungated), and
-//! `save_local_models` (daemon endpoint + roster, ungated) — so a cloud-keyless
-//! machine can complete local-suite setup.
+//! The Settings store: persist user configuration into `app_settings` and project it
+//! back for the Settings view (`docs/configuration.md`, `docs/interface.md §Settings`);
+//! the `#[tauri::command]` wrappers live in `lib.rs`. A secret never round-trips to
+//! the webview: `view_from_config` collapses each credential to a `configured`
+//! boolean. The cloud submission (`save`) is token-gated; the provider-credential,
+//! local-model and web-research saves are ungated so a cloud-keyless machine can
+//! complete local-suite setup (`docs/configuration.md §API Tokens`).
 
 use anyhow::{bail, Result};
 use rusqlite::Connection;
@@ -30,8 +19,7 @@ use crate::config::{
 use crate::model_agent::AgentModel;
 use crate::storage;
 
-/// One selectable model for the Settings dropdown: the slug persisted in
-/// `app_settings`, a display name, and the provider it groups under.
+/// One Settings dropdown option; `provider` is the group it lists under.
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelOption {
     pub slug: String,
@@ -39,9 +27,7 @@ pub struct ModelOption {
     pub provider: String,
 }
 
-/// The four agent slots' current selections — each the persisted slug, or "" when
-/// unset. The form pre-selects these and submits them back, so a saved (or
-/// env-sourced) selection round-trips without loss.
+/// Each the persisted slug, or "" when unset; the form submits them back verbatim.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentModels {
     pub main: String,
@@ -50,8 +36,8 @@ pub struct AgentModels {
     pub balanced: String,
 }
 
-/// Whether each credential is configured — never the value itself. The form shows
-/// "saved" vs "not set" from this, so no secret leaves the backend.
+/// Whether each credential is configured, never the value itself, so no secret
+/// leaves the backend.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct CredentialStatus {
     pub openai: bool,
@@ -61,11 +47,8 @@ pub struct CredentialStatus {
     pub tavily: bool,
 }
 
-/// The local-analysis-models values (`docs/configuration.md §Local Models`):
-/// the Ollama daemon endpoint plus the roster ids — the reasoner required for
-/// the presence gate, the fast tier optional. None of these is a secret, so
-/// unlike credentials they round-trip in full: the view carries the stored
-/// values ("" when unset) and the save submits all three verbatim.
+/// The local-analysis-models values (`docs/configuration.md §Local Models`). Not
+/// secrets, so unlike credentials they round-trip in full ("" when unset).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LocalModelSettings {
     pub daemon_endpoint: String,
@@ -73,18 +56,13 @@ pub struct LocalModelSettings {
     pub fast_model: String,
 }
 
-/// The web-research settings (`docs/configuration.md §Web Research`): the
-/// local SearXNG endpoint. Not a secret (a loopback service address), so it
-/// round-trips in full like the local-model values. The local suite is
-/// SearXNG-only, so there is no local-suite fallback credential here.
+/// The web-research settings (`docs/configuration.md §Web Research`). Not a secret,
+/// so it round-trips in full.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WebResearchSettings {
     pub searxng_endpoint: String,
 }
 
-/// What the Settings view renders: the current model selections, the
-/// per-credential configured flags, the local-suite model config, the
-/// web-research config, and the model dropdown's options.
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingsView {
     pub models: AgentModels,
@@ -94,23 +72,21 @@ pub struct SettingsView {
     pub available_models: Vec<ModelOption>,
 }
 
-/// The API-token half of the cloud save request. Each field is `Some` only when
-/// the user entered a new value; `None` (or a blank string) means "leave the
-/// stored value unchanged" — so a re-save never wipes a key the form never
-/// re-displays. The FMP / FRED / Tavily provider credentials are deliberately
-/// not here — they save through [`ProviderCredentialUpdate`], outside the token
-/// gate (`docs/configuration.md §API Tokens`).
+/// The API-token half of the cloud save request. `Some` only when the user entered
+/// a new value; `None` or blank leaves the stored value unchanged, so a re-save never
+/// wipes a key the form never re-displays. The provider credentials save through
+/// [`ProviderCredentialUpdate`], outside the token gate
+/// (`docs/configuration.md §API Tokens`).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct CredentialUpdate {
     pub openai: Option<String>,
     pub anthropic: Option<String>,
 }
 
-/// The external data-provider credentials' own save request — independent of the
-/// token-gated cloud submission, so a cloud-keyless machine persists FMP / FRED
-/// for the local suite (`docs/configuration.md §External Data Provider
-/// Credentials`). Same update semantics as [`CredentialUpdate`]: `None` / blank
-/// leaves the stored secret unchanged.
+/// Independent of the token-gated cloud submission, so a cloud-keyless machine can
+/// persist these for the local suite (`docs/configuration.md §External Data Provider
+/// Credentials`). Same semantics as [`CredentialUpdate`]: `None` or blank leaves the
+/// stored secret unchanged.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ProviderCredentialUpdate {
     pub fmp: Option<String>,
@@ -118,9 +94,7 @@ pub struct ProviderCredentialUpdate {
     pub tavily: Option<String>,
 }
 
-/// The selectable-model option list, sourced from `AgentModel` so slugs and
-/// display names have a single backend home — the frontend never re-encodes the
-/// pairing.
+/// Sourced from `AgentModel` so slugs and display names have a single backend home.
 pub fn available_models() -> Vec<ModelOption> {
     AgentModel::ALL
         .iter()
@@ -137,8 +111,6 @@ fn is_configured(opt: &Option<String>) -> bool {
     opt.as_deref().map(str::trim).is_some_and(|s| !s.is_empty())
 }
 
-/// Project an `AppConfig` into the Settings view. Pure over the config — no env,
-/// no DB — so the masking and model projection are unit-testable.
 pub fn view_from_config(cfg: &AppConfig) -> SettingsView {
     SettingsView {
         models: AgentModels {
@@ -166,21 +138,15 @@ pub fn view_from_config(cfg: &AppConfig) -> SettingsView {
     }
 }
 
-/// Load the Settings view from the persisted store (env fallback per field).
 pub fn load_view(conn: &Connection) -> SettingsView {
     view_from_config(&AppConfig::load(conn))
 }
 
-/// Persist the **cloud** Settings submission — agent models + the two API
-/// tokens. Two gates run before any write, so a rejected save persists nothing:
-/// (1) every non-empty model slug is validated; (2) both API tokens must be
-/// present after the update — saving is disabled while either is missing. The
-/// gate is scoped to this submission alone (`docs/configuration.md §API
-/// Tokens`); the provider credentials and local-suite config save ungated
-/// through their own functions below. Models are then written in full (an empty
-/// slug clears that agent's selection); each token is written only when the
-/// update carries a non-empty value, leaving an untouched field's stored secret
-/// in place.
+/// The cloud submission: agent models plus the two API tokens. Two gates run before
+/// any write, so a rejected save persists nothing: every non-empty model slug must
+/// parse, and both API tokens must be present after the update
+/// (`docs/configuration.md §API Tokens`). An empty slug clears that agent's
+/// selection; a token is written only when the update carries a non-empty value.
 pub fn save(conn: &Connection, models: &AgentModels, credentials: &CredentialUpdate) -> Result<()> {
     for (name, slug) in [
         ("Main Agent", &models.main),
@@ -194,12 +160,9 @@ pub fn save(conn: &Connection, models: &AgentModels, credentials: &CredentialUpd
         }
     }
 
-    // Token save-gate: saving is disabled unless BOTH cloud tokens are present
-    // after this update — a non-blank entered value counts, otherwise the
-    // already-stored value must be non-blank. Checked before any write so a gated
-    // save leaves the store untouched. Scoped to this cloud submission only
-    // (docs/configuration.md §API Tokens): the provider credentials save through
-    // `save_provider_credentials`, outside this gate.
+    // A non-blank entered value counts, otherwise the stored value must be
+    // non-blank. Checked before any write so a gated save leaves the store
+    // untouched.
     let token_present = |key: &str, update: &Option<String>| -> Result<bool> {
         if update
             .as_deref()
@@ -226,16 +189,13 @@ pub fn save(conn: &Connection, models: &AgentModels, credentials: &CredentialUpd
     storage::set_setting(conn, KEY_BEAR_AGENT_MODEL, models.bear.trim())?;
     storage::set_setting(conn, KEY_BALANCED_AGENT_MODEL, models.balanced.trim())?;
 
-    // Tokens: write only what the user actually entered; blank or absent leaves
-    // the stored value untouched.
     put_secret(conn, KEY_OPENAI_API_KEY, &credentials.openai)?;
     put_secret(conn, KEY_ANTHROPIC_API_KEY, &credentials.anthropic)?;
     Ok(())
 }
 
-/// Write one secret only when the update carries a non-empty value; blank or
-/// absent leaves the stored value untouched (a secret never re-displays, so a
-/// re-save must not wipe it). Shared by the cloud and provider-credential saves.
+/// Writes only a non-empty value; blank or absent leaves the stored value untouched,
+/// since a secret never re-displays and a re-save must not wipe it.
 fn put_secret(conn: &Connection, key: &str, val: &Option<String>) -> Result<()> {
     if let Some(v) = val {
         let v = v.trim();
@@ -246,11 +206,8 @@ fn put_secret(conn: &Connection, key: &str, val: &Option<String>) -> Result<()> 
     Ok(())
 }
 
-/// Persist the external data-provider credentials (FMP / FRED / Tavily) —
-/// deliberately **ungated**: these save with no cloud token present, the
-/// local-suite setup path (`docs/configuration.md §External Data Provider
-/// Credentials`). Same per-field semantics as the token save: only a non-empty
-/// entered value writes.
+/// Deliberately ungated: these save with no cloud token present, the local-suite
+/// setup path (`docs/configuration.md §External Data Provider Credentials`).
 pub fn save_provider_credentials(
     conn: &Connection,
     credentials: &ProviderCredentialUpdate,
@@ -261,13 +218,10 @@ pub fn save_provider_credentials(
     Ok(())
 }
 
-/// Persist the local-analysis-models config (`docs/configuration.md §Local
-/// Models`) — **ungated**, like the provider credentials: presence of these
-/// fields is what clears the proactive *local models not configured* warning,
-/// so the save must never depend on a cloud token or on daemon connectivity.
-/// All three values are written verbatim (trimmed; "" persists as a cleared
-/// field, exactly like a cleared agent-model slug — these are not secrets, so
-/// there is no leave-unchanged blank semantics).
+/// Ungated: presence of these fields is what clears the local-models warning, so the
+/// save must never depend on a cloud token or on daemon connectivity
+/// (`docs/configuration.md §Local Models`). Written verbatim; "" persists as a
+/// cleared field, since these are not secrets.
 pub fn save_local_models(conn: &Connection, values: &LocalModelSettings) -> Result<()> {
     storage::set_setting(conn, KEY_LOCAL_DAEMON_ENDPOINT, values.daemon_endpoint.trim())?;
     storage::set_setting(conn, KEY_LOCAL_REASONER_MODEL, values.reasoner_model.trim())?;
@@ -275,10 +229,9 @@ pub fn save_local_models(conn: &Connection, values: &LocalModelSettings) -> Resu
     Ok(())
 }
 
-/// Persist the web-research config (`docs/configuration.md §Web Research`) —
-/// **ungated**, like the local-model save: SearXNG is off every gate, so
-/// saving its endpoint must never depend on a token or on reachability.
-/// Written verbatim (trimmed; "" persists as cleared — not a secret).
+/// Ungated: SearXNG is off every gate, so saving its endpoint must never depend on a
+/// token or on reachability (`docs/configuration.md §Web Research`). Written
+/// verbatim; "" persists as cleared.
 pub fn save_web_research(conn: &Connection, values: &WebResearchSettings) -> Result<()> {
     storage::set_setting(conn, KEY_SEARXNG_ENDPOINT, values.searxng_endpoint.trim())?;
     Ok(())
@@ -341,7 +294,6 @@ mod tests {
             },
         )
         .unwrap();
-        // Raw storage holds the slug + the secret.
         assert_eq!(
             storage::get_setting(&conn, KEY_MAIN_AGENT_MODEL)
                 .unwrap()
@@ -354,8 +306,6 @@ mod tests {
                 .as_deref(),
             Some("sk-o")
         );
-        // The view reflects the model selection and every configured flag (these
-        // are env-independent: a saved value always wins in `AppConfig::load`).
         let view = load_view(&conn);
         assert_eq!(view.models.main, "claude-opus");
         let c = &view.credentials;
@@ -383,7 +333,6 @@ mod tests {
         // Both tokens stored so a token-less re-save passes the gate.
         storage::set_setting(&conn, KEY_OPENAI_API_KEY, "sk-existing").unwrap();
         storage::set_setting(&conn, KEY_ANTHROPIC_API_KEY, "sk-anthropic").unwrap();
-        // No credential values supplied → the stored keys must survive.
         save(&conn, &models("gpt-5"), &CredentialUpdate::default()).unwrap();
         assert_eq!(
             storage::get_setting(&conn, KEY_OPENAI_API_KEY)
@@ -391,7 +340,6 @@ mod tests {
                 .as_deref(),
             Some("sk-existing")
         );
-        // A blank (whitespace) update is also a no-op.
         save(
             &conn,
             &models("gpt-5"),
@@ -412,8 +360,6 @@ mod tests {
     #[test]
     fn save_is_rejected_when_a_required_api_token_is_missing() {
         let conn = mem();
-        // Valid models, but no token stored or supplied → saving is disabled
-        // (docs/configuration.md §API Tokens), and nothing is persisted.
         let err = save(&conn, &models("gpt-5"), &CredentialUpdate::default()).unwrap_err();
         assert!(err.to_string().contains("API token"), "{err}");
         assert_eq!(
@@ -427,8 +373,6 @@ mod tests {
         let conn = mem();
         storage::set_setting(&conn, KEY_OPENAI_API_KEY, "sk-o").unwrap();
         storage::set_setting(&conn, KEY_ANTHROPIC_API_KEY, "sk-a").unwrap();
-        // Changing only models (token fields blank) is allowed because both
-        // tokens are already configured.
         save(&conn, &models("claude-opus"), &CredentialUpdate::default()).unwrap();
         assert_eq!(
             storage::get_setting(&conn, KEY_MAIN_AGENT_MODEL)
@@ -443,7 +387,6 @@ mod tests {
         let conn = mem();
         let err = save(&conn, &models("not-a-model"), &CredentialUpdate::default()).unwrap_err();
         assert!(err.to_string().contains("not-a-model"), "{err}");
-        // The bad slug aborted before any set_setting ran.
         assert_eq!(
             storage::get_setting(&conn, KEY_MAIN_AGENT_MODEL).unwrap(),
             None
@@ -453,8 +396,6 @@ mod tests {
     #[test]
     fn provider_credentials_save_with_no_cloud_token_present() {
         let conn = mem();
-        // The split's headline behavior (docs/configuration.md §API Tokens): a
-        // cloud-keyless machine persists FMP / FRED / Tavily — no token gate.
         save_provider_credentials(
             &conn,
             &ProviderCredentialUpdate {
@@ -470,7 +411,6 @@ mod tests {
                 .as_deref(),
             Some("fmp-key")
         );
-        // Blank / absent fields leave stored secrets untouched, like the tokens.
         save_provider_credentials(
             &conn,
             &ProviderCredentialUpdate {
@@ -485,7 +425,6 @@ mod tests {
                 .as_deref(),
             Some("fmp-key")
         );
-        // The cloud submission stays token-gated after the split.
         let err = save(&conn, &models("gpt-5"), &CredentialUpdate::default()).unwrap_err();
         assert!(err.to_string().contains("API token"), "{err}");
     }
@@ -493,7 +432,6 @@ mod tests {
     #[test]
     fn local_models_save_ungated_and_round_trip_in_the_view() {
         let conn = mem();
-        // No cloud token anywhere — the local-suite setup path must still save.
         save_local_models(
             &conn,
             &LocalModelSettings {
@@ -503,13 +441,12 @@ mod tests {
             },
         )
         .unwrap();
-        // Values are trimmed on write and round-trip in the view (not secrets).
         let view = load_view(&conn);
         assert_eq!(view.local_models.daemon_endpoint, "http://127.0.0.1:11434");
         assert_eq!(view.local_models.reasoner_model, "qwen3.5:122b");
         assert_eq!(view.local_models.fast_model, "");
-        // The presence gate clears on these fields alone (fast tier optional) —
-        // provider credentials still warn separately until FMP/FRED are saved.
+        // Only the LocalModels category is checked: the provider credentials still
+        // warn separately until they are saved.
         let report = crate::local_model::local_presence_gate(&AppConfig::load(&conn));
         assert!(report
             .categories
@@ -520,7 +457,6 @@ mod tests {
     #[test]
     fn web_research_saves_ungated_and_round_trips_in_the_view() {
         let conn = mem();
-        // No token anywhere — the web-research setup path must still save.
         save_web_research(
             &conn,
             &WebResearchSettings {
@@ -530,7 +466,6 @@ mod tests {
         .unwrap();
         let view = load_view(&conn);
         assert_eq!(view.web_research.searxng_endpoint, "http://127.0.0.1:8888");
-        // Clearing persists as "" (not a secret; no leave-unchanged semantics).
         save_web_research(
             &conn,
             &WebResearchSettings {
@@ -544,8 +479,7 @@ mod tests {
     #[test]
     fn save_stores_an_empty_slug_to_clear_a_selection() {
         let conn = mem();
-        // Tokens supplied so the save passes the token gate; the point under test
-        // is that an empty model slug persists as "" (a cleared selection).
+        // Tokens supplied so the save passes the token gate.
         save(
             &conn,
             &AgentModels::default(), // all four empty
@@ -561,8 +495,6 @@ mod tests {
                 .as_deref(),
             Some("")
         );
-        // A fully-empty agent configuration is still blocked by the gate
-        // (env-independent: every agent reads as "no model selected").
         assert!(crate::config::validate(&AppConfig::load(&conn)).is_blocked);
     }
 }

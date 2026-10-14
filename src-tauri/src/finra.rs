@@ -1,20 +1,15 @@
-//! FINRA consolidated Equity Short Interest — the run-level short-interest
-//! file behind Portfolio Analysis's per-holding **risk / squeeze-context**
-//! positioning read (`docs/data-sources.md §FINRA`). Keyless, biweekly
-//! (mid- and end-of-month settlement, disseminated ~7 business days later),
-//! fetched **once per run** and looked up per holding; wholly fail-soft.
+//! FINRA consolidated Equity Short Interest (`docs/data-sources.md §FINRA`).
+//! Keyless, biweekly (mid- and end-of-month settlement, disseminated ~7
+//! business days later), fetched once per run and looked up per holding.
 //!
-//! Retrieval is two keyless GETs: a **latest-settlement-date discovery**, then
-//! the static CDN file `shrt{YYYYMMDD}.csv` (pipe-delimited despite the
-//! extension). The settlement date is FINRA-designated — mid-month is the 15th
-//! *or the preceding business day*, end-of-month the *last business day* — so
-//! the date is discovered, never computed locally. Discovery prefers the
-//! partitions endpoint (`api.finra.org` answered keyless when live-verified
-//! 2026-08-21, though FINRA's docs describe an OAuth model) and falls back to
-//! scanning the public files page for `shrt########.csv` links, so an
-//! enforcement change on the API shifts the discovery route without touching
-//! the file fetch. A missing CDN date returns HTTP **403**, not 404; any
-//! non-2xx reads as not-published.
+//! Two GETs: a latest-settlement-date discovery, then the static CDN file
+//! `shrt{YYYYMMDD}.csv` (pipe-delimited despite the extension). The
+//! settlement date is FINRA-designated (the 15th or the preceding business
+//! day; the last business day), so it is discovered, never computed locally.
+//! Discovery prefers the partitions endpoint, which answers keyless though
+//! FINRA's docs describe an OAuth model, and falls back to scanning the public
+//! files page for `shrt########.csv` links. A missing CDN date returns HTTP
+//! 403, not 404.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,11 +28,9 @@ const FINRA_CDN_BASE: &str = "https://cdn.finra.org/equity/otcmarket/biweekly";
 /// Generous for a ~2 MB consolidated file.
 const FINRA_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 
-/// One symbol's row from the consolidated file — level, trend, and
-/// days-to-cover, exactly the read the docs name. `settlement_date` is the
-/// row's own ISO date (the file repeats it per row).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ShortInterestRead {
+    /// The row's own ISO date (the file repeats it per row).
     pub settlement_date: String,
     pub current_short_interest: f64,
     pub previous_short_interest: Option<f64>,
@@ -45,22 +38,18 @@ pub struct ShortInterestRead {
     pub days_to_cover: Option<f64>,
 }
 
-/// The parsed consolidated file: the discovered settlement date plus a
-/// symbol-keyed map (uppercased) for the per-holding local lookup.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ShortInterestFile {
-    /// The discovered settlement date, `YYYY-MM-DD`.
+    /// `YYYY-MM-DD`.
     pub settlement_date: String,
+    /// Keyed by FINRA's uppercased, separator-free symbol.
     pub by_symbol: HashMap<String, ShortInterestRead>,
 }
 
 impl ShortInterestFile {
-    /// Look up an account symbol using FINRA's reporting key convention.
-    ///
-    /// FINRA instructs reporters to remove spaces and special characters from
-    /// issue symbols, so broker spellings such as Schwab's `BRK/B` must resolve
-    /// against the consolidated file's `BRKB` key. The account-owned symbol is
-    /// not rewritten; normalization is confined to this adapter boundary.
+    /// FINRA strips spaces and special characters from issue symbols, so a
+    /// broker spelling such as `BRK/B` resolves against the file's `BRKB`.
+    /// The account-owned symbol is never rewritten.
     pub fn lookup(&self, account_symbol: &str) -> Option<&ShortInterestRead> {
         let key = finra_symbol_key(account_symbol);
         if key.is_empty() {
@@ -71,8 +60,6 @@ impl ShortInterestFile {
     }
 }
 
-/// FINRA short-interest reporting accepts uppercase issue symbols after all
-/// spaces and special characters have been removed.
 fn finra_symbol_key(symbol: &str) -> String {
     symbol
         .chars()
@@ -81,7 +68,6 @@ fn finra_symbol_key(symbol: &str) -> String {
         .collect()
 }
 
-/// Live FINRA short-interest adapter. Keyless; no execution-gate presence.
 pub struct FinraDataSource {
     http: reqwest::blocking::Client,
     partitions_url: String,
@@ -105,8 +91,6 @@ impl FinraDataSource {
         })
     }
 
-    /// Redirect every call at a localhost mock so the wire path runs offline.
-    /// Test-only.
     #[cfg(test)]
     fn with_urls(mut self, partitions: &str, files_page: &str, cdn_base: &str) -> Self {
         self.partitions_url = partitions.to_string();
@@ -115,15 +99,13 @@ impl FinraDataSource {
         self
     }
 
-    /// Attach a live run context so each fetch streams a tracker row.
     pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
         self.progress = ctx;
         self
     }
 
-    /// Fetch and parse the latest consolidated short-interest file. `Err` is
-    /// the caller's typed gap (discovery exhausted, transport, non-2xx, or a
-    /// file whose header no longer carries the needed columns).
+    /// `Err` is the caller's typed gap (discovery exhausted, transport,
+    /// non-2xx, or structure drift).
     pub fn short_interest(&self) -> Result<ShortInterestFile> {
         if self.progress.is_cancelled() {
             anyhow::bail!("FINRA fetch skipped (run cancelled)");
@@ -139,8 +121,7 @@ impl FinraDataSource {
         })
     }
 
-    /// The latest available settlement date (`YYYY-MM-DD`): the partitions
-    /// endpoint first, the files-page scan as the coded fallback.
+    /// `YYYY-MM-DD`.
     fn discover_latest_date(&self) -> Result<String> {
         let partitions = self
             .tracked_get(
@@ -171,8 +152,7 @@ impl FinraDataSource {
         }
     }
 
-    /// One tracked GET: a tracker request row per actual HTTP call, non-2xx
-    /// surfaced as the error the caller's gap carries.
+    /// One tracker request row per actual HTTP call.
     fn tracked_get(&self, url: &str, endpoint: &str, label: &str) -> Result<String> {
         self.progress
             .request_started("FINRA", endpoint, "biweekly", label);
@@ -180,8 +160,8 @@ impl FinraDataSource {
             let (status, body) =
                 crate::http_retry::send_with_retry("FINRA", || self.http.get(url))?;
             if !(200..300).contains(&status) {
-                // A missing CDN date answers 403, not 404 (live-verified
-                // 2026-08-21): any non-2xx is "not published or unavailable".
+                // A missing CDN date answers 403, not 404: any non-2xx is
+                // "not published or unavailable".
                 anyhow::bail!("FINRA request returned {status}");
             }
             Ok(body)
@@ -203,10 +183,8 @@ impl FinraDataSource {
     }
 }
 
-/// The newest `availablePartitions` date from the partitions response —
-/// entries arrive most-recent first, but the maximum is taken so an ordering
-/// change cannot serve a stale file. Calendar-validated; a response carrying
-/// no valid date is drift, `Err`.
+/// Entries arrive most-recent first, but the maximum is taken so an ordering
+/// change cannot serve a stale file. No valid date is drift, `Err`.
 fn parse_partitions(body: &str) -> Result<String> {
     let json: serde_json::Value =
         serde_json::from_str(body).context("parsing the FINRA partitions response")?;
@@ -221,8 +199,7 @@ fn parse_partitions(body: &str) -> Result<String> {
         .context("FINRA partitions response carried no valid settlement date")
 }
 
-/// The newest settlement date among the files page's `shrt{YYYYMMDD}.csv`
-/// links, returned as `YYYY-MM-DD`; `None` when no calendar-valid link exists.
+/// The newest calendar-valid `shrt{YYYYMMDD}.csv` link, as `YYYY-MM-DD`.
 fn scrape_latest_file_date(html: &str) -> Option<String> {
     let mut best: Option<String> = None;
     let mut from = 0;
@@ -251,18 +228,10 @@ fn scrape_latest_file_date(html: &str) -> Option<String> {
     best
 }
 
-/// Parse the pipe-delimited consolidated file into a symbol-keyed map. Column
-/// positions are resolved from the header row by name — a header missing the
-/// symbol, current-short-interest, or settlement-date column is structure
-/// drift, `Err`. Values are **semantically validated**, not just parsed:
-/// quantities must be finite and non-negative (Rust's `f64` parser accepts
-/// "NaN"/"inf" strings, which must never reach persistence or a prompt), and
-/// each row's settlement date must be the discovered `expected_settlement` —
-/// a mismatched or malformed date is drift, the row skipped. Optional numeric
-/// fields (`previous…`, ADV, days-to-cover) tolerate the file's routinely
-/// empty cells, an invalid value reading absent; a row whose required fields
-/// do not validate is skipped, and a file yielding **zero** rows is drift
-/// rather than an empty success.
+/// Columns are resolved from the header by name; a header missing a required
+/// column, or a file yielding zero rows, is structure drift, `Err`. A row
+/// whose settlement date is not `expected_settlement` is skipped. Optional
+/// numeric cells are routinely empty and read absent.
 fn parse_short_interest_file(
     text: &str,
     expected_settlement: &str,
@@ -286,7 +255,8 @@ fn parse_short_interest_file(
     for line in lines {
         let fields: Vec<&str> = line.split('|').map(str::trim).collect();
         let get = |i: usize| fields.get(i).copied().unwrap_or("");
-        // A quantity is only a quantity when finite and non-negative.
+        // Rust's f64 parser accepts "NaN" / "inf" strings; neither may reach
+        // persistence or a prompt.
         let num = |i: Option<usize>| {
             i.and_then(|i| get(i).parse::<f64>().ok())
                 .filter(|v| v.is_finite() && *v >= 0.0)
@@ -321,8 +291,8 @@ mod tests {
     use super::*;
     use crate::test_http::{Canned, MockHttp};
 
-    /// Header + rows verbatim in the live file's shape (captured 2026-08-21):
-    /// pipe-delimited, empty `stockSplitFlag` / `revisionFlag` cells routine.
+    /// The live file's shape: pipe-delimited, empty flag cells routine, one
+    /// lowercase symbol and one row with empty optional cells.
     const FILE_BODY: &str = "accountingYearMonthNumber|symbolCode|issueName|issuerServicesGroupExchangeCode|marketClassCode|currentShortPositionQuantity|previousShortPositionQuantity|stockSplitFlag|averageDailyVolumeQuantity|daysToCoverQuantity|revisionFlag|changePercent|changePreviousNumber|settlementDate\n\
         20260731|A|Agilent Technologies Inc.|A|NYSE|5749623|7538437||2301495|2.50||-23.73|-1788814|2026-07-31\n\
         20260731|aapl|Apple Inc.|AAPL|NNM|108000000|101000000||55000000|1.96||6.93|7000000|2026-07-31\n\
@@ -340,9 +310,7 @@ mod tests {
         assert_eq!(a.previous_short_interest, Some(7_538_437.0));
         assert_eq!(a.average_daily_volume, Some(2_301_495.0));
         assert_eq!(a.days_to_cover, Some(2.50));
-        // Symbols key uppercased, so the per-holding lookup is case-stable.
         assert!(map.contains_key("AAPL"));
-        // Empty optional cells read as absent, never zero.
         let thin = &map["NOADV"];
         assert_eq!(thin.current_short_interest, 1_200.0);
         assert_eq!(thin.previous_short_interest, None);
@@ -373,7 +341,6 @@ mod tests {
 
     #[test]
     fn header_columns_resolve_by_name_not_position() {
-        // Reordered columns still parse — positions come from the header.
         let reordered = "symbolCode|settlementDate|currentShortPositionQuantity|daysToCoverQuantity\n\
             XYZ|2026-07-31|5000|1.10\n";
         let map = parse_short_interest_file(reordered, "2026-07-31").unwrap();
@@ -384,21 +351,15 @@ mod tests {
 
     #[test]
     fn header_drift_and_zero_rows_error_rather_than_reading_empty() {
-        // A header missing a required column is drift.
         assert!(parse_short_interest_file("symbolCode|somethingElse\nA|1\n", "2026-07-31").is_err());
-        // A well-formed header whose rows all fail to parse is drift too.
         let no_rows = "symbolCode|currentShortPositionQuantity|settlementDate\n\
             A|not-a-number|2026-07-31\n||\n";
         assert!(parse_short_interest_file(no_rows, "2026-07-31").is_err());
-        // Empty input is drift.
         assert!(parse_short_interest_file("", "2026-07-31").is_err());
     }
 
     #[test]
     fn semantic_validation_rejects_nan_negatives_and_foreign_dates() {
-        // Rust's f64 parser accepts "NaN"/"inf" strings — semantic validation
-        // is what keeps them (and negative quantities, or a row dated off the
-        // discovered settlement) out of persistence and the prompt.
         let body = "symbolCode|currentShortPositionQuantity|previousShortPositionQuantity|settlementDate\n\
             NANNY|NaN|100|2026-07-31\n\
             NEG|-5|100|2026-07-31\n\
@@ -415,7 +376,6 @@ mod tests {
     #[test]
     fn partitions_takes_the_maximum_valid_date() {
         assert_eq!(parse_partitions(PARTITIONS_BODY).unwrap(), "2026-07-31");
-        // Ordering must not matter, and invalid dates never win.
         let unordered = r#"{"availablePartitions":[{"partitions":"2026-06-30"},{"partitions":"2026-99-99"},{"partitions":"2026-07-31"}]}"#;
         assert_eq!(parse_partitions(unordered).unwrap(), "2026-07-31");
         assert!(parse_partitions(r#"{"availablePartitions":[]}"#).is_err());
@@ -458,9 +418,8 @@ mod tests {
 
     #[test]
     fn discovery_falls_back_to_the_files_page_and_a_missing_file_errors() {
-        // Partitions 404 (a terminal status — a 5xx would be retried by the
-        // shared backoff and consume the canned replies) → files-page scrape
-        // serves the date → file fetch.
+        // Partitions answers 404, a terminal status: a 5xx would be retried by
+        // the shared backoff and consume the canned replies.
         let page = r#"<a href="/shrt20260731.csv">latest</a>"#;
         let server = MockHttp::serve(vec![
             Canned::Reply { status: 404, headers: vec![], body: "gone" },
@@ -475,7 +434,7 @@ mod tests {
             .unwrap();
         assert_eq!(file.settlement_date, "2026-07-31");
 
-        // A 403 on the CDN file (the not-published answer) is the caller's gap.
+        // A 403 on the CDN file is the not-published answer.
         let server = MockHttp::serve(vec![
             Canned::Reply { status: 200, headers: vec![], body: PARTITIONS_BODY },
             Canned::Reply { status: 403, headers: vec![], body: "denied" },
@@ -488,10 +447,9 @@ mod tests {
             .is_err());
     }
 
-    /// Live smoke against the real endpoints — run manually:
-    /// `cargo test finra_short_interest_smoke -- --ignored --nocapture`.
-    /// This is where a discovery-route enforcement change or a file-format
-    /// shift (the proposed weekly cadence, SR-FINRA-2026-012) surfaces.
+    /// `cargo test finra_short_interest_smoke -- --ignored --nocapture`. Where
+    /// a discovery-route enforcement change or a file-format shift (the
+    /// proposed weekly cadence) surfaces.
     #[test]
     #[ignore = "hits the live FINRA endpoints"]
     fn finra_short_interest_smoke() {

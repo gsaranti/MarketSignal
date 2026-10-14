@@ -1,25 +1,8 @@
 //! The web tool's two shared stores (`docs/storage.md §Local Analysis Suite
-//! Storage`): the **document cache** and the **source state**. Both are shared
-//! infrastructure, deliberately not job-partitioned — a fetched document is a
-//! property of the URL and extraction behavior a property of the domain, not
-//! of a job's learnings — so they sit beside the price-bar cache, outside the
-//! per-job vector partitions. House style mirrors `crate::storage`: free
-//! functions over `&rusqlite::Connection`, schema provisioned from
-//! `storage::init_schema`.
-//!
-//! The document cache is the cross-run per-fetch layer both jobs' failure
-//! postures name: fetched, readability-extracted documents keyed by the
-//! **normalized requested URL**, with the normalized final URL kept separately
-//! so a redirecting address hits on every re-read without losing provenance.
-//! Each carries its **original retrieval timestamp** — the immutable evidence
-//! vintage, never rewritten on reuse — and serves only within the shared
-//! ~4-week freshness window (older entries age out).
-//!
-//! The source state is the learned layer the fetch telemetry accumulates:
-//! per-domain full-vs-thin recovery counts, the failed and denied (HTTP
-//! 401/403) attempt counts beside them, the resolved `extractionProfile`, and
-//! the derived **render-first flag** — persisted now, consumed by the deferred
-//! rendered-retrieval tier when that slice lands.
+//! Storage`): the document cache and the per-domain source state. Deliberately
+//! not job-partitioned — a fetched document is a property of the URL and
+//! extraction behavior a property of the domain. Free functions over
+//! `&rusqlite::Connection`, schema provisioned from `storage::init_schema`.
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -29,27 +12,19 @@ use super::fetch::FetchedPage;
 use super::registry::ExtractionProfile;
 
 /// The suite's shared research-freshness window (`docs/portfolio-analysis.md
-/// §Starting parameters` — the ~4-week research-freshness window; the document cache
-/// ages out on the same bound).
+/// §Starting parameters`); the document cache ages out on the same bound.
 pub const RESEARCH_FRESHNESS_DAYS: i64 = 28;
 
-/// Telemetry floor before the learned profile overrides the seeded heuristic:
-/// below this many observed fetches a domain keeps its registry default.
-/// Drafted, calibratable.
+/// Served fetches observed before the learned profile overrides the registry
+/// default. Drafted, calibratable.
 const PROFILE_MIN_SAMPLES: i64 = 3;
 
-/// Thin-recovery share at or above which a domain reads `js_required` and the
-/// render-first flag sets (skip the wasted GET once the render tier exists).
-/// Drafted, calibratable.
+/// Thin-recovery share at or above which a domain reads `js_required` and
+/// render-first. Drafted, calibratable.
 const RENDER_FIRST_THIN_RATIO: f64 = 0.8;
 
-/// Create the web-research tables if absent. Idempotent; called from
-/// `storage::init_schema`. Both tables are exported by data portability
-/// (joined in format v4; the requested/final URL split is format v5; the
-/// failed/denied fetch counters are format v6): cached
-/// documents let an imported corpus's research reuse work offline, and the
-/// source state is learned analytical behavior that does not regenerate
-/// quickly. Import pre-checks mirror the two primary keys.
+/// Idempotent; called from `storage::init_schema`. Both tables are exported by
+/// data portability, and import pre-checks mirror the two primary keys.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS web_documents (
@@ -85,9 +60,9 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Normalize a URL for the cache key: scheme+host lowercased, the fragment
-/// dropped, a trailing slash trimmed. The query string is kept — it addresses
-/// distinct documents on article CMSes.
+/// The cache key: scheme+host lowercased, the fragment dropped, a trailing
+/// slash trimmed. The query string is kept — it addresses distinct documents
+/// on article CMSes.
 pub fn normalize_url(url: &str) -> String {
     match reqwest::Url::parse(url) {
         Ok(mut u) => {
@@ -98,10 +73,9 @@ pub fn normalize_url(url: &str) -> String {
     }
 }
 
-/// Cache a fetched document under its normalized requested URL while retaining
-/// its normalized final URL separately. A live re-fetch of the same requested
-/// URL replaces the row whole — destination, content, and vintage together;
-/// *reuse* never rewrites `retrieved_at` because reads never write.
+/// Keyed by the normalized requested URL, with the normalized final URL kept
+/// separately so a redirecting address hits on re-read. A re-fetch replaces
+/// the row whole; reuse never rewrites `retrieved_at`, the evidence vintage.
 pub fn put_document(conn: &Connection, requested_url: &str, page: &FetchedPage) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO web_documents
@@ -121,7 +95,6 @@ pub fn put_document(conn: &Connection, requested_url: &str, page: &FetchedPage) 
     Ok(())
 }
 
-/// Decode one cache row into the fetched-page contract.
 fn cached_page(r: &rusqlite::Row<'_>) -> rusqlite::Result<FetchedPage> {
     Ok(FetchedPage {
         final_url: r.get::<_, String>(0)?,
@@ -134,7 +107,6 @@ fn cached_page(r: &rusqlite::Row<'_>) -> rusqlite::Result<FetchedPage> {
     })
 }
 
-/// Whether a cached page's own retrieval vintage is inside the shared window.
 fn page_is_fresh(page: &FetchedPage, now: DateTime<Utc>) -> bool {
     DateTime::parse_from_rfc3339(&page.retrieved_at)
         .map(|t| {
@@ -144,10 +116,9 @@ fn page_is_fresh(page: &FetchedPage, now: DateTime<Utc>) -> bool {
         .unwrap_or(false)
 }
 
-/// A cached document, looked up first by its requested-URL key and then by its
-/// final URL (so a later direct link to a previously redirected destination
-/// also reuses the row). Only a row whose own retrieval vintage is inside the
-/// shared freshness window serves; expired or malformed vintages read absent.
+/// Looked up by the requested-URL key, then by final URL so a direct link to a
+/// previously redirected destination reuses the row. Expired or malformed
+/// vintages read absent.
 pub fn get_fresh_document(
     conn: &Connection,
     url: &str,
@@ -184,7 +155,7 @@ pub fn get_fresh_document(
     Ok(None)
 }
 
-/// Age out cache entries past the freshness window. Returns the pruned count.
+/// Returns the pruned count.
 pub fn prune_expired_documents(conn: &Connection, now: DateTime<Utc>) -> Result<usize> {
     let cutoff = (now - chrono::Duration::days(RESEARCH_FRESHNESS_DAYS)).to_rfc3339();
     // RFC 3339 UTC strings order lexicographically within the same offset.
@@ -195,14 +166,11 @@ pub fn prune_expired_documents(conn: &Connection, now: DateTime<Utc>) -> Result<
     Ok(n)
 }
 
-/// One live fetch's outcome for the per-domain telemetry
-/// (`docs/web-research.md §Extraction telemetry`). `Full` / `Thin` are served
-/// pages — the extraction read that derives the profile and render-first flag.
-/// `Denied` is an HTTP 401/403 answer and `Failed` any other failed live
-/// attempt past the app's own guard; both count beside the extraction pair
-/// and neither moves the profile, since a refused or broken fetch says
-/// nothing about how the domain's pages extract. A policy refusal is never
-/// recorded — it is the app's guard, not the source's behavior.
+/// One live fetch's outcome (`docs/web-research.md §Extraction telemetry`).
+/// `Full` / `Thin` are served pages. `Denied` is an HTTP 401/403 answer and
+/// `Failed` any other failed live attempt past the app's own guard; neither
+/// moves the profile. A policy refusal is never recorded — it is the app's
+/// guard, not the source's behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchOutcome {
     Full,
@@ -211,32 +179,23 @@ pub enum FetchOutcome {
     Failed,
 }
 
-/// One domain's learned extraction state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceState {
     pub host: String,
     pub full_count: i64,
     pub thin_count: i64,
-    /// Failed live attempts — every error past the app's own policy guard: a
-    /// transport error, an unresolvable host, an HTTP error status, a content
-    /// or redirect bound. The per-domain failed-fetch rate.
+    /// Every error past the app's own policy guard.
     pub failed_count: i64,
-    /// The `failed_count` subset the source answered HTTP 401/403 — the
-    /// paywall / bot-block read the deferred render tier and Connected
-    /// Sources schedule off.
+    /// The `failed_count` subset the source answered HTTP 401/403.
     pub denied_count: i64,
-    /// The telemetry-resolved profile once samples clear the floor; `None`
-    /// while the registry/heuristic default still governs.
+    /// `None` while the registry/heuristic default still governs.
     pub profile: Option<ExtractionProfile>,
-    /// A domain repeatedly thin to a plain GET: the deferred render tier will
-    /// skip straight to the webview render. Persisted, unconsumed this slice.
+    /// A domain repeatedly thin to a plain GET. Persisted; no consumer yet.
     pub render_first: bool,
 }
 
-/// Record one live fetch's outcome for a domain and re-derive its learned
-/// profile + render-first flag (`docs/web-research.md §Extraction
-/// telemetry`). The profile reads served pages only — a failed attempt has no
-/// extraction to learn from.
+/// The profile reads served pages only — a failed attempt has no extraction
+/// to learn from.
 pub fn record_fetch_outcome(
     conn: &Connection,
     host: &str,
@@ -303,7 +262,6 @@ pub fn record_fetch_outcome(
     })
 }
 
-/// A domain's learned state, when any fetch has been recorded.
 pub fn source_state(conn: &Connection, host: &str) -> Result<Option<SourceState>> {
     let host = super::registry::normalize_host(host);
     conn.query_row(
@@ -394,8 +352,6 @@ mod tests {
             by_requested.final_url,
             "https://www.reuters.com/world/widget-final"
         );
-        // A later search result that already carries the destination reuses the
-        // same row through the final-URL fallback.
         let by_final = get_fresh_document(&conn, final_url, now)
             .unwrap()
             .expect("the direct final URL hits too");
@@ -412,23 +368,20 @@ mod tests {
         )
         .unwrap();
 
-        // Fresh inside the window (27 days later).
+        // 27 days later: inside the window.
         let now = at("2026-08-28T12:00:00+00:00");
         assert!(get_fresh_document(&conn, "https://reuters.com/a", now)
             .unwrap()
             .is_some());
-        // The fragment-insensitive key serves the same row.
         assert!(
             get_fresh_document(&conn, "https://reuters.com/a#top", now)
                 .unwrap()
                 .is_some()
         );
-        // Past the window it reads absent…
         let later = at("2026-08-29T13:00:00+00:00");
         assert!(get_fresh_document(&conn, "https://reuters.com/a", later)
             .unwrap()
             .is_none());
-        // …and prunes.
         assert_eq!(prune_expired_documents(&conn, later).unwrap(), 1);
     }
 
@@ -471,17 +424,15 @@ mod tests {
     fn telemetry_learns_a_js_required_render_first_domain() {
         let conn = mem_conn();
         let now = at("2026-08-23T00:00:00+00:00");
-        // Below the sample floor: no learned profile yet.
         let s = record_fetch_outcome(&conn, "www.Bloomberg.com", FetchOutcome::Thin, now).unwrap();
         assert_eq!(s.host, "bloomberg.com");
         assert_eq!(s.profile, None);
         assert!(!s.render_first);
         record_fetch_outcome(&conn, "bloomberg.com", FetchOutcome::Thin, now).unwrap();
-        // Third observation, all thin: profile resolves js_required + render-first.
+        // The third observation clears the sample floor.
         let s = record_fetch_outcome(&conn, "bloomberg.com", FetchOutcome::Thin, now).unwrap();
         assert_eq!(s.profile, Some(ExtractionProfile::JsRequired));
         assert!(s.render_first);
-        // A healthy full-text run re-derives back toward html.
         for _ in 0..7 {
             record_fetch_outcome(&conn, "bloomberg.com", FetchOutcome::Full, now).unwrap();
         }
@@ -494,11 +445,6 @@ mod tests {
 
     #[test]
     fn failed_and_denied_attempts_count_per_domain_without_moving_the_profile() {
-        // Attempt-5 Finding 1: the blocked fetches (17 of 25 on PSX, mostly
-        // HTTP 401/403) counted nowhere per domain — the render-tier and
-        // Connected-Sources scheduling read. A denied answer counts in both
-        // columns, any other failure in `failed_count` alone, and neither is
-        // a served-page sample for the profile.
         let conn = mem_conn();
         let now = at("2026-09-14T00:00:00+00:00");
         let s = record_fetch_outcome(&conn, "www.Reuters.com", FetchOutcome::Denied, now).unwrap();
@@ -509,8 +455,7 @@ mod tests {
         assert_eq!((s.full_count, s.thin_count), (0, 0));
         assert_eq!(s.profile, None, "no served page, no learned profile");
         assert!(!s.render_first);
-        // Three thin pages still resolve js_required: the failures are not
-        // thin samples and do not dilute the ratio either.
+        // The failures do not dilute the thin ratio either.
         for _ in 0..3 {
             record_fetch_outcome(&conn, "reuters.com", FetchOutcome::Thin, now).unwrap();
         }

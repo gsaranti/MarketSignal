@@ -1,28 +1,7 @@
-//! The per-holding pipeline (`docs/portfolio-analysis.md` §The per-holding pipeline).
-//! Orchestrates one holding from its deterministic dossier through the engine to a
-//! two-arm verdict: eligibility → financial engine → bounded research → distill →
-//! the thesis-document conversation → the action call → checkpoint. The engine
-//! owns the engine arm's numbers, app-stamped and never echoed through the
-//! model; the model arm is the thesis document the reasoner writes and the
-//! typed appendix it transcribes from it ([`crate::portfolio::ThesisAppendix`]),
-//! persisted exactly as authored, type-checked only, and never altering or
-//! binding the engine baseline (the boundary statement:
-//! `docs/portfolio-analysis.md` §The holding verdict).
-//!
-//! The model stages live behind the [`HoldingAnalyst`] trait so `cargo test` runs the
-//! whole pipeline offline against [`StubAnalyst`] with no daemon, while the live
-//! [`LocalAnalyst`] wraps [`crate::local_model::LocalModelClient`] with the right
-//! thinking modes — the thesis document free prose under thinking, the appendix
-//! a grammar-constrained non-thinking transcription. The substrate is a
-//! *primitive*; this is one of the per-feature stages that wraps it
-//! (`docs/local-models.md`).
-//!
-//! The **web-research stage is live** (the research-loop slice): Step 6c runs
-//! the bounded per-topic loop ([`crate::portfolio::research`]) and Step 6d the
-//! deterministic single/hierarchical distillation primitive
-//! ([`crate::portfolio::distill`]) — both behind the [`HoldingAnalyst`] trait,
-//! whose defaulted offline paths keep every deterministic stub pipeline-shaped
-//! with no web tool or daemon.
+//! The per-holding pipeline (`docs/portfolio-analysis.md` §The per-holding pipeline):
+//! dossier → engine → research → distill → thesis-document conversation → action
+//! call → checkpoint. The model stages sit behind [`HoldingAnalyst`] so the pipeline
+//! runs offline against [`StubAnalyst`] and live through [`LocalAnalyst`].
 
 use anyhow::{Context, Result};
 
@@ -44,86 +23,65 @@ use crate::portfolio::research::{self, HoldingBrief, HoldingResearch, ResearchAu
 use crate::portfolio::review;
 
 /// What the thesis-document conversation reads (`docs/portfolio-workflow.md`
-/// §Step 6f): the dossier, the engine's computed analysis, the run-level rate
-/// prints and this run's analysis. The model reasons over *this* — evidence,
-/// not a gathering transcript. It carries **no investor profile, no position
-/// economics and no action machinery**: the intrinsic verdict is
-/// profile-independent by input isolation, and the per-holding action call
-/// ([`ActionInput`]) is where both live (`docs/portfolio-analysis.md`
-/// §Intrinsic verdict).
+/// §Step 6f). Carries no investor profile, position economics or action
+/// machinery: the intrinsic verdict is profile-independent by input isolation,
+/// and those live on [`ActionInput`] (`docs/portfolio-analysis.md` §Intrinsic
+/// verdict).
 pub struct ThesisInput<'a> {
     pub dossier: &'a HoldingDossier,
     pub engine: &'a EngineOutput,
-    /// The run-level Treasury prints FETCHED VALUES states.
     pub rates: &'a RateAnchors,
-    /// This run's analysis record, rendered under ANALYSIS — the document
-    /// Step 6d's analysis call wrote over the write-ups, or the prior record
-    /// carried whole where the loop produced no write-up
-    /// ([`distill::consolidate`]); a carried one renders under the date it
-    /// was written with its own anchor bar's split-context line
-    /// ([`analysis_section`]).
+    /// Written this run, or the prior record carried whole where the loop
+    /// produced no write-up ([`distill::consolidate`]).
     pub analysis: crate::portfolio::AnalysisRecord,
-    /// The finalized pre-profit execution / financing overlay — present only
-    /// when the stock actually entered it.
+    /// Present only where the stock entered the overlay.
     pub pre_profit: Option<&'a PreProfitOverlay>,
-    /// The four soft forensic flags beside the hard state, rendered as typed
-    /// evidence on a priced stock; `None` on a fund.
+    /// `None` on a fund.
     pub soft_forensic: Option<&'a SoftForensicFlags>,
-    /// The input delta's technology-event pre-flag, where it was evaluable —
-    /// rendered only when fired; it asserts nothing about the cause.
+    /// Rendered only when fired; it asserts nothing about the cause.
     pub tech_pre_flag: Option<&'a engine::TechEventPreFlag>,
-    /// The narrative-vs-reality read, where it was computable.
     pub narrative: Option<&'a engine::NarrativeRead>,
-    /// The split-context line PRIOR THESIS carries where a split re-based the
-    /// price series since the prior document was written; `None` on a debut
-    /// or where no split intervened.
+    /// `None` on a debut or where no split intervened.
     pub prior_split: Option<SplitContext>,
-    /// This run's review, rendered under REVIEW between ANALYSIS and PRIOR
-    /// THESIS on a continuity run (`docs/portfolio-workflow.md` §Step 6f) —
-    /// the accuracy record reaches the document through it alone. `None` on a
-    /// debut.
+    /// The accuracy record reaches the document through this alone; `None` on
+    /// a debut.
     pub review: Option<String>,
 }
 
-/// The split-context line's facts (`docs/portfolio-workflow.md` §Step 6b): what
-/// the line above a verbatim prior document states about its price basis —
-/// the document itself is never rewritten.
+/// The split-context line above a verbatim prior document
+/// (`docs/portfolio-workflow.md` §Step 6b); the document itself is never
+/// rewritten.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SplitContext {
-    /// The series was re-based since the document was written: the cumulative
-    /// factor ([`engine::split_bridge_factor`]) that brings its prices to
-    /// today's basis, and the split's date and ratio where the splits feed
-    /// carries a split after the document's session ([`split_event_since`]).
+    /// The cumulative factor ([`engine::split_bridge_factor`]) that brings the
+    /// document's prices to today's basis, and the split since the document's
+    /// session where the feed carries one.
     Rebased {
         factor: f64,
         split: Option<SplitEvent>,
     },
-    /// The document's anchor bar is missing from the fetched window: whether a
-    /// split intervened is unknown, so the line says so rather than staying
-    /// silent (silence would read as "no split").
+    /// The document's anchor bar is missing from the fetched window, so whether
+    /// a split intervened is unknown; the line says so because silence would
+    /// read as "no split".
     Unverifiable,
 }
 
-/// What the `role_risk_only` thesis-document message reads: the dossier plus the
-/// engine's typed readout — none of the priced machinery exists on this branch,
-/// and no appendix follows the document.
+/// What the role/risk thesis-document message reads; no appendix follows the
+/// document on this branch.
 pub struct RoleRiskInput<'a> {
     pub dossier: &'a HoldingDossier,
     pub readout: &'a RoleRiskReadout,
     pub rates: &'a RateAnchors,
-    /// This run's analysis record — the fund agenda's write-ups consolidated
-    /// by Step 6d's analysis call, or the prior record carried whole
-    /// ([`distill::consolidate`]), rendered as on the priced message
-    /// ([`analysis_section`]).
+    /// Written this run, or the prior record carried whole
+    /// ([`distill::consolidate`]).
     pub analysis: crate::portfolio::AnalysisRecord,
     pub prior_split: Option<SplitContext>,
-    /// This run's review, rendered under REVIEW as on the priced message.
+    /// `None` on a debut.
     pub review: Option<String>,
 }
 
-/// The branch-shaped verdict evidence the per-holding action call reads — the
-/// finished intrinsic read the decision acts on. The `action` field on the
-/// referenced verdict bodies is a placeholder at call time (the decision
+/// The verdict evidence the per-holding action call reads. The `action` field
+/// on the referenced verdict bodies is a placeholder at call time (the decision
 /// overwrites it) and is deliberately never rendered.
 pub enum ActionSubject<'a> {
     Priced {
@@ -136,26 +94,22 @@ pub enum ActionSubject<'a> {
     },
 }
 
-/// What the **per-holding action call** reads (`docs/portfolio-analysis.md`
-/// §Portfolio action): the finished intrinsic verdict, the holding's own
-/// evidence off the dossier, the engine's per-holding action set (evidence,
-/// never a bar), and the **investor profile** — its only entry point into the
-/// job, so the thesis document stays profile-blind by input isolation. Tunnel
-/// vision by design: no whole-book context exists here.
+/// What the per-holding action call reads (`docs/portfolio-analysis.md`
+/// §Portfolio action). The investor profile's only entry point into the job,
+/// so the thesis document stays profile-blind by input isolation; no
+/// whole-book context exists here by design.
 pub struct ActionInput<'a> {
     pub dossier: &'a HoldingDossier,
     pub subject: ActionSubject<'a>,
-    /// The engine's per-holding action set ([`engine::feasible_actions`] for a
-    /// priced holding; [`crate::portfolio::ROLE_RISK_ACTIONS`] for the
-    /// role/risk branch).
+    /// [`engine::feasible_actions`] for a priced holding;
+    /// [`crate::portfolio::ROLE_RISK_ACTIONS`] for the role/risk branch.
     pub engine_set: &'a [Action],
     pub profile: &'a crate::portfolio::InvestorProfile,
 }
 
-/// The app-stamped annotation for a chosen rung outside the engine's per-holding
-/// action set — the choice persists exactly as authored; the departure records on
-/// the holding's audit (`docs/portfolio-analysis.md` §Portfolio action, the
-/// two-arm contract: engine evidence annotates, never bars).
+/// The audit annotation for a chosen rung outside the engine's action set — the
+/// choice persists as authored; engine evidence annotates, never bars
+/// (`docs/portfolio-analysis.md` §Portfolio action).
 fn outside_set_annotation(action: Action, engine_set: &[Action]) -> Option<String> {
     (!engine_set.contains(&action)).then(|| {
         let set: Vec<&str> = engine_set.iter().map(Action::as_kebab).collect();
@@ -167,18 +121,15 @@ fn outside_set_annotation(action: Action, engine_set: &[Action]) -> Option<Strin
     })
 }
 
-/// The audit's source line for the FRED rate anchors — appended by
-/// [`analyze_holding`] only where they actually fed the engine: the priced stock
-/// path and the priced fund path (scenario targets + the hurdle read). Never on a
-/// no-model exit or the role/risk branch, which compute nothing from them.
+/// The audit's source line for the FRED rate anchors, appended only where the
+/// engine computed from them or a prompt rendered them, never on a no-model
+/// exit.
 pub const RATE_ANCHORS_SOURCE: &str =
     "FRED rate anchors (DGS10 / DGS2 + anchor-window history)";
 
 /// The app-composed tax caveat appended to the rationale after the rung is
-/// fixed (`docs/portfolio-analysis.md` §Portfolio action, ruled 2026-09-16): the
-/// tax posture never enters the decision — the packet carries no tax row and no
-/// P/L — and the caveat rides only an exit-family rung under a tax-aware profile
-/// on a position with an unrealized gain or loss.
+/// fixed (`docs/portfolio-analysis.md` §Portfolio action): the tax posture never
+/// enters the decision — the packet carries no tax row and no P/L.
 pub const TAX_CAVEAT_GAIN: &str = "Tax note: this position carries an unrealized gain, so \
 realizing part or all of it may carry a tax cost; account type, tax lots, holding periods \
 and rates are unmodeled.";
@@ -186,13 +137,11 @@ pub const TAX_CAVEAT_LOSS: &str = "Tax note: this position carries an unrealized
 realizing it may carry a tax benefit; account type, tax lots, holding periods and rates are \
 unmodeled.";
 
-/// The caveat for this rung, profile and position — `None` where nothing is
-/// realized (hold, the add family), under a tax-exempt profile, at break-even,
+/// `None` where nothing is realized, under a tax-exempt profile, at break-even,
 /// or with no reported cost basis: an exactly-zero basis is an unreported one
-/// on the wire (the adapter maps a missing `averagePrice` to zero), so its
-/// gain is undefined rather than the whole market value
-/// (`docs/portfolio-analysis.md` §Storage and display); a negative netted
-/// basis keeps its dollar gain and so its caveat.
+/// (the adapter maps a missing `averagePrice` to zero), so its gain is
+/// undefined rather than the whole market value (`docs/portfolio-analysis.md`
+/// §Storage and display). A negative netted basis keeps its caveat.
 pub fn tax_caveat(
     profile: &crate::portfolio::InvestorProfile,
     position: &crate::schwab::Position,
@@ -214,13 +163,10 @@ pub fn tax_caveat(
     }
 }
 
-/// The model's investment sentence alone — the persisted rationale less the
-/// app's appended tax caveat, where one rides. PRIOR ACTION renders this form,
-/// never the persisted rationale, so a prior trim or sell cannot re-supply the
-/// tax posture or the P/L sign to the next intrinsic interpretation (fix list
-/// 3.2). The caveat is a fixed sentence joined by one space
-/// (`with_tax_caveat`), so the strip is exact; a rationale without one passes
-/// through untouched.
+/// The rationale less the app's tax caveat. PRIOR ACTION renders this form so a
+/// prior trim or sell cannot re-supply the tax posture or the P/L sign to the
+/// next intrinsic interpretation. The caveat is a fixed sentence joined by one
+/// space (`with_tax_caveat`), so the strip is exact.
 pub fn investment_sentence(rationale: &str) -> &str {
     for caveat in [TAX_CAVEAT_GAIN, TAX_CAVEAT_LOSS] {
         if let Some(sentence) = rationale.strip_suffix(caveat) {
@@ -230,8 +176,6 @@ pub fn investment_sentence(rationale: &str) -> &str {
     rationale
 }
 
-/// The persisted rationale: the model's sentence, then the app's caveat where one
-/// applies.
 fn with_tax_caveat(
     rationale: String,
     profile: &crate::portfolio::InvestorProfile,
@@ -244,11 +188,10 @@ fn with_tax_caveat(
     }
 }
 
-/// The action call's response contract says the rationale is one sentence and
-/// never empty (`docs/portfolio-analysis.md` §Portfolio action) — the schema only
-/// types it as a string, so the nonempty half is enforced here, fail-hard like the
-/// rest of the model stage. The one-sentence shape is a prompt preference, not
-/// validated (M6 of the 2026-08-18 doc/code audit).
+/// The response contract says the rationale is one sentence and never empty
+/// (`docs/portfolio-analysis.md` §Portfolio action); the schema only types it as
+/// a string, so the nonempty half is enforced here. The one-sentence shape is a
+/// prompt preference, not validated.
 fn ensure_action_rationale(
     symbol: &str,
     decision: &crate::portfolio::ActionDecision,
@@ -261,28 +204,23 @@ fn ensure_action_rationale(
     Ok(())
 }
 
-/// The model-backed stages of the pipeline, behind a trait so the orchestration is
-/// stub-driven offline and daemon-driven live. Research (6c) and the
-/// self-review (6e) carry **defaulted offline implementations** —
-/// pipeline-shaped, no web tool, no model call — so deterministic stubs stay
-/// small; consolidation's two calls (6d) default to a refusal naming the
-/// stage, since a stub with no write-up is never asked to consolidate, and
-/// the offline [`StubAnalyst`] renders them deterministically; the live
-/// analyst overrides all four.
+/// The model-backed stages, behind a trait so the orchestration is stub-driven
+/// offline and daemon-driven live. Research and the self-review carry offline
+/// defaults; consolidation's two calls default to a refusal, since a stub with
+/// no write-up is never asked to consolidate.
 pub trait HoldingAnalyst {
-    /// Step 6d — one distillation call over the write-ups
-    /// ([`distill::distillation_prompt`]): non-thinking, no grammar, prose.
+    /// Step 6d's distillation call ([`distill::distillation_prompt`]):
+    /// non-thinking, no grammar, prose.
     fn distill(&self, input: &distill::DistillInput<'_>) -> Result<String> {
         anyhow::bail!("{}: this analyst issues no distillation call", input.stage)
     }
-    /// Step 6d — the analysis call ([`distill::analysis_prompt`]): thinking,
-    /// no grammar, prose.
+    /// Step 6d's analysis call ([`distill::analysis_prompt`]): thinking, no
+    /// grammar, prose.
     fn analyze(&self, input: &distill::AnalysisInput<'_>) -> Result<String> {
         anyhow::bail!("{}: this analyst issues no analysis call", input.stage())
     }
-    /// Step 6c — the bounded per-topic research loop
-    /// (`docs/portfolio-workflow.md` §Step 6c). Defaults to the offline stub
-    /// (a deterministic research-unavailable note plus recorded gaps).
+    /// Step 6c (`docs/portfolio-workflow.md` §Step 6c); defaults to the offline
+    /// stub.
     fn research(
         &self,
         _dossier: &HoldingDossier,
@@ -290,70 +228,56 @@ pub trait HoldingAnalyst {
     ) -> Result<HoldingResearch> {
         Ok(research::offline_stub(plan))
     }
-    /// Step 6e — the self-review ([`review::review_prompt`]), on a continuity
-    /// run only: thinking, no grammar, prose. Defaults to the offline stub's
-    /// deterministic review ([`review::stub_review`]).
+    /// Step 6e ([`review::review_prompt`]), on a continuity run only: thinking,
+    /// no grammar, prose. Defaults to [`review::stub_review`].
     fn review(&self, input: &review::ReviewInput) -> Result<String> {
         Ok(review::stub_review(input))
     }
-    /// Step 6f — the thesis-document conversation (`docs/portfolio-workflow.md`
-    /// §Step 6f): the document as prose under thinking with no grammar, then
-    /// the typed appendix transcribed from it in the same conversation's
-    /// second, non-thinking message under the grammar. Returns the model arm
-    /// exactly as authored, the appendix type-checked only.
+    /// Step 6f (`docs/portfolio-workflow.md` §Step 6f): the document as prose
+    /// under thinking with no grammar, then the appendix transcribed in the
+    /// same conversation's second, non-thinking message under the grammar.
+    /// Returns the model arm as authored, type-checked only.
     fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm>;
-    /// The union's other branch for a structurally unpriceable vehicle: the
-    /// thesis document alone — the role read, with no prices, no conviction
-    /// and no appendix (`docs/portfolio-analysis.md` §Intrinsic verdict). The
-    /// action call authors the branch's action afterward.
+    /// The thesis document alone for a structurally unpriceable vehicle: no
+    /// prices, no conviction, no appendix (`docs/portfolio-analysis.md`
+    /// §Intrinsic verdict).
     fn interpret_role_risk(&self, input: &RoleRiskInput) -> Result<String>;
-    /// The **per-holding action call** (`docs/portfolio-analysis.md` §Portfolio
-    /// action): decide this holding's rung-only portfolio action from its own
-    /// finished verdict plus the investor profile — tunnel vision, no book
-    /// context (the 122B reasoner in thinking mode, live).
+    /// The per-holding action call (`docs/portfolio-analysis.md` §Portfolio
+    /// action): rung-only, from the holding's own verdict plus the investor
+    /// profile, no book context.
     fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision>;
-    /// The configured distillation-tier id, used only as the compatibility
-    /// fallback for analysts that do not expose [`Self::take_model_calls`].
+    /// The configured distillation-tier id; only the fallback for analysts
+    /// without [`Self::take_model_calls`].
     fn fast_id(&self) -> String;
-    /// The model id [`Self::interpret`], [`Self::interpret_role_risk`], and
-    /// [`Self::decide_action`] run on. Recorded on the audit only after one of
-    /// those calls actually ran.
+    /// The model id the reasoner calls run on; recorded on the audit only after
+    /// one actually ran.
     fn reasoner_id(&self) -> String;
     /// Drain the model ids of outbound calls since the last drain, in issue
-    /// order. `Some` means the analyst provides exact call telemetry (including
-    /// an honestly empty vector); `None` keeps deterministic/custom stubs on
-    /// the configured-id compatibility path. The live analyst records the
-    /// request's routed model before every daemon call, so research-before-
-    /// distill order and a distill routed up to the reasoner survive exactly.
+    /// order. `Some` means exact call telemetry (an empty vector included);
+    /// `None` keeps stubs on the configured-id path.
     fn take_model_calls(&self) -> Option<Vec<String>> {
         None
     }
-    /// Drain the prompt-size observations the calls above accumulated since
-    /// the last drain ([`crate::local_model::PromptUsage`]) — the data-health
-    /// context-fit read (`docs/portfolio-analysis.md` §Portfolio roll-up). The
-    /// job drains at each holding's checkpoint boundary so a completed
-    /// holding's rows ride its checkpoint row. Defaulted empty so deterministic
-    /// stubs carry no instrumentation.
+    /// Drain the prompt-size observations since the last drain — the
+    /// data-health context-fit read (`docs/portfolio-analysis.md` §Portfolio
+    /// roll-up). Drained at each holding's checkpoint boundary so its rows ride
+    /// its checkpoint row.
     fn take_prompt_usage(&self) -> Vec<crate::local_model::PromptUsage> {
         Vec::new()
     }
     /// Drain the fired bounded-retry records since the last drain
-    /// ([`crate::local_model::RetryEvent`]) — the data-health model-retry read
-    /// (`docs/local-models.md §The local-model adapter seam`), drained at the
-    /// same boundary as the usage. Defaulted empty like the usage drain.
+    /// (`docs/local-models.md §The local-model adapter seam`), at the same
+    /// boundary as the usage.
     fn take_retry_events(&self) -> Vec<crate::local_model::RetryEvent> {
         Vec::new()
     }
 }
 
 /// The holding-constant brief the research loop leads every gathering message
-/// with (`docs/portfolio-workflow.md` §Step 6c): the holding header, FETCHED
-/// VALUES as the thesis-document message renders it — the same bytes, so the
-/// three messages share one rendering — the news leads, and on a continuity
-/// run PRIOR ANALYSIS then PRIOR THESIS, each with its date and any
-/// split-context line, the prior run's analysis and thesis document verbatim.
-/// The thesis document's split line is the verdict bridge's (`prior_split`);
-/// the analysis's comes from its own record's anchor bar.
+/// with (`docs/portfolio-workflow.md` §Step 6c). FETCHED VALUES is the thesis
+/// message's rendering byte for byte. The thesis document's split line is the
+/// verdict bridge's (`prior_split`); the analysis's comes from its own anchor
+/// bar.
 pub(crate) fn research_brief(
     dossier: &HoldingDossier,
     rates: &RateAnchors,
@@ -371,12 +295,10 @@ pub(crate) fn research_brief(
     }
 }
 
-/// The split-bridge anchor bar a run stamps on what it writes
-/// (`docs/portfolio-analysis.md` §Starting parameters): the newest settled
-/// close strictly before the run's ET session, from this run's own fetched
-/// dated-EOD series. A later pass re-reads the same bar date from its fresh
-/// fetch, and the close ratio is exactly the cumulative split re-basis
-/// between the two fetch times ([`engine::split_bridge_factor`]).
+/// The split-bridge anchor bar (`docs/portfolio-analysis.md` §Starting
+/// parameters): the newest close strictly before the run's ET session. A later
+/// pass re-reads the same bar date, and the close ratio is the cumulative
+/// split re-basis between the two fetches ([`engine::split_bridge_factor`]).
 fn authoring_close_of(d: &HoldingDossier, run_date: &str) -> Option<engine::DatedValue> {
     d.financials
         .daily_closes
@@ -386,8 +308,8 @@ fn authoring_close_of(d: &HoldingDossier, run_date: &str) -> Option<engine::Date
         .cloned()
 }
 
-/// A split the splits feed carries — the date and ratio the split-context
-/// line names beside the bridge factor (`docs/portfolio-workflow.md` §Step 6b).
+/// A split the feed carries, named by the split-context line
+/// (`docs/portfolio-workflow.md` §Step 6b).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SplitEvent {
     pub date: chrono::NaiveDate,
@@ -395,9 +317,8 @@ pub struct SplitEvent {
     pub denominator: f64,
 }
 
-/// The newest split the evidence record's feed carries dated after `since`
-/// (an ISO session date) — `None` where the feed carries none, or the dossier
-/// no evidence record.
+/// The newest split the evidence feed carries dated after `since` (an ISO
+/// session date).
 fn split_event_since(d: &HoldingDossier, since: &str) -> Option<SplitEvent> {
     d.evidence
         .as_ref()?
@@ -416,10 +337,7 @@ fn split_event_since(d: &HoldingDossier, since: &str) -> Option<SplitEvent> {
 }
 
 /// A prior document's split context from its bridge factor
-/// (`docs/portfolio-workflow.md` §Step 6b): re-based where the factor moved
-/// off one — naming the split the feed carries since the document's session,
-/// where it carries one — none where the factor is exactly one, unverifiable
-/// where the anchor's bar is missing from the fresh window.
+/// (`docs/portfolio-workflow.md` §Step 6b).
 fn split_context_of(bridge: Option<f64>, split: Option<SplitEvent>) -> Option<SplitContext> {
     match bridge {
         Some(f) if f != 1.0 => Some(SplitContext::Rebased { factor: f, split }),
@@ -428,14 +346,9 @@ fn split_context_of(bridge: Option<f64>, split: Option<SplitEvent>) -> Option<Sp
     }
 }
 
-/// Run Steps 6c and 6d for one holding: assemble the deterministic research
-/// plan (the agenda and the holding-constant brief), run the analyst's
-/// research loop, then consolidate — the budget check, a distillation where
-/// the analysis prompt is over budget, and the analysis call
-/// ([`distill::consolidate`]) — returning the holding's analysis record
-/// beside the audit record the run persists. An analysis written this run is
-/// stamped with this run's session date and anchor bar; a carried one keeps
-/// the prior record whole.
+/// Steps 6c and 6d for one holding. An analysis written this run is stamped
+/// with this run's session date and anchor bar; a carried one keeps the prior
+/// record whole.
 fn run_research(
     analyst: &dyn HoldingAnalyst,
     dossier: &HoldingDossier,
@@ -447,8 +360,7 @@ fn run_research(
     let plan = ResearchPlan {
         agenda: research::build_agenda(dossier, triggers),
         brief: research_brief(dossier, rates, prior_split),
-        // The holding's own tracker step: the loop's thinking and request rows
-        // land on the step the job already opened for this symbol.
+        // The loop's rows land on the step the job already opened for this symbol.
         step_label: crate::portfolio::holding_step_key(&dossier.position.symbol),
     };
     let research_out = analyst
@@ -478,13 +390,11 @@ fn run_research(
     ))
 }
 
-/// Run one holding through the pipeline end to end, returning its verdict and audit
-/// record. Eligibility and the evidence floor short-circuit before any model call —
-/// an ineligible asset class is `not-rated`, a holding below the floor is
-/// `insufficient-evidence` — so the model is only ever asked to interpret a holding
-/// the engine could actually grade. No book input reaches it: the retired
-/// `portfolio-weight` series took the last one with it (the tunnel-vision
-/// ruling, 2026-08-14).
+/// Run one holding through the pipeline end to end. Eligibility and the evidence
+/// floor short-circuit before any model call — an ineligible asset class is
+/// `not-rated`, a holding below the floor `insufficient-evidence` — so the model
+/// only ever interprets a holding the engine could grade. No book input reaches
+/// it.
 pub fn analyze_holding(
     analyst: &dyn HoldingAnalyst,
     dossier: &HoldingDossier,
@@ -497,39 +407,30 @@ pub fn analyze_holding(
         asset_class,
         crate::portfolio::AssetClass::Etf | crate::portfolio::AssetClass::MutualFund
     );
-    // App-set from the deterministic holdings diff, never the model — carried on every
-    // verdict (graded or not) as the structured position tag, with the basis read
-    // beside an increase.
+    // App-set from the holdings diff, never the model; carried on every verdict.
     let position_change = dossier.position_delta.change;
     let basis_move = crate::portfolio::diff::basis_move(&dossier.position_delta, &dossier.position);
     let mut degraded = dossier.financials.gaps.clone();
     if let Some(f) = &dossier.fund {
         degraded.extend(f.fund.gaps.iter().cloned());
     }
-    // A failed DGS10 anchor-window history is a run-level degraded input — the
-    // targets fell to their documented fallback rather than failing the run
-    // (`docs/portfolio-analysis.md` §Starting parameters), and each holding's audit
-    // records why.
+    // A failed DGS10 history degrades rather than fails the run
+    // (`docs/portfolio-analysis.md` §Starting parameters).
     if let Some(gap) = &rates.history_gap {
         degraded.push(gap.clone());
     }
-    // The listing-resolution guard's unverified outcome: the holding proceeds —
-    // an FMP outage must never mass-not-rate a book — but the unverified identity
-    // cross-check is a recorded degraded input
-    // (`docs/portfolio-analysis.md` §Asset eligibility).
+    // An unverified listing resolution proceeds as a degraded input — an FMP
+    // outage must never mass-not-rate a book (`docs/portfolio-analysis.md`
+    // §Asset eligibility).
     if let Some(crate::portfolio::listing::ListingResolution::Unverified { detail }) =
         &dossier.listing
     {
         degraded.push(format!("listing-resolution guard unverified — {detail}"));
     }
-    // The split-adjustment bridge for this run's stored-basis price comparisons
-    // against the prior read (`docs/portfolio-analysis.md` §Starting
-    // parameters): the prior audit's anchor bar re-read from this run's fresh
-    // series is the exact cumulative re-basis factor since the prior pass.
-    // `Some(1.0)` — the unchanged common case, and a prior with no anchor (a
-    // no-price exit's row: comparisons run as stored until this run stamps one).
-    // `None` — an anchor exists but its bar is missing from the fresh window:
-    // the basis is unverifiable, so price-denominated prior comparisons are
+    // The split-adjustment bridge for prior price comparisons
+    // (`docs/portfolio-analysis.md` §Starting parameters). `Some(1.0)`:
+    // unchanged, or a prior with no anchor. `None`: the anchor's bar is missing
+    // from the fresh window, so price-denominated prior comparisons are
     // excluded rather than run cross-basis.
     let price_bridge: Option<f64> = match &dossier.prior_authoring_close {
         None => Some(1.0),
@@ -542,10 +443,6 @@ pub fn analyze_holding(
                 .to_string(),
         );
     }
-    // The split-context line a verbatim prior document carries
-    // (`docs/portfolio-workflow.md` §Step 6b): the document is never rewritten;
-    // the line states the factor where a split re-based the series since it
-    // was written, or that the basis could not be verified this run.
     let prior_session = dossier
         .prior_vintage
         .as_deref()
@@ -557,18 +454,16 @@ pub fn analyze_holding(
             .as_deref()
             .and_then(|since| split_event_since(dossier, since)),
     );
-    // A continuity run — one with a prior thesis document, an abstention's
-    // retained one included — takes the self-review (`docs/portfolio-workflow.md`
-    // §Step 6e); a debut has no prior position to review.
+    // A continuity run (a prior thesis document, an abstention's retained one
+    // included) takes the self-review (`docs/portfolio-workflow.md` §Step 6e).
     let has_prior_document = dossier
         .prior_verdict
         .as_ref()
         .and_then(|v| v.thesis_document())
         .is_some();
-    // The prior read's per-share comparators on this run's basis: the spot and
-    // every raw consensus-EPS period scale TOGETHER (their ratio — the prior
-    // matched-period multiple — is basis-free and must stay so). `None` factor
-    // drops both — excluded, never cross-basis.
+    // The prior spot and every consensus-EPS period scale together so their
+    // ratio (the prior matched-period multiple) stays basis-free; a `None`
+    // factor drops both rather than running cross-basis.
     let (bridged_prior_spot, bridged_prior_periods) = match price_bridge {
         Some(f) => {
             let periods = dossier
@@ -584,42 +479,31 @@ pub fn analyze_holding(
         }
         None => (None, Vec::new()),
     };
-    // The fund exposure comparators for the quick check's fund evidence-event legs
-    // — computed from the same fresh metadata the pass analyzed, on either verdict
-    // branch (`docs/portfolio-analysis.md` §Starting parameters).
+    // Computed on either verdict branch (`docs/portfolio-analysis.md` §Starting
+    // parameters).
     let fund_exposure = dossier
         .fund
         .as_ref()
         .map(|f| crate::portfolio::fund::exposure_basis(&f.fund));
-    // Whether this holding's verdict actually **received house-view content**. It is
-    // `false` for every route that returns before a thesis-document call — the
-    // eligibility gate, the listing guard, a net-short or fully-offset position, and
-    // every evidence-floor abstention — and each thesis path sets it from the
-    // predicate belonging to the prompt it is about to build.
+    // Whether the verdict actually received house-view content: `false` on
+    // every route that returns before a thesis-document call; each thesis path
+    // sets it from the predicate of the prompt it is about to build.
     let house_view_consulted = std::cell::Cell::new(false);
-    // Whether the FRED rate anchors actually fed this holding's verdict: the
-    // priced engine outputs compute from them (the scenario targets and the
-    // hurdle read, on the stock path and the priced fund path), and both
-    // thesis-document messages state the prints under FETCHED VALUES. Every
-    // earlier exit renders no prompt and computes nothing from them, so its
-    // audit must not name them (M3 of the 2026-08-18 doc/code audit).
+    // Whether the FRED rate anchors actually fed this verdict; an earlier exit
+    // renders no prompt and computes nothing from them, so its audit must not
+    // name them.
     let rates_consulted = std::cell::Cell::new(false);
-    // The Step-5 enriching feeds, each recorded only where a prompt actually
-    // rendered it (the same actually-consulted discipline as the house view):
-    // the CBOE backdrop and the fund's COT positioning render whenever present
-    // on the dossier at a thesis-document call; the sector-benchmark series is
-    // consulted exactly where the technology-event pre-flag evaluation read it.
+    // Each feed is recorded only where a prompt actually rendered it (the same
+    // discipline as the house view); the benchmark series only where the
+    // technology-event pre-flag read it.
     let backdrop_consulted = std::cell::Cell::new(false);
     let positioning_consulted = std::cell::Cell::new(false);
     let benchmark_consulted = std::cell::Cell::new(false);
     let commodity_consulted = std::cell::Cell::new(false);
     let short_interest_consulted = std::cell::Cell::new(false);
     let ma_consulted = std::cell::Cell::new(false);
-    // The model ids this holding's verdict was **actually** authored with, in
-    // first-call order. The live analyst drains the routed id of every outbound
-    // request; deterministic/custom stubs without call telemetry retain the
-    // configured-id fallback. A no-model exit persists none, and duplicate ids
-    // collapse without disturbing their first-call position.
+    // The model ids this verdict was actually authored with, in first-call
+    // order; duplicates collapse without disturbing their first-call position.
     let models_used: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
     let used_model = |id: String| {
         let mut used = models_used.borrow_mut();
@@ -640,9 +524,9 @@ pub fn analyze_holding(
             used_model(fallback);
         }
     };
-    // The audit's source list. **Both** audit construction sites go through this — the
-    // closure below for every early return, and the priced path's own record — because
-    // duplicating it is how the house-view claim survived the first fix.
+    // Both audit construction sites go through this — the closure below for
+    // every early return, and the priced path's own record — so a source claim
+    // cannot drift between them.
     let audit_sources = || {
         let mut sources = dossier.sources.clone();
         if rates_consulted.get() {
@@ -675,17 +559,11 @@ pub fn analyze_holding(
         }
         sources
     };
-    // The split-bridge anchor: the newest settled bar strictly before the run's
-    // ET session, off the run's own fetched series (oldest-first). Strictly
-    // before keeps the anchor off the run day's still-forming bar, so a
-    // re-fetch reads back the identical close unless the series was re-based.
-    // Every pass that writes stamps its own, an unresolvable prior bridge
-    // included: everything its row persists — the document, the appendix's
-    // prices, the bands, the quick basis — is on the run's own basis, and the
-    // excluded prior comparisons are that run's recorded loss, never carried
-    // onto its row. Only an abstention carries an anchor forward — the retained
-    // document's (`abstain` below) — since its row persists no value on the
-    // run's basis (`docs/portfolio-analysis.md` §Starting parameters).
+    // Strictly before the run's session keeps the anchor off the still-forming
+    // bar, so a re-fetch reads back the identical close unless the series was
+    // re-based. Every pass that writes stamps its own; only an abstention
+    // carries the retained document's forward (`abstain` below)
+    // (`docs/portfolio-analysis.md` §Starting parameters).
     let authoring_close = authoring_close_of(dossier, run_date);
     let audit = |metrics, target_meta, pre_profit, soft_forensic| HoldingAudit {
         symbol: symbol.clone(),
@@ -704,9 +582,8 @@ pub fn analyze_holding(
         fund_exposure: fund_exposure.clone(),
         pre_profit,
         hurdle: None,
-        // Every exit records the sweep state where the gather ran it; the
-        // matched hard rule is stamped only on the priced path, where the
-        // engine consequences it names were actually computed.
+        // The matched hard rule is stamped only on the priced path, where its
+        // engine consequences were computed.
         forensic: dossier
             .filing_events
             .clone()
@@ -714,35 +591,24 @@ pub fn analyze_holding(
                 matched_rule: None,
                 state,
             }),
-        // The soft flags ride wherever the overlay record does — every
-        // priced-stock path, the floor and guard exits included.
         soft_forensic,
-        // The pre-flag is evaluated on the priced path only (it reads the
-        // engine's volatility); an early exit records none.
+        // Evaluated on the priced path only (it reads the engine's volatility).
         tech_event_pre_flag: None,
-        // Provenance like the sweep state: the row resolved at gather time,
-        // recorded wherever it exists (the source label stays render-scoped).
+        // Recorded wherever the gather resolved it; its source label stays
+        // render-scoped.
         short_interest: dossier.short_interest.clone(),
-        // Computed on the priced path only; an early exit records none.
         implied_expectations: None,
         narrative: None,
         option_overlay: dossier.option_overlay.clone(),
-        // Recorded only where the research loop ran; every no-research exit
-        // records none.
         research: None,
-        // Written where consolidation ran; an abstention retains the prior
-        // run's below, every other no-research exit records none.
         analysis: None,
-        // Written where the self-review ran; every earlier exit records none.
         review: None,
-        // An abstention carries the prior mark below; every other exit before
-        // the review read none.
         accuracy_read_through: None,
     };
     let abstain = |reason: String, metrics, meta, pre_profit, soft_forensic| {
-        // A below-floor exit retains the prior thesis document unrewritten —
-        // Steps 6c–6f never ran for it (`docs/portfolio-analysis.md`
-        // §Evidence floor), so the next continuity run still reads it.
+        // A below-floor exit retains the prior thesis document unrewritten so
+        // the next continuity run still reads it (`docs/portfolio-analysis.md`
+        // §Evidence floor).
         let retained = dossier
             .prior_verdict
             .as_ref()
@@ -756,32 +622,25 @@ pub fn analyze_holding(
                 reason,
                 prior_thesis_document: retained.clone(),
             },
-            // Vintages are the job layer's concern: it stamps a fresh pass with the
-            // run's `created_at` and preserves an abstention's prior vintage.
+            // The job layer stamps vintages: a fresh pass gets the run's
+            // `created_at`, an abstention keeps its prior vintage.
             analyzed_at: None,
             action_source: ActionSource::ModelChosen,
             side_reversed: false,
         };
-        // An abstaining stock still records its overlay (the fresh statement leg)
-        // and its soft forensic flags — engine-only state, no model dependency.
         let mut record = audit(metrics, meta, pre_profit, soft_forensic);
         // The retained document stays on the basis it was written, so the row
-        // carries the document's own anchor bar: the next continuity run's
-        // bridge then still reads the split factor its prices need. A fresh
-        // stamp would certify pre-split prices on today's basis — factor 1 on
-        // the next pass, the mismatch never re-detectable.
+        // carries its own anchor bar: a fresh stamp would certify pre-split
+        // prices on today's basis, and the next pass could never re-detect the
+        // mismatch.
         if retained.is_some() {
             record.authoring_close = dossier.prior_authoring_close.clone();
         }
-        // The prior analysis is retained unrewritten the same way — the
-        // holding's research memory survives the exit, so the next continuity
-        // run still loads it by identity (`docs/portfolio-analysis.md`
-        // §Evidence floor). Unconditionally, unlike the anchor bar above: the
-        // analysis has no price basis to certify, so it carries whether or
-        // not a document was retained beside it.
+        // The prior analysis is retained the same way (`docs/portfolio-analysis.md`
+        // §Evidence floor) — unconditionally, since it has no price basis to
+        // certify.
         record.analysis = dossier.prior_analysis.clone();
-        // The accuracy read-through mark travels with the retained document:
-        // the next review reads as read what the review behind it read
+        // The read-through mark travels with the retained document
         // (`docs/portfolio-analysis.md` §Outcome learning).
         record.accuracy_read_through = dossier.prior_accuracy_read_through;
         Ok((verdict, record))
@@ -800,7 +659,6 @@ pub fn analyze_holding(
         Ok((verdict, audit(Default::default(), None, None, None)))
     };
 
-    // Eligibility: a non-equity class is never given a fabricated grade.
     if !asset_class.is_gradeable() {
         return not_rated(format!(
             "{} is not graded by the equity pipeline",
@@ -808,13 +666,8 @@ pub fn analyze_holding(
         ));
     }
 
-    // Eligibility: a net-short position is a direction the prescriptive layer doesn't
-    // model — the ladder's verbs and the outcome labels all read long — so it
-    // takes the not-rated treatment with a short-position reason
-    // (`docs/portfolio-analysis.md` §Asset eligibility). An exactly-zero netted
-    // position (long and short legs fully offset across accounts — deliberately
-    // kept by netting) is neither long nor short: it must not carry the
-    // long-ladder read on zero economic exposure, so it is not-rated too.
+    // A net-short or fully offset position is not-rated: the ladder reads long
+    // (`docs/portfolio-analysis.md` §Asset eligibility).
     if dossier.position.quantity <= 0.0 {
         let reason = if dossier.position.quantity < 0.0 {
             "held net short — the ladder's long-side semantics don't apply; \
@@ -827,13 +680,10 @@ pub fn analyze_holding(
         return not_rated(reason.to_string());
     }
 
-    // Eligibility: the loop-time listing-resolution guard, stocks only
-    // (`docs/portfolio-analysis.md` §Asset eligibility). No canonical FMP
-    // resolution or a non-US primary listing is a structural can't-grade — the
-    // US-only data plan has no honest statement surface for it; a
-    // resolved-but-conflicting issuer identity is the evidence floor's
-    // conflicting-identity arm — a data problem, possibly transient — so a
-    // wrong-issuer mapping can never grade the wrong company's financials.
+    // The listing-resolution guard, stocks only (`docs/portfolio-analysis.md`
+    // §Asset eligibility): no canonical resolution or a non-US primary listing
+    // is a structural can't-grade; a conflicting issuer identity is the
+    // evidence floor's arm instead, a data problem that may be transient.
     if matches!(asset_class, crate::portfolio::AssetClass::Stock) {
         let unsupported = match &dossier.listing {
             Some(crate::portfolio::listing::ListingResolution::UnsupportedUnits { detail }) => {
@@ -856,10 +706,10 @@ pub fn analyze_holding(
         if let Some(crate::portfolio::listing::ListingResolution::Conflict { fmp_name }) =
             &dossier.listing
         {
-            // The floor exit's overlay-survival semantics hold at the guard
-            // too: the guard-terminal skip fetched no statements, so the
-            // record reads eligibility-unscorable with its input gaps
-            // (`docs/storage.md` §Local Analysis Suite Storage).
+            // The overlay and soft flags survive the guard exit as they do the
+            // floor's; the skip fetched no statements, so the record reads
+            // unscorable with its gaps (`docs/storage.md` §Local Analysis Suite
+            // Storage).
             let pre_profit = crate::portfolio::pre_profit::compute_overlay(&dossier.financials);
             let soft_forensic = crate::portfolio::soft_forensic::compute(&dossier.financials);
             return abstain(
@@ -876,15 +726,10 @@ pub fn analyze_holding(
         }
     }
 
-    // The deterministic engine stage, per branch: the equity engine for a stock, the
-    // reduced fund computation (strategy-routed at loop time) for a fund
-    // (`docs/portfolio-workflow.md` §Step 6b).
+    // The engine stage (`docs/portfolio-workflow.md` §Step 6b).
     let mut pre_profit_overlay: Option<PreProfitOverlay> = None;
-    // The soft forensic flags, computed beside the overlay on the stock path
-    // (`docs/portfolio-workflow.md` §Step 6b) and persisted wherever it is.
     let mut soft_forensic_flags: Option<crate::portfolio::soft_forensic::SoftForensicFlags> = None;
-    // No longer `mut`: the Step-6e assumption recompute runs in shadow mode
-    // (ruled 2026-08-24), so nothing rewrites the engine output after 6b.
+    // Nothing rewrites the engine output after Step 6b.
     let engine_output = if matches!(
         asset_class,
         crate::portfolio::AssetClass::Etf | crate::portfolio::AssetClass::MutualFund
@@ -914,24 +759,16 @@ pub fn analyze_holding(
                 return abstain(reason, Default::default(), None, None, None);
             }
             FundEngineVerdict::RoleRiskOnly(readout) => {
-                // The branch's computed surface — the expense ratio, the
-                // closed-end read and the price-derived legs — persists as the
-                // audit's metrics and renders into the message.
                 let fund_metrics = fund_metrics(&readout, &dossier.financials);
-                // The union's other branch: the model authors the thesis document
-                // carrying the role read, with no prices, no conviction and no
-                // appendix — the branch's action is authored by the dedicated
-                // per-holding action call below, the full ladder structurally
-                // open while the engine arm's reduced set (sell-all / trim /
-                // hold) rides as annotated evidence (`docs/portfolio-analysis.md`
-                // §Portfolio action).
+                // The role/risk branch: the full ladder stays open to the action
+                // call below; the engine arm's reduced set rides as annotated
+                // evidence (`docs/portfolio-analysis.md` §Portfolio action).
                 house_view_consulted.set(prompt_renders_house_view(dossier));
                 backdrop_consulted.set(dossier.put_call_backdrop.is_some());
                 positioning_consulted
                     .set(dossier.fund.as_ref().is_some_and(|f| f.positioning.is_some()));
-                // The fund agenda runs the same 6c loop (`docs/portfolio-workflow.md`
-                // §Step 6c); the brief states the Treasury prints under FETCHED
-                // VALUES, so the source is consulted here too.
+                // The brief states the Treasury prints under FETCHED VALUES, so
+                // the source is consulted on this branch too.
                 rates_consulted.set(true);
                 let (rr_analysis, rr_research_record) = run_research(
                     analyst,
@@ -943,9 +780,7 @@ pub fn analyze_holding(
                 )?;
                 record_stage_models(analyst.reasoner_id());
                 // The self-review on a continuity run (`docs/portfolio-workflow.md`
-                // §Step 6e): the prior action and the document's conditions
-                // against the fund's realized data — no accuracy record, since
-                // the branch states no price.
+                // §Step 6e); no accuracy record, since the branch states no price.
                 let rr_review = if has_prior_document {
                     let text = analyst
                         .review(&review::ReviewInput {
@@ -973,8 +808,6 @@ pub fn analyze_holding(
                     })
                     .context("writing the role/risk holding's thesis document")?;
                 record_stage_models(analyst.reasoner_id());
-                // The action placeholder is overwritten by the decision below and
-                // never rendered into its prompt.
                 let mut rr = role_risk_verdict_from_model_arm(&readout, thesis_document);
                 let decision = analyst
                     .decide_action(&ActionInput {
@@ -993,10 +826,8 @@ pub fn analyze_holding(
                     &dossier.position,
                     decision.action,
                 );
-                // The branch's computed surface persists as the audit's metrics —
-                // the same expense-ratio + price-derived legs the message rendered
-                // (plus the CEF-only closed-end read), never the empty default
-                // (M3 of the 2026-08-18 audit).
+                // The branch's computed surface persists as the audit's metrics,
+                // never the empty default.
                 let mut audit_record = audit(fund_metrics, None, None, None);
                 audit_record.research = Some(rr_research_record);
                 audit_record.analysis = Some(rr_analysis);
@@ -1019,10 +850,8 @@ pub fn analyze_holding(
             }
         }
     } else {
-        // The pre-profit overlay's statement legs (`docs/portfolio-workflow.md`
-        // §Step 6b) — the execution read has no producer. Computed for every
-        // stock: the eligibility result persists even when the stock does not
-        // enter.
+        // Computed for every stock: the eligibility result persists even when
+        // the stock does not enter (`docs/portfolio-workflow.md` §Step 6b).
         pre_profit_overlay = Some(pre_profit::compute_overlay(&dossier.financials));
         soft_forensic_flags = Some(crate::portfolio::soft_forensic::compute(&dossier.financials));
         let issuer = dossier.issuer.as_ref();
@@ -1043,15 +872,13 @@ pub fn analyze_holding(
             }
         }
     };
-    // Only a priced engine output computed from the rate anchors (scenario targets,
-    // hurdle) — every route above returned without one.
+    // Only a priced engine output computes from the rate anchors.
     rates_consulted.set(true);
 
-    // The input delta's technology-event pre-flag (`docs/portfolio-analysis.md`
-    // §Starting parameters) — an equity read, evaluable only for a carried
-    // stock with a sector-benchmark series; an unevaluable read records its
-    // typed reason on the audit, never a fired or clear flag. A debut has
-    // nothing to diff, so it is neither a flag nor a gap.
+    // The technology-event pre-flag (`docs/portfolio-analysis.md` §Starting
+    // parameters): an unevaluable read records its reason, never a fired or
+    // clear flag; a debut has nothing to diff, so it is neither a flag nor a
+    // gap.
     let (tech_pre_flag, tech_pre_flag_gap) = if is_fund {
         (None, None)
     } else {
@@ -1075,9 +902,7 @@ pub fn analyze_holding(
                         )),
                     ),
                     Some(session) => {
-                        // The label's warrant: only here is the series actually
-                        // handed to the evaluation (an unreadable vintage never
-                        // reads it — Codex 2026-08-20 round 2, finding 4).
+                        // Only here is the series actually handed to the evaluation.
                         benchmark_consulted.set(true);
                         match engine::tech_event_pre_flag(
                             &dossier.financials.daily_closes,
@@ -1101,11 +926,8 @@ pub fn analyze_holding(
     };
 
     // The narrative-vs-reality read (`docs/portfolio-analysis.md` §Starting
-    // parameters) — a stock's pace pair against the prior run's stored
-    // comparator (a fund has neither consensus nor statements to read). An
-    // unreadable pace on a *carried* holding records its typed reason; a debut
-    // has no comparator and records nothing (the debut-null convention). A
-    // tripped hype read records its matched rule — evidence the model weighs,
+    // parameters): an unreadable pace on a carried holding records its reason,
+    // a debut records nothing. A tripped read is evidence the model weighs,
     // never a clamp on either arm.
     let (narrative, narrative_gap) = if is_fund {
         (None, None)
@@ -1137,18 +959,14 @@ pub fn analyze_holding(
             ),
         }
     };
-    // Research (the live 6c loop, or the analyst's offline default) → distill
-    // → the thesis-document conversation.
     house_view_consulted.set(prompt_renders_house_view(dossier));
     backdrop_consulted.set(dossier.put_call_backdrop.is_some());
     positioning_consulted.set(dossier.fund.as_ref().is_some_and(|f| f.positioning.is_some()));
     commodity_consulted.set(!dossier.commodity_context.is_empty());
     short_interest_consulted.set(dossier.short_interest.is_some());
     ma_consulted.set(!dossier.ma_matches.is_empty());
-    // The conditional topics' deterministic triggers (`docs/portfolio-workflow.md`
-    // §Step 6c): the technology-event pre-flag is the technology topic's only
-    // trigger, decided when the agenda is assembled; the symbol-scoped news
-    // leads ride the pass brief and trigger nothing.
+    // The conditional topics' triggers (`docs/portfolio-workflow.md` §Step 6c);
+    // the news leads ride the brief and trigger nothing.
     let triggers = research::AgendaTriggers {
         tech_pre_flag_fired: tech_pre_flag.as_ref().is_some_and(|f| f.fired),
         overlay_eligible: pre_profit_overlay.as_ref().is_some_and(|o| o.is_eligible()),
@@ -1157,10 +975,8 @@ pub fn analyze_holding(
         run_research(analyst, dossier, &triggers, rates, prior_split, run_date)?;
     record_stage_models(analyst.reasoner_id());
 
-    // The self-review (`docs/portfolio-workflow.md` §Step 6e) — on a
-    // continuity run, before the thesis document: the prior position against
-    // what has happened since, the holding's accuracy record riding its
-    // realized block and reaching the model nowhere else.
+    // The self-review (`docs/portfolio-workflow.md` §Step 6e) precedes the
+    // thesis document; the accuracy record reaches the model nowhere else.
     let review_text = if has_prior_document {
         let text = analyst
             .review(&review::ReviewInput {
@@ -1177,39 +993,31 @@ pub fn analyze_holding(
     } else {
         None
     };
-    // The read-through mark this row records (`docs/portfolio-analysis.md`
-    // §Outcome learning): the store's highest check id where the review read
-    // the accuracy record, the prior mark where the store could not be read,
-    // none where no review ran.
+    // The read-through mark (`docs/portfolio-analysis.md` §Outcome learning):
+    // the prior mark carries where the store could not be read.
     let accuracy_read_through = match (&review_text, &dossier.accuracy) {
         (None, _) => None,
         (Some(_), Some(acc)) => acc.high_water,
         (Some(_), None) => dossier.prior_accuracy_read_through,
     };
 
-    // The hard-forensic state trips from the item-classified filing kinds
-    // alone (`docs/portfolio-analysis.md` §Starting parameters): a fraud
-    // allegation reaches the model only through the research write-ups and
-    // the analysis, as prose it weighs.
+    // The hard-forensic state trips from the classified filing kinds alone
+    // (`docs/portfolio-analysis.md` §Starting parameters); a fraud allegation
+    // reaches the model only as prose through the write-ups.
     let filing_state = dossier.filing_events.clone();
     let hard_forensic = filing_state
         .as_ref()
         .map(crate::portfolio::ForensicFilingState::hard_tripped)
         .unwrap_or(false);
 
-    // The overlay's rules join only when the stock actually entered the overlay
-    // (a priced fund carries none) — they bind the engine's own rung and its
-    // per-holding action set below. The overlay is the statement legs alone:
-    // its execution read has no deterministic producer, and the issuer's
-    // operating observations reach the model through the write-ups
-    // (`docs/portfolio-workflow.md` §Step 6b).
+    // The overlay's rules bind the engine's own rung and action set below only
+    // where the stock entered the overlay (`docs/portfolio-workflow.md` §Step
+    // 6b).
     let overlay_rules = pre_profit_overlay
         .as_ref()
         .filter(|o| o.is_eligible())
         .map(|o| &o.consequences);
-    // The thesis-document conversation (`docs/portfolio-workflow.md` §Step
-    // 6f): the document as prose, then the typed appendix transcribed from it
-    // — the model arm, persisted exactly as authored and type-checked only.
+    // Step 6f (`docs/portfolio-workflow.md` §Step 6f).
     let model_arm = analyst
         .interpret(&ThesisInput {
             dossier,
@@ -1226,11 +1034,9 @@ pub fn analyze_holding(
         .context("writing the holding's thesis document")?;
     record_stage_models(analyst.reasoner_id());
 
-    // The engine arm's own rung — the drafted rule over its reads, the
-    // hard-forensic exit branch first — and the authoring-time band relation
-    // the quick check's monitor compares against, on the pass's own basis like
-    // its band and its anchor (`docs/portfolio-analysis.md` §Starting
-    // parameters; §The quick check).
+    // The authored band relation is on the pass's own basis, like its band and
+    // its anchor (`docs/portfolio-analysis.md` §Starting parameters; §The quick
+    // check).
     let engine_rung =
         engine::engine_action(engine_output.grade, &engine_output.hurdle, overlay_rules, hard_forensic);
     let authored_band_relation = authored_band_relation(
@@ -1244,11 +1050,8 @@ pub fn analyze_holding(
         engine_rung,
         authored_band_relation,
     );
-    // The per-holding action call — the profile's one entry point: the finished
-    // verdict plus the holding's own evidence decide the rung, tunnel vision by
-    // design (`docs/portfolio-analysis.md` §Portfolio action). The engine's
-    // per-holding set rides as evidence; an outside-the-set choice persists as
-    // authored with the departure annotated on the audit.
+    // The per-holding action call (`docs/portfolio-analysis.md` §Portfolio
+    // action).
     let engine_set =
         engine::feasible_actions(engine_output.grade, &engine_output.hurdle, overlay_rules, hard_forensic);
     let decision = analyst
@@ -1282,9 +1085,6 @@ pub fn analyze_holding(
         action_source: ActionSource::ModelChosen,
         side_reversed: false,
     };
-    // The engine's own gap notes (tier-input gaps, the fund composite's uncovered
-    // share, an option-overlay structural flag) join the audit's degraded inputs —
-    // recorded, never silently dropped.
     let mut degraded_inputs = degraded.clone();
     degraded_inputs.extend(engine_output.tier_gaps.iter().cloned());
     degraded_inputs.extend(tech_pre_flag_gap.clone());
@@ -1303,16 +1103,15 @@ pub fn analyze_holding(
         target_meta: Some(engine_output.target_meta.clone()),
         grade_parameter_version: engine::GRADE_PARAMETER_VERSION.to_string(),
         factors: engine_output.factors.clone(),
-        // The basis beneath this pass's own anchor — persisted on every priced
-        // pass, so the sweep's conversions read one basis.
+        // Persisted on every priced pass, so the sweep's conversions read one
+        // basis.
         quick_basis: engine_output.quick_basis.clone(),
         authoring_close: authoring_close.clone(),
         fund_exposure: fund_exposure.clone(),
         pre_profit: pre_profit_overlay,
         soft_forensic: soft_forensic_flags,
-        // The full hurdle read persists on the audit, the hurdle basis behind
-        // the verdict's dead-money state (`docs/storage.md` §Local Analysis
-        // Suite Storage).
+        // The hurdle basis behind the verdict's dead-money state
+        // (`docs/storage.md` §Local Analysis Suite Storage).
         hurdle: Some(engine_output.hurdle.clone()),
         forensic: filing_state
             .clone()
@@ -1339,11 +1138,10 @@ pub fn analyze_holding(
 
 // ---- Prompt construction (pure, testable) ------------------------------------
 
-/// The system prompt of the thesis-document conversation (`docs/portfolio-workflow.md`
-/// §Step 6f): the role and the two-part shape of the message — nothing that
-/// describes the data the message carries, no app concept
-/// (`docs/local-models.md` §Prompt posture). The same system message heads the
-/// conversation's second, appendix message.
+/// The system prompt of the thesis-document conversation
+/// (`docs/portfolio-workflow.md` §Step 6f): the role and the message's shape,
+/// no app concept (`docs/local-models.md` §Prompt posture). The same system
+/// message heads the second, appendix message.
 pub fn thesis_system_prompt(is_fund: bool) -> String {
     format!(
         "You are an {} analyst writing the thesis document for one holding in a portfolio \
@@ -1353,9 +1151,8 @@ pub fn thesis_system_prompt(is_fund: bool) -> String {
     )
 }
 
-/// The system prompt of the `role_risk_only` thesis-document message: the same
-/// footing as [`thesis_system_prompt`], the vehicle named as a fund since this
-/// branch is a fund by construction.
+/// As [`thesis_system_prompt`], the vehicle named as a fund since this branch
+/// is a fund by construction.
 pub fn role_risk_system_prompt() -> String {
     "You are an investment analyst writing the thesis document for one fund holding in a \
      portfolio review. Part 1 of the message gives the inputs. Part 2 says what the document \
@@ -1363,10 +1160,6 @@ pub fn role_risk_system_prompt() -> String {
         .to_string()
 }
 
-/// Whether a dossier's vehicle is a fund — the class-shaped executability
-/// surface (statement series never resolve on the fund path, the expense ratio
-/// only there), computed once from the asset class wherever a prompt, schema or
-/// validator needs it.
 pub(crate) fn dossier_is_fund(d: &HoldingDossier) -> bool {
     matches!(
         d.position.asset_class,
@@ -1374,34 +1167,22 @@ pub(crate) fn dossier_is_fund(d: &HoldingDossier) -> bool {
     )
 }
 
-/// Whether an interpretation message will render any market-analysis content —
-/// the latest sections or the recent stances. Both branches render the house
-/// view through one [`market_analysis_section`] since `portfolio-v42` (ruled
-/// 2026-09-17: the role/risk message gains the stances), so the audit's
+/// Whether an interpretation message will render any market-analysis content.
+/// Both branches render through one [`market_analysis_section`], so the audit's
 /// house-view source claim reads the one predicate the render reads; a
-/// summary-only house view (reachable whenever the latest report's Markdown is
-/// missing or unreadable, which `load_house_view` degrades to deliberately)
-/// reaches both verdicts as the stance lines.
+/// summary-only house view (what `load_house_view` degrades to) still renders
+/// as the stance lines.
 pub(crate) fn prompt_renders_house_view(d: &HoldingDossier) -> bool {
     d.house_view.latest_sections.is_some() || !d.house_view.recent_summaries.is_empty()
 }
 
-/// The prompt's holding header — the identity and per-share quote every
-/// model-facing packet opens with: both interpretation branches, the research
-/// brief and the action call. The name falls back to the resolved listing's
-/// company name when Schwab supplies no description, which otherwise renders
-/// as `HOLDING: PSX ()` and leaves the model speculating about the ticker
-/// (`docs/verification/2026-08-10-big-run-attempt-1.md` §Finding 4). Since
-/// `portfolio-v38` the header carries no account economics on any route —
-/// no quantity, cost basis, market value or unrealized P/L (fix list 3.2,
-/// ruled 2026-09-16): those are the account's ownership history, not the
-/// issuer's condition, and the intrinsic read is of no investor
-/// (`docs/portfolio-analysis.md` §Intrinsic verdict). The action call's
-/// header had held that form since `portfolio-v36`; the one function now
-/// serves every packet. Since `portfolio-v43` it closes with the analysis
-/// date (the run's session date), so every packet anchors its period labels
-/// to the date of the analysis rather than the model's training horizon
-/// (attempt-6 Finding 7; fix list 5.1, ruled 2026-09-17 for the header).
+/// The holding header every model-facing packet opens with. The name falls back
+/// to the resolved listing's company name when Schwab supplies no description,
+/// which would otherwise render as `HOLDING: PSX ()`. It carries no account
+/// economics on any route — the intrinsic read is of no investor
+/// (`docs/portfolio-analysis.md` §Intrinsic verdict) — and closes with the
+/// analysis date so every packet anchors its period labels to the date of the
+/// analysis rather than the model's training horizon.
 pub(crate) fn holding_header(d: &HoldingDossier) -> String {
     format!(
         "HOLDING\n{} ({}).\nPrice: {}\nDate: {}.\n",
@@ -1412,10 +1193,9 @@ pub(crate) fn holding_header(d: &HoldingDossier) -> String {
     )
 }
 
-/// The per-share quote — "$358.97 per share." — or "(gap)" where no usable price
-/// reached the packet. It carries no date: the quote and the dated daily closes
-/// are separate requests, so the last close's date is not the quote's (Codex,
-/// `portfolio-v40` round 1).
+/// "$358.97 per share." or "(gap)". It carries no date: the quote and the dated
+/// daily closes are separate requests, so the last close's date is not the
+/// quote's.
 fn spot_line(d: &HoldingDossier) -> String {
     d.financials
         .current_price
@@ -1424,21 +1204,15 @@ fn spot_line(d: &HoldingDossier) -> String {
         .unwrap_or_else(|| "(gap)".into())
 }
 
-/// The holding's display name for the prompt headers — the Schwab description
-/// where it names the issuer, else the canonical-source fallback.
 fn holding_display_name(d: &HoldingDossier) -> &str {
     let described = d.position.description.trim();
     if !crate::portfolio::listing::describes_issuer(described, &d.position.symbol) {
-        // The fallback is held to a *canonical-source* standard, deliberately
-        // looser than the description's: FMP's parser accepts any non-blank
-        // `companyName`, so bare-ticker and tokenless noise are rejected — but a
-        // ticker-token-only LEGAL name ("ASML Holding N.V.", "eBay Inc.") is
-        // real identity from a canonical source, and holding it to the
-        // description's stricter rule starved ticker-named issuers of any name
-        // at all (combined-range review). A fund's profile read is
-        // structure-only (closed-end detection — no identity mapping), so its
-        // identity rides the fund data's own name — the role-risk branch's
-        // only naming source.
+        // The fallback is held to a canonical-source standard, deliberately
+        // looser than the description's: a ticker-token-only legal name ("ASML
+        // Holding N.V.", "eBay Inc.") is real identity from a canonical source,
+        // and the stricter rule starved ticker-named issuers of any name. A
+        // fund's identity rides the fund data's own name, the role-risk
+        // branch's only naming source.
         d.company_name
             .as_deref()
             .or_else(|| d.fund.as_ref().and_then(|f| f.fund.name.as_deref()))
@@ -1452,10 +1226,7 @@ fn holding_display_name(d: &HoldingDossier) -> &str {
     }
 }
 
-/// The role/risk branch's computed metric surface — the expense ratio and the
-/// closed-end read off the readout, plus the price legs (trailing return, return
-/// volatility) from the closes the dossier carries. Built once for the audit
-/// and the message, so the two read one surface.
+/// Built once for the audit and the message, so the two read one surface.
 pub(crate) fn fund_metrics(
     readout: &RoleRiskReadout,
     fin: &engine::CompanyFinancials,
@@ -1470,32 +1241,20 @@ pub(crate) fn fund_metrics(
     }
 }
 
-/// The `role_risk_only` thesis-document message (`docs/portfolio-workflow.md`
-/// §Step 6f): one message in two marked parts. Part 1 is inputs only — HOLDING,
-/// FETCHED VALUES, then the fund's reads in place of the equity reads: CLASS
-/// (the label, the reported asset class and the structure line), EXPOSURE TILT
-/// with the closed-end line and the positioning line, RISK PROFILE with the
-/// market-wide options backdrop, EVIDENCE GAPS as data statements, the
-/// COMPUTED metric lines, MARKET ANALYSIS, ANALYSIS and on a continuity run
-/// PRIOR THESIS verbatim — each section explained once and then its values,
-/// with no instruction in it. Part 2 is the task only: the document the model
-/// writes — the role, the risks, the trim / sell triggers and the summary —
-/// with no prices and no conviction. The model receives data, never a
-/// description of the app that produced it, and no position economics
+/// The role/risk thesis-document message (`docs/portfolio-workflow.md` §Step
+/// 6f): Part 1 is inputs only, each section explained once and then its
+/// values, with no instruction in it; Part 2 is the task only. The model
+/// receives data, never a description of the app, and no position economics
 /// (`docs/portfolio-analysis.md` §Intrinsic verdict).
 pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     let d = input.dossier;
     let r = input.readout;
     let mut p = String::from("======== PART 1: INPUTS ========\n");
 
-    // HOLDING
     p.push_str(&holding_header(d));
 
-    // FETCHED VALUES
     p.push_str(&fetched_values_section(d, input.rates));
 
-    // CLASS: the label, the fund's reported asset class where the metadata
-    // carries one, and the structure line where it applies.
     p.push_str(&format!("\nCLASS\n{}.", r.class_label));
     if let Some(class) = d.fund.as_ref().and_then(|f| f.fund.asset_class.as_deref()) {
         p.push_str(&format!(" Reported asset class: {class}."));
@@ -1512,7 +1271,6 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
         });
     }
 
-    // EXPOSURE TILT: the readout's rows as computed, the basis glossed once.
     let has_tilt = !r.exposure_tilt.is_empty();
     if has_tilt {
         p.push_str(
@@ -1523,23 +1281,19 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
             p.push_str(&format!("- {label}: {:.1}%\n", weight * 100.0));
         }
     }
-    // The closed-end read renders only where the vehicle makes it meaningful
-    // (`docs/portfolio-analysis.md` §Asset eligibility); its absence is a named
-    // gap already in the evidence-gap manifest, never a fabricated number.
+    // Renders only where the vehicle makes it meaningful; its absence is
+    // already a named gap (`docs/portfolio-analysis.md` §Asset eligibility).
     if r.is_cef {
         if let Some(prem) = r.nav_premium {
             p.push('\n');
             p.push_str(&nav_premium_line(prem));
         }
     }
-    // The commodity / macro classes this branch types are exactly where the
-    // underlying-positioning read carries signal (`docs/data-sources.md §CFTC`).
     if let Some(f) = &d.fund {
         p.push_str(&positioning_prompt_section(f));
     }
 
-    // RISK PROFILE: the annualized read with its unit, and the market-wide
-    // backdrop. The daily volatility is a COMPUTED line, so it renders once.
+    // The daily volatility is a COMPUTED line, so it renders once.
     p.push_str(&format!(
         "\nRISK PROFILE\nAnnualized realized volatility: {} (a fraction; 0.14 means 14% a \
          year).\n",
@@ -1547,41 +1301,28 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     ));
     p.push_str(&put_call_backdrop_prompt_section(d));
 
-    // EVIDENCE GAPS
     let has_gaps = !r.evidence_gaps.is_empty();
     if has_gaps {
         p.push_str(&format!("\nEVIDENCE GAPS\n{}\n", r.evidence_gaps.join("; ")));
     }
 
-    // COMPUTED: the branch's computed surface, each line with its unit.
     let metrics = fund_metrics(r, &d.financials);
     p.push_str("\nCOMPUTED\nThe computed metrics, each with its unit.\n");
     p.push_str(&computed_metrics_lines(true, &metrics));
 
-    // MARKET ANALYSIS
     p.push_str(&market_analysis_section(d));
 
-    // ANALYSIS: this run's analysis — the fund agenda's write-ups consolidated
-    // by Step 6d's analysis call, or the prior record carried, dated and
-    // bridged.
     p.push_str(&analysis_section(d, &input.analysis));
 
-    // REVIEW, on a continuity run — this run's review.
     p.push_str(&review_section(input.review.as_deref()));
 
-    // PRIOR THESIS, on a continuity run.
     let has_prior = d.prior_verdict.as_ref().and_then(|v| v.thesis_document()).is_some();
     p.push_str(&prior_thesis_section(d, input.prior_split));
 
-    // PART 2
     p.push_str(&role_risk_task_section(has_tilt, has_gaps, has_prior, input.review.is_some()));
     p
 }
 
-/// Part 2 of the role/risk message: the document's items in output order — the
-/// role from the sections that rendered, the risks, the trim / sell triggers,
-/// the summary paragraph — within the thesis document's length band, with no
-/// prices and no conviction.
 fn role_risk_task_section(has_tilt: bool, has_gaps: bool, has_prior: bool, has_review: bool) -> String {
     let mut sections = vec!["CLASS"];
     if has_tilt {
@@ -1624,10 +1365,9 @@ fn role_risk_task_section(has_tilt: bool, has_gaps: bool, has_prior: bool, has_r
 /// checked by the app (`docs/portfolio-analysis.md` §Starting parameters).
 pub const THESIS_DOCUMENT_WORDS: (u32, u32) = (900, 1_800);
 
-/// The COT underlying-positioning line for a commodity / macro fund
+/// The COT positioning line for a commodity / macro fund
 /// (`docs/portfolio-workflow.md` §Step 5; `docs/data-sources.md §CFTC`):
-/// weekly, as-of positioning **context** — layer (c), held out of every
-/// sub-score. Empty where no contract mapped.
+/// context held out of every sub-score. Empty where no contract mapped.
 fn positioning_prompt_section(f: &crate::portfolio::fund::FundContext) -> String {
     let Some(p) = &f.positioning else {
         return String::new();
@@ -1653,10 +1393,8 @@ fn positioning_prompt_section(f: &crate::portfolio::fund::FundContext) -> String
     s
 }
 
-/// The CBOE venue-level put/call backdrop (`docs/data-sources.md §CBOE`):
-/// broad-market options sentiment from Cboe's own venue flow — macro context,
-/// never a per-name signal (the per-stock read is the Schwab-chain options
-/// signal). Empty where the leg failed or never ran.
+/// The CBOE venue-level put/call backdrop (`docs/data-sources.md §CBOE`): macro
+/// context, never a per-name signal. Empty where the leg failed or never ran.
 fn put_call_backdrop_prompt_section(d: &HoldingDossier) -> String {
     let Some(b) = &d.put_call_backdrop else {
         return String::new();
@@ -1674,10 +1412,8 @@ fn put_call_backdrop_prompt_section(d: &HoldingDossier) -> String {
 }
 
 /// The implied-expectations range (`docs/portfolio-analysis.md` §Starting
-/// parameters): the engine's scenario math inverted at the live price — the
-/// priced-in anchor the forward outlook (and the trim-a-winner judgment) is
-/// read against. Conviction / action evidence only, never a gate. Empty where
-/// the engine computed none (a fund, the current-multiple carry).
+/// parameters): evidence only, never a gate. Empty where the engine computed
+/// none.
 fn implied_expectations_prompt_section(e: &engine::EngineOutput) -> String {
     let Some(ie) = &e.implied_expectations else {
         return String::new();
@@ -1717,17 +1453,11 @@ fn implied_expectations_prompt_section(e: &engine::EngineOutput) -> String {
     )
 }
 
-/// The same-underlying option overlay (`docs/portfolio-workflow.md` §Step 6a):
-/// the holding's own option legs, classified, with coverage and net delta —
-/// rendered into BOTH 6f prompts, because the overlay changes what the right
-/// action is. Empty where the holding carries no option legs.
-/// Every packet renders structure and ratios only — class, coverage ratio, net
-/// delta as a fraction of the held shares, each leg's direction / kind / strike /
-/// expiry / delta — never contract counts or share-equivalents: the action
-/// packet since `portfolio-v36` (ruled 2026-09-16, C1) so position size reaches
-/// the rung by no route, and the interpretation packets since `portfolio-v38`
-/// (fix list 3.2, the Codex plan review), where contracts over coverage had
-/// still given the held share count away.
+/// The same-underlying option overlay (`docs/portfolio-workflow.md` §Step 6a),
+/// rendered into both 6f prompts because it changes what the right action is.
+/// Every packet renders structure and ratios only — never contract counts or
+/// share-equivalents — so position size reaches the rung by no route. Empty
+/// where the holding carries no option legs.
 fn option_overlay_prompt_section(d: &HoldingDossier) -> String {
     use crate::portfolio::dossier::{OverlayClass, OverlayDirection};
     let Some(o) = &d.option_overlay else {
@@ -1780,17 +1510,12 @@ fn option_overlay_prompt_section(d: &HoldingDossier) -> String {
 }
 
 /// The narrative-vs-reality read (`docs/portfolio-analysis.md` §Starting
-/// parameters): the conviction-layer red-flag ratio, rendered as layer-(b)
-/// evidence — a tripped hype read names its matched rule (evidence, never a
-/// clamp on either arm), and the letter grade is
-/// untouched either way. Empty where the read was uncomputable (the audit's
-/// gap manifest carries the reason). A hype read with no persisted ratio is
-/// one of two states the render must not conflate: a non-positive reality leg
-/// (the ratio is undefined there), or a positive one the expansion outran
-/// beyond any finite multiple — the quotient overflowed, so the engine
-/// classified hype and persisted the ratio absent (Codex I16, round 2;
-/// `portfolio-v21`). The percentage render is guarded the same way: a finite
-/// decimal leg whose ×100 overflows prints as the decimal ratio, never `inf%`.
+/// parameters), rendered as evidence, never a clamp. Empty where the read was
+/// uncomputable. A hype read with no persisted ratio is one of two states the
+/// render must not conflate: a non-positive reality leg (the ratio is
+/// undefined) or a positive one the quotient overflowed on. The percentage
+/// render is guarded the same way: a leg whose ×100 overflows prints as the
+/// decimal ratio, never `inf%`.
 fn narrative_prompt_section(n: Option<&engine::NarrativeRead>) -> String {
     use crate::portfolio::engine::{NarrativeClass, NarrativeForm};
     let Some(n) = n else {
@@ -1845,10 +1570,8 @@ fn narrative_prompt_section(n: Option<&engine::NarrativeRead>) -> String {
     s
 }
 
-/// The FINRA consolidated short-interest read (`docs/data-sources.md §FINRA`):
-/// per-holding risk / squeeze-context **positioning evidence** off the biweekly
-/// file — level, trend, and days-to-cover, held out of every sub-score. Empty
-/// where the holding has no row or the leg never ran.
+/// The FINRA short-interest read (`docs/data-sources.md §FINRA`): positioning
+/// evidence held out of every sub-score. Empty where the holding has no row.
 fn short_interest_prompt_section(d: &HoldingDossier) -> String {
     let Some(si) = &d.short_interest else {
         return String::new();
@@ -1875,10 +1598,9 @@ fn short_interest_prompt_section(d: &HoldingDossier) -> String {
     )
 }
 
-/// The run-level commodity context, rendered for a commodity-linked holding
-/// (`docs/portfolio-workflow.md` §Step 5): published levels with their print
-/// dates — as-of evidence for the conviction and narrative reads, never a score
-/// input. Empty for a holding with no sector-matched prints.
+/// The run-level commodity context for a commodity-linked holding
+/// (`docs/portfolio-workflow.md` §Step 5): evidence, never a score input. Empty
+/// where no prints matched the sector.
 fn commodity_prompt_section(d: &HoldingDossier) -> String {
     if d.commodity_context.is_empty() {
         return String::new();
@@ -1908,11 +1630,9 @@ fn commodity_prompt_section(d: &HoldingDossier) -> String {
 }
 
 /// The hard-forensic filings section shared by the interpretation and action
-/// prompts: the item-classified 8-K sweep state rendered as typed evidence
-/// (`docs/portfolio-analysis.md` §Starting parameters). A tripped hard trigger
-/// names the engine-matched rule — evidence and an engine-arm bound, never a
-/// clamp on the model's own values. Empty where the sweep never ran (the audit's
-/// gap manifest carries the reason there).
+/// prompts (`docs/portfolio-analysis.md` §Starting parameters): a tripped
+/// trigger names its rule as evidence and an engine-arm bound, never a clamp
+/// on the model's values. Empty where the sweep never ran.
 fn forensic_prompt_section(d: &HoldingDossier, stage: PromptStage) -> String {
     use crate::portfolio::ForensicFilingState;
     match &d.filing_events {
@@ -1947,25 +1667,13 @@ fn forensic_prompt_section(d: &HoldingDossier, stage: PromptStage) -> String {
     }
 }
 
-/// The thesis-document message (`docs/portfolio-workflow.md` §Step 6f): one
-/// message in two marked parts on the frame every Portfolio prompt shares.
-/// Part 1 is inputs only, in page order — HOLDING with the analysis date;
-/// FETCHED VALUES; COMPUTED (the engine's metrics with the statement-basis
-/// line, the grade and sub-scores with the polarity gloss and the imputed
-/// disclosure, the three bands with the twelve-month method and the target
-/// provenance notes, the risk tier, the capital-efficiency read, the hard
-/// forensic read as typed evidence with its rule as a fact, the soft forensic
-/// flags, the narrative-vs-reality read, the implied-expectations range, the
-/// short interest, the options signal, the option overlay, the overlay's
-/// financing / economics / dilution legs, and the Step-5 context loads where
-/// they apply); MARKET ANALYSIS; ANALYSIS; and on a continuity run PRIOR
-/// THESIS verbatim with any split-context line — each section explained once
-/// and then its values, with no instruction in it. Part 2 is the task only:
-/// what the document covers, in order, each item naming the Part 1 section it
-/// draws on and restating no value. The model receives data, never a
-/// description of the app that produced it; the investor profile and the
-/// position's economics are absent — the intrinsic verdict is of no investor
-/// (`docs/portfolio-analysis.md` §Intrinsic verdict).
+/// The thesis-document message (`docs/portfolio-workflow.md` §Step 6f): Part 1
+/// is inputs only, in page order, each section explained once and then its
+/// values, with no instruction in it; Part 2 is the task only, each item
+/// naming the Part 1 section it draws on and restating no value. The model
+/// receives data, never a description of the app; the investor profile and
+/// the position's economics are absent (`docs/portfolio-analysis.md`
+/// §Intrinsic verdict).
 pub fn thesis_user_prompt(input: &ThesisInput) -> String {
     let d = input.dossier;
     let e = input.engine;
@@ -1974,20 +1682,15 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
 
     p.push_str("======== PART 1: INPUTS ========\n");
 
-    // HOLDING
     p.push_str(&holding_header(d));
 
-    // FETCHED VALUES
     p.push_str(&fetched_values_section(d, input.rates));
 
-    // COMPUTED — one heading, labelled sub-blocks, running to MARKET ANALYSIS.
     p.push_str(
         "\nCOMPUTED\nThe computed reads follow under their labels, up to MARKET \
          ANALYSIS; each is derived from the fetched data by fixed formulas.\n",
     );
 
-    // FUND (fund only): the class line, the exposure tilt with the closed-end
-    // line and the positioning line, the evidence gaps as data statements.
     if let Some(f) = &d.fund {
         p.push_str("\nFUND\n");
         if let Some(label) = &e.fund_class_label {
@@ -2041,7 +1744,6 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
         p.push_str(&positioning_prompt_section(f));
     }
 
-    // METRICS — the values, each with its unit, under the statement-basis line.
     p.push_str("\nMETRICS\n");
     p.push_str(&statement_basis_line(
         d.financials.statement_basis,
@@ -2054,8 +1756,6 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
         p.push_str(&format!("Data gaps: {}\n", d.financials.gaps.join("; ")));
     }
 
-    // SCORES — a stock's four scores with the factors each is the mean of
-    // (`docs/portfolio-workflow.md` §Step 6f).
     let factor_gloss = if e.factors.is_some() {
         format!(
             " Each score is the mean of the factors listed under it, each read over the trailing \
@@ -2084,9 +1784,9 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
     ));
     p.push_str(&factor_score_lines(e));
 
-    // PRICE BANDS — the three legs, each with its method clause so the
-    // three-year leg is weighed as the extrapolation it is
-    // (`docs/portfolio-analysis.md` §Starting parameters).
+    // Each band carries its method clause so the three-year leg is weighed as
+    // the extrapolation it is (`docs/portfolio-analysis.md` §Starting
+    // parameters).
     p.push_str("\nPRICE BANDS (USD)\n");
     if let Some(tm) = &e.price_targets.three_month {
         p.push_str(&format!(
@@ -2120,8 +1820,6 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
     }
     p.push_str(&implied_expectations_prompt_section(e));
 
-    // CAPITAL EFFICIENCY — the three tested total returns, the hurdle rate and
-    // the three-state read.
     p.push_str(&hurdle_read_section(&e.hurdle));
 
     p.push_str(&narrative_prompt_section(input.narrative));
@@ -2129,7 +1827,6 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
         p.push_str(&pre_profit_prompt_section(overlay, PromptStage::Thesis));
     }
 
-    // OPTIONS ACTIVITY and the positioning legs
     let s = &d.options_signal;
     p.push_str(&format!(
         "\nOPTIONS ACTIVITY\nput/call volume {}, put/call open interest {}, implied volatility {}, \
@@ -2160,29 +1857,19 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
         ));
     }
 
-    // MARKET ANALYSIS
     p.push_str(&market_analysis_section(d));
 
-    // ANALYSIS — this run's analysis, Step 6d's consolidation of the
-    // write-ups, or the prior record carried, dated and bridged.
     p.push_str(&analysis_section(d, &input.analysis));
 
-    // REVIEW, on a continuity run — this run's review; the accuracy record
-    // reaches the document through it alone.
     p.push_str(&review_section(input.review.as_deref()));
 
-    // PRIOR THESIS, on a continuity run.
     let has_prior = d.prior_verdict.as_ref().and_then(|v| v.thesis_document()).is_some();
     p.push_str(&prior_thesis_section(d, input.prior_split));
 
-    // PART 2
     p.push_str(&thesis_task_section(has_prior, input.review.is_some()));
     p
 }
 
-/// CAPITAL EFFICIENCY on the thesis message: the three tested twelve-month
-/// total returns, the hurdle rate and the three-state read, with one gloss. An
-/// unscorable read says no assessment exists this run.
 fn hurdle_read_section(h: &engine::HurdleRead) -> String {
     let scorable = h.state != crate::portfolio::HurdleState::Unscorable;
     match (scorable, h.hurdle_rate, h.tr_bear, h.tr_base, h.tr_bull) {
@@ -2204,8 +1891,7 @@ fn hurdle_read_section(h: &engine::HurdleRead) -> String {
 }
 
 /// SOFT FORENSIC FLAGS as typed evidence (`docs/portfolio-analysis.md`
-/// §Starting parameters): each of the four tests fired, clear or unevaluable
-/// naming its missing input — never clear on a gap — with the inputs it read.
+/// §Starting parameters); never clear on a gap.
 fn soft_forensic_prompt_section(f: &SoftForensicFlags) -> String {
     use crate::portfolio::soft_forensic::{
         ALTMAN_Z_DISTRESS, NET_INCOME_TO_OPERATING_CASH_FLOW, PIOTROSKI_WEAK,
@@ -2256,11 +1942,8 @@ fn soft_forensic_prompt_section(f: &SoftForensicFlags) -> String {
     )
 }
 
-/// PRIOR THESIS on a continuity run: the prior run's thesis document verbatim
-/// under its date, with the split-context line above it where a split re-based
-/// the price series since it was written, or where its basis could not be
-/// verified this run (`docs/portfolio-workflow.md` §Step 6b) — the document is
-/// never rewritten. Empty on a debut, and on a prior that carries no document.
+/// The prior thesis document verbatim under its date, with any split-context
+/// line (`docs/portfolio-workflow.md` §Step 6b). Empty on a debut.
 pub(crate) fn prior_thesis_section(d: &HoldingDossier, split: Option<SplitContext>) -> String {
     let Some(doc) = d.prior_verdict.as_ref().and_then(|v| v.thesis_document()) else {
         return String::new();
@@ -2273,12 +1956,10 @@ pub(crate) fn prior_thesis_section(d: &HoldingDossier, split: Option<SplitContex
     document_section("PRIOR THESIS", written.as_deref(), split, doc)
 }
 
-/// PRIOR ANALYSIS on a continuity run: the prior analysis verbatim under the
-/// date its record carries, with the split-context line its own anchor bar
-/// yields against this run's series (`docs/portfolio-workflow.md` §Step 6c,
-/// §Step 6d) — the holding's research memory, never rewritten and never
-/// distilled, so a carried analysis keeps its basis whatever the verdict's.
-/// Empty on a debut, and on a prior that carries none.
+/// The prior analysis verbatim under its own date, with the split-context line
+/// its own anchor bar yields (`docs/portfolio-workflow.md` §Step 6c, §Step 6d),
+/// so a carried analysis keeps its basis whatever the verdict's. Empty on a
+/// debut.
 pub(crate) fn prior_analysis_section(d: &HoldingDossier) -> String {
     let Some(record) = &d.prior_analysis else {
         return String::new();
@@ -2292,20 +1973,16 @@ pub(crate) fn prior_analysis_section(d: &HoldingDossier) -> String {
 }
 
 /// ANALYSIS on both thesis-document messages (`docs/portfolio-workflow.md`
-/// §Step 6d, §Step 6f): this run's analysis — written this session on this
-/// run's basis, so undated and with no line — or, where the loop wrote
-/// nothing and the prior record stands as this run's, that record under the
-/// date it was written with the split-context line its own anchor bar
-/// yields, so the model never reads pre-split figures as today's.
+/// §Step 6d, §Step 6f): undated where written this session, else under its
+/// date with its own split-context line so the model never reads pre-split
+/// figures as today's.
 pub(crate) fn analysis_section(d: &HoldingDossier, record: &crate::portfolio::AnalysisRecord) -> String {
     let written = (record.written != d.analysis_date).then_some(record.written.as_str());
     document_section("ANALYSIS", written, record_split_context(d, record), &record.text)
 }
 
-/// An analysis record's split context against this run's series — its own
-/// anchor bar's bridge, read the way the verdict's is: no anchor —
-/// comparisons run as stored, no line; an anchor whose bar is missing from
-/// the fresh window — unverifiable, the line says so.
+/// An analysis record's split context from its own anchor bar, read the way
+/// the verdict's is.
 fn record_split_context(
     d: &HoldingDossier,
     record: &crate::portfolio::AnalysisRecord,
@@ -2317,10 +1994,6 @@ fn record_split_context(
     split_context_of(bridge, split_event_since(d, &record.written))
 }
 
-/// One document rendered verbatim under its heading and, where given, the
-/// date it was written, the split-context line above it where a split
-/// re-based the price series since it was written, or where its basis could
-/// not be verified this run (`docs/portfolio-workflow.md` §Step 6b).
 fn document_section(
     heading: &str,
     written: Option<&str>,
@@ -2363,7 +2036,6 @@ fn document_section(
     p
 }
 
-/// One leg of a split ratio as the feed states it — whole where whole.
 fn fmt_split_leg(v: f64) -> String {
     if v.fract() == 0.0 {
         format!("{v:.0}")
@@ -2372,24 +2044,13 @@ fn fmt_split_leg(v: f64) -> String {
     }
 }
 
-/// FETCHED VALUES — the holding's fetched data as the providers return it,
-/// glossed once and never engine-computed (`docs/portfolio-workflow.md` §Step
-/// 6c; the TTM basis, the trailing dividend sum, the short-interest trend and
-/// the split bridge are computations and stay out), in the docs' order: the
-/// profile line (name, exchange, sector, industry, the quote's size lines), a
-/// fund's reported lines with every sector weighting and its largest
-/// countries, the quarterly statements' headline lines for the latest eight
-/// quarters, the forward consensus, the latest dividend payments, the quote
-/// with its served 52-week range, the close on the prior analysis's date and
-/// the dated closes three, twelve and thirty-six months back, the 8-K filings
-/// of the lookback, the short-interest print, the street price targets with
-/// their trend, the analyst ratings with the rating actions, FMP's ratings
-/// snapshot, the insider and congressional trades, the earnings surprises,
-/// the eight TTM ratio lines, owner earnings, enterprise value, the float, any
-/// M&A match, the revenue segments, and the Treasury prints. A row whose
-/// source is absent is omitted; a cell the provider left empty reads `(gap)`.
-/// One renderer, shared by the research brief and both thesis-document
-/// branches, byte for byte.
+/// FETCHED VALUES (`docs/portfolio-workflow.md` §Step 6c): the holding's data
+/// as the providers return it, in the docs' order, never engine-computed (the
+/// TTM basis, the trailing dividend sum, the short-interest trend and the
+/// split bridge are computations and stay out). A row whose source is absent
+/// is omitted; a cell the provider left empty reads `(gap)`. One renderer,
+/// shared by the research brief and both thesis-document branches, byte for
+/// byte.
 pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) -> String {
     use crate::portfolio::evidence::{
         MaRole, PriceTargetWindow, FUND_COUNTRY_WEIGHTS_SHOWN, SURPRISE_QUARTERS,
@@ -2407,7 +2068,6 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
          reported (USD; B is billions, M is millions; a yield or a return as a percentage); \
          none is computed, and a cell the provider left empty reads (gap).\n",
     );
-    // Profile: the name, the listing identity, and the quote's size lines.
     let mut profile = Vec::new();
     let name = d
         .company_name
@@ -2436,7 +2096,6 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
     if !profile.is_empty() {
         p.push_str(&format!("Profile: {}.\n", profile.join("; ")));
     }
-    // A fund's reported lines: every sector weighting, the largest countries.
     if let Some(f) = &d.fund {
         let fd = &f.fund;
         let mut lines = Vec::new();
@@ -2467,7 +2126,7 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             format!("{label}: {}.\n", top.join(", "))
         };
         p.push_str(&weights("Sector weights", &fd.sector_weights, usize::MAX));
-        // The ten LARGEST countries, whatever order the feed served them in.
+        // The largest countries, whatever order the feed served them in.
         let mut countries = fd.country_weights.clone();
         countries.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         p.push_str(&weights(
@@ -2476,8 +2135,6 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             FUND_COUNTRY_WEIGHTS_SHOWN,
         ));
     }
-    // Quarterly statements — the latest eight as reported, newest first, the
-    // cash-flow and balance-sheet lines joined by period end.
     if !fin.quarterly_income.is_empty() {
         p.push_str(
             "Quarterly statements, newest first, as reported — period end: revenue; gross \
@@ -2512,9 +2169,6 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             ));
         }
     }
-    // The published consensus EPS by fiscal period, as reported; the engine's
-    // twelve-month blend of these rows is a computation and renders under
-    // COMPUTED (`consensus_blend_line`).
     if let Some(c) = &fin.consensus {
         let periods: Vec<String> = c
             .eps_periods
@@ -2528,8 +2182,6 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             ));
         }
     }
-    // The latest dividend payments as reported — the trailing sum is an
-    // engine computation and stays out.
     if !fin.recent_dividends.is_empty() {
         let rows: Vec<String> = fin
             .recent_dividends
@@ -2544,7 +2196,6 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             rows.join("; ")
         ));
     }
-    // The quote with its served 52-week range, and the fetched closes.
     if let Some(spot) = fin.current_price.filter(|p| p.is_finite() && *p > 0.0) {
         let mut line = format!("Quote: {spot:.2} per share (the live print, undated)");
         if fin.year_high.is_some() || fin.year_low.is_some() {
@@ -2566,11 +2217,9 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             first.date,
             last.date
         );
-        // The close on the prior analysis's date — the prior verdict's effective
-        // vintage as an ET session, the date PRIOR THESIS is written under —
-        // from today's fetched series (today's basis, so a split since needs no
-        // bridge here). The anchor bar is provenance for the bridge, not this
-        // date: it precedes the session and carries across an abstention.
+        // The close on the prior analysis's date, off today's series (today's
+        // basis, so no bridge is needed). The anchor bar is not this date: it
+        // precedes the session and carries across an abstention.
         let prior_date = d.prior_vintage.as_deref().and_then(|v| {
             crate::market_clock::et_date_of(v).map(|day| day.format("%Y-%m-%d").to_string())
         });
@@ -2600,8 +2249,6 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
         line.push_str(".\n");
         p.push_str(&line);
     }
-    // The 8-K filings of the forensic lookback, off the same submissions read
-    // as the item-classified sweep (date and filer-declared items).
     if !d.filings_8k.is_empty() {
         let rows: Vec<String> = d
             .filings_8k
@@ -2624,8 +2271,6 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             rows.join("; ")
         ));
     }
-    // The latest short-interest print as the FINRA file reports it (the
-    // trend against the prior settlement is a computation under COMPUTED).
     if let Some(si) = &d.short_interest {
         let whole = |v: Option<f64>| v.map(|x| format!("{x:.0}")).unwrap_or_else(gap);
         p.push_str(&format!(
@@ -2638,8 +2283,6 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             num(si.days_to_cover),
         ));
     }
-    // The evidence surface: the street, the insiders, the surprises, the
-    // ratio lines, the valuation rows and the float.
     if let Some(e) = &d.evidence {
         let window = |label: &str, w: &PriceTargetWindow| {
             format!(
@@ -2867,8 +2510,6 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             ));
         }
     }
-    // The holding's matches against the run-level M&A feed — SEC merger registration
-    // filings (S-4 / F-4), each dated at filing.
     if !d.ma_matches.is_empty() {
         let rows: Vec<String> = d
             .ma_matches
@@ -2892,8 +2533,6 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             rows.join("; ")
         ));
     }
-    // The revenue segments by product and by geography, the latest fiscal
-    // years as reported.
     if let Some(e) = &d.evidence {
         let segments = |label: &str, years: &[crate::portfolio::evidence::SegmentYear]| -> String {
             if years.is_empty() {
@@ -2919,7 +2558,6 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
         p.push_str(&segments("Revenue by product", &e.product_segments));
         p.push_str(&segments("Revenue by geography", &e.geographic_segments));
     }
-    // The Treasury prints
     let as_of = |d: Option<&String>| d.map(|s| format!(" (as of {s})")).unwrap_or_default();
     p.push_str(&format!(
         "Treasury yields (FRED): 10-year {:.2}%{}, 2-year {:.2}%{}.\n",
@@ -2931,8 +2569,8 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
     p
 }
 
-/// A per-share amount as reported — up to four decimals, trailing zeros
-/// trimmed past the second (`0.26`, `0.2275`).
+/// Up to four decimals, trailing zeros trimmed past the second (`0.26`,
+/// `0.2275`).
 fn fmt_per_share(v: f64) -> String {
     let s = format!("{v:.4}");
     let trimmed = s.trim_end_matches('0');
@@ -2944,9 +2582,8 @@ fn fmt_per_share(v: f64) -> String {
     }
 }
 
-/// A reported figure in a readable magnitude — billions or millions to one
-/// decimal, thousands to the unit, smaller figures to two places — with the
-/// sign kept. The FETCHED VALUES gloss names the suffixes once.
+/// Billions or millions to one decimal, thousands to the unit, else two
+/// places; the FETCHED VALUES gloss names the suffixes once.
 fn fmt_magnitude(v: f64) -> String {
     let a = v.abs();
     if a >= 1e9 {
@@ -2960,9 +2597,8 @@ fn fmt_magnitude(v: f64) -> String {
     }
 }
 
-/// The market-analysis input: the latest report's thesis and strategy sections
-/// and the stance of the recent reports, as market context — named for what it
-/// is, never by product name.
+/// The house view as market context, named for what it is, never by product
+/// name.
 fn market_analysis_section(d: &HoldingDossier) -> String {
     let mut p = String::new();
     let latest_date = d
@@ -2996,9 +2632,8 @@ fn market_analysis_section(d: &HoldingDossier) -> String {
     p
 }
 
-/// The twelve-month method as a plain clause from the typed target inputs
-/// (`portfolio-v40`): the driver, the multiple and the anchoring — never the
-/// engine's own methodology string, which names its mechanics and its
+/// The twelve-month method as a plain clause from the typed target inputs —
+/// never the engine's own methodology string, which names its mechanics and
 /// parameter stamp for the audit.
 fn twelve_month_method(t: &engine::TargetMeta) -> String {
     let driver = t.driver_rung.as_str();
@@ -3029,8 +2664,6 @@ fn twelve_month_method(t: &engine::TargetMeta) -> String {
     }
 }
 
-/// The three-month method as a plain clause: the base prorated from the
-/// twelve-month base return, the band read back from the target itself.
 fn three_month_method(tm: &crate::portfolio::PriceTarget) -> String {
     let band = if tm.base > 0.0 { (tm.bull / tm.base - 1.0) * 100.0 } else { 0.0 };
     format!(
@@ -3039,9 +2672,6 @@ fn three_month_method(tm: &crate::portfolio::PriceTarget) -> String {
     )
 }
 
-/// The three-year method as a plain clause from the typed target inputs: the
-/// twelve-month drivers compounded at the rows' growth, or held, at the same
-/// multiples — stated as the extrapolation it is.
 fn three_year_method(t: &engine::TargetMeta) -> String {
     if t.driver_rung.contains("fund") {
         return "the twelve-month mix re-rating held unchanged for three years (the fund's \
@@ -3070,8 +2700,8 @@ fn three_year_method(t: &engine::TargetMeta) -> String {
     )
 }
 
-/// The targets' derivation notes that bear on how much signal they carry,
-/// rendered only where one applies (the 2026-07-31 run's F6).
+/// The derivation notes that bear on how much signal the targets carry; `None`
+/// where none applies.
 fn target_notes_line(t: &engine::TargetMeta) -> Option<String> {
     let mut notes = Vec::new();
     if let Some(rows) = t.consensus_rows {
@@ -3097,11 +2727,8 @@ fn target_notes_line(t: &engine::TargetMeta) -> Option<String> {
     }
 }
 
-/// Part 2 of the thesis-document message: what the document covers, in
-/// output order, each item naming the Part 1 section it draws on and restating
-/// no value or unit; the expected prices and the conviction argued in the
-/// text, the computed bands evidence and never bounds; the length band stated
-/// and never checked (`docs/portfolio-workflow.md` §Step 6f).
+/// Part 2 of the thesis-document message (`docs/portfolio-workflow.md` §Step
+/// 6f).
 fn thesis_task_section(has_prior: bool, has_review: bool) -> String {
     let mut p = String::from(
         "\n======== PART 2: TASK ========\n\n\
@@ -3141,10 +2768,6 @@ fn thesis_task_section(has_prior: bool, has_review: bool) -> String {
     p
 }
 
-/// The summary item's continuity clause on both thesis-document messages
-/// (`docs/portfolio-workflow.md` §Step 6f): on a continuity run, what changed
-/// since the prior analysis and how the prior read held up, drawing on the
-/// review and the prior document; none on a debut.
 fn continuity_clause(has_prior: bool, has_review: bool) -> &'static str {
     match (has_prior, has_review) {
         (true, true) => {
@@ -3156,16 +2779,14 @@ fn continuity_clause(has_prior: bool, has_review: bool) -> &'static str {
     }
 }
 
-/// REVIEW on both thesis-document messages: this run's review verbatim, on a
-/// continuity run; empty on a debut.
 fn review_section(review: Option<&str>) -> String {
     review
         .map(|text| document_section("REVIEW", None, None, text))
         .unwrap_or_default()
 }
 
-/// A count with a thousands separator, as the docs state the length bands
-/// ("900–1,800 words").
+/// A thousands separator, as the docs state the length bands ("900–1,800
+/// words").
 fn fmt_thousands(n: u32) -> String {
     let digits = n.to_string();
     let mut out = String::new();
@@ -3178,10 +2799,8 @@ fn fmt_thousands(n: u32) -> String {
     out
 }
 
-/// The appendix message — the thesis-document conversation's second, non-thinking
-/// message (`docs/portfolio-workflow.md` §Step 6f): a transcription of the
-/// conviction and the three expected prices as the document states them, null
-/// where it states none, closing on the placeholder-only return shape.
+/// The thesis-document conversation's second, non-thinking message
+/// (`docs/portfolio-workflow.md` §Step 6f).
 pub fn appendix_user_prompt() -> String {
     format!(
         "From the thesis document you wrote, transcribe the conviction it states (high, medium \
@@ -3193,9 +2812,6 @@ pub fn appendix_user_prompt() -> String {
     )
 }
 
-/// The engine's twelve-month consensus blend as a METRICS line — a computation
-/// over the published fiscal-period rows FETCHED VALUES states, and the
-/// bands' driver; empty without a consensus.
 fn consensus_blend_line(fin: &engine::CompanyFinancials) -> String {
     let Some(c) = &fin.consensus else {
         return String::new();
@@ -3216,11 +2832,6 @@ fn consensus_blend_line(fin: &engine::CompanyFinancials) -> String {
     )
 }
 
-/// The SCORES block's factor lines: under each of the four scores, the factors
-/// it is the mean of — the value, its band and the band's anchor row, the band
-/// score, the rank among the company's earlier readings, the blended score —
-/// then the thin-history line where most factors had no earlier readings.
-/// Empty without a composite (a fund).
 fn factor_score_lines(e: &engine::EngineOutput) -> String {
     use crate::portfolio::factors::Axis;
     let Some(c) = &e.factors else {
@@ -3248,7 +2859,6 @@ fn factor_score_lines(e: &engine::EngineOutput) -> String {
     p
 }
 
-/// What a factor measures, in words.
 fn factor_label(factor: crate::portfolio::factors::Factor) -> &'static str {
     use crate::portfolio::factors::Factor::*;
     match factor {
@@ -3276,7 +2886,6 @@ fn factor_label(factor: crate::portfolio::factors::Factor) -> &'static str {
     }
 }
 
-/// One factor line of the SCORES block.
 fn factor_line(
     f: &crate::portfolio::factors::FactorScore,
     anchor_row: &str,
@@ -3326,11 +2935,9 @@ fn factor_line(
     )
 }
 
-/// The computed metric lines under COMPUTED (`portfolio-v40`): one per series
-/// the engine computes for this vehicle kind — the value and its unit gloss.
-/// A missing value prints "(gap)". The price and the expense ratio are
-/// fetched values, not computed ones: FETCHED VALUES states each once, so
-/// neither renders here.
+/// The computed metric lines under COMPUTED, one per series the engine computes
+/// for this vehicle kind. The price and the expense ratio are fetched values,
+/// stated once under FETCHED VALUES, so neither renders here.
 pub(crate) fn computed_metrics_lines(is_fund: bool, metrics: &engine::ComputedMetrics) -> String {
     let mut p = String::new();
     for s in engine::MetricSeries::ALL
@@ -3351,16 +2958,10 @@ fn opt(v: Option<f64>) -> String {
     v.map(|x| format!("{x:.3}")).unwrap_or_else(|| "(gap)".to_string())
 }
 
-/// The expense-ratio prompt render — one shared formatter so the role-risk,
-/// interpretation, and action prompts state the value identically. The decimal
-/// fraction stays primary, matching the computed metric lines' fractions; the
-/// percent reading rides beside it so the number is legible without the
-/// legend's arithmetic. Four
-/// places is one basis point — the resolution expense ratios are usually
-/// quoted at — and a nonzero ratio that would round to zero extends its
-/// precision instead, up to ten places, so a ratio prints as free only below
-/// 5e-11. `opt()`'s three places flattened a 0.03% fund to `0.000`
-/// (large-scale review 2026-08-24, Priority-1 minor).
+/// One shared formatter so every prompt states the expense ratio identically:
+/// the decimal fraction primary, matching the computed metric lines, with the
+/// percent reading beside it. Four places is one basis point; a nonzero ratio
+/// that would round to zero extends its precision instead, up to ten places.
 fn fmt_expense_ratio(v: Option<f64>) -> String {
     let Some(x) = v else {
         return "(gap)".to_string();
@@ -3370,10 +2971,9 @@ fn fmt_expense_ratio(v: Option<f64>) -> String {
     format!("{x:.places$} ({:.pct$}%/yr)", x * 100.0)
 }
 
-/// The decimal places a prompt-rendered value takes: four (one basis point),
-/// extended up to ten where a nonzero value would otherwise round to zero —
-/// the expense-ratio render's own rule, shared so every site that prints a
-/// fraction-unit value states it at the same precision.
+/// Four places (one basis point), extended up to ten where a nonzero value
+/// would otherwise round to zero; shared so every fraction-unit value prints at
+/// the same precision.
 fn render_places(x: f64) -> usize {
     if x == 0.0 {
         4
@@ -3384,15 +2984,10 @@ fn render_places(x: f64) -> usize {
     }
 }
 
-/// The IV-skew prompt render — the put-minus-call difference with an explicit
-/// sign, so the convention the options-activity line states beside it reads
-/// off the number itself. `opt()` had printed the value bare while
-/// put-minus-call lived only in a doc comment, so a model assuming the
-/// inverse read hedging demand as call speculation (large-scale review
-/// 2026-08-24, Priority-1 minor). The sign keys on the rendered three-place
-/// value: a skew that rounds away prints `0.000`, never `+0.000`, since a sign
-/// would assert a put premium the number no longer shows. The convention text
-/// is the line's label, not this value's, and renders beside a `(gap)` too.
+/// The put-minus-call skew with an explicit sign, so the convention reads off
+/// the number itself. The sign keys on the rendered three-place value: a skew
+/// that rounds away prints `0.000`, never `+0.000`, since a sign would assert
+/// a premium the number no longer shows.
 fn fmt_iv_skew(v: Option<f64>) -> String {
     let Some(x) = v else {
         return "(gap)".to_string();
@@ -3405,12 +3000,10 @@ fn fmt_iv_skew(v: Option<f64>) -> String {
     }
 }
 
-/// The closed-end price-vs-NAV prompt line — one shared render so the
-/// interpretation, action, and priced-fund prompts state the read identically
-/// (`docs/portfolio-analysis.md` §Asset eligibility: signal on the closed-end
-/// form only; callers gate on the CEF marker). The label follows the RENDERED
-/// tenth-of-a-percent, so a value displaying as 0.0% reads "at par" — never
-/// "+0.0% premium" or "-0.0% discount" (Codex 2026-08-21 round 3, finding 2).
+/// One shared render of the closed-end price-vs-NAV line; callers gate on the
+/// CEF marker (`docs/portfolio-analysis.md` §Asset eligibility). The label
+/// follows the rendered tenth of a percent, so a value displaying as 0.0%
+/// reads "at par", never "+0.0% premium".
 fn nav_premium_line(premium: f64) -> String {
     let rounded = (premium * 1000.0).round() / 1000.0;
     let (value, word) = if rounded == 0.0 {
@@ -3421,19 +3014,16 @@ fn nav_premium_line(premium: f64) -> String {
             if rounded > 0.0 { "premium" } else { "discount" },
         )
     };
-    // A unit gloss only, on every packet that renders the line (ruled
-    // 2026-09-17, `portfolio-v42`): what the number is, not what it means.
+    // A unit gloss only: what the number is, not what it means.
     format!(
         "PRICE VS NAV: {value} ({word}): the closed-end fund's market price against its \
          net asset value.\n",
     )
 }
 
-/// The system prompt for the **per-holding action call** (`portfolio-v41`):
-/// the role, the output names and the two-part shape of the message. The
-/// ladder, the one-sentence rationale and the profile tie-break are the
-/// message's Part 2; the app's words about arms, evidence and departures are
-/// gone (`docs/portfolio-analysis.md` §Portfolio action).
+/// The system prompt for the per-holding action call
+/// (`docs/portfolio-analysis.md` §Portfolio action): the role, the output names
+/// and the message's shape.
 pub fn action_system_prompt() -> String {
     format!(
         "You are an equity analyst deciding the portfolio action for one holding in a \
@@ -3443,22 +3033,13 @@ pub fn action_system_prompt() -> String {
     )
 }
 
-/// The action message (`portfolio-v71`): Part 1 the inputs, each section
-/// explained once and then its values with no instruction in it, in the docs'
-/// order — HOLDING; POSITION, the one model-facing packet that sees the
-/// position's economics; on a priced holding VERDICT, then COMPUTED as one
-/// heading with labelled sub-blocks (the rung a fixed rule gives, the grade,
-/// the price bands with the analyst's expected price beside each, the
-/// capital-efficiency numbers, then the forensic filings, the overlay's
-/// financing legs, the option overlay and the commodity prints where they
-/// render); on a `role_risk_only` holding the branch's own sections then
-/// VERDICT; on a continuity run PRIOR ACTION with its rationale; SUPPORTED
-/// ACTIONS as one data line; the investor profile less its tax row. Part 2
-/// the task in output order and the placeholder-only shape. No arm, baseline,
-/// stage, seam, validator behaviour, stamp or product name. Tunnel vision is
-/// enforced by input isolation: no whole-book field exists here
-/// (`docs/portfolio-analysis.md` §Portfolio action; `docs/portfolio-workflow.md`
-/// §Step 6f).
+/// The action message (`docs/portfolio-analysis.md` §Portfolio action;
+/// `docs/portfolio-workflow.md` §Step 6f): Part 1 the inputs, each section
+/// explained once and then its values with no instruction in it — POSITION
+/// the one model-facing packet that sees the position's economics — and Part
+/// 2 the task. No arm, baseline, stage, seam, validator behaviour, stamp or
+/// product name; tunnel vision is enforced by input isolation, with no
+/// whole-book field here.
 pub fn action_user_prompt(input: &ActionInput) -> String {
     let d = input.dossier;
     let mut p = String::from("======== PART 1: INPUTS ========\n");
@@ -3468,8 +3049,6 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     match &input.subject {
         ActionSubject::Priced { graded, engine, pre_profit } => {
             p.push_str(&verdict_section(d, Some(&graded.appendix), &graded.thesis_document));
-            // COMPUTED — one heading, labelled sub-blocks, running to the next
-            // top-level section, which is PRIOR ACTION only on a continuity run.
             p.push_str(&format!(
                 "\nCOMPUTED\nThe computed reads follow under their labels, up to {}; \
                  each is derived from the holding's data by fixed formulas.\n",
@@ -3487,8 +3066,8 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
             p.push_str(&commodity_prompt_section(d));
         }
         ActionSubject::RoleRisk { verdict } => {
-            // The branch's computed surface stays as top-level sections — the
-            // thesis message's role/risk form (ruled 2026-10-08).
+            // The branch's computed surface stays as top-level sections, as on
+            // the thesis message.
             p.push_str(&format!("\nCLASS\n{}\n", verdict.class_label));
             if !verdict.exposure_tilt.is_empty() {
                 let tilt: Vec<String> = verdict
@@ -3507,8 +3086,7 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                 opt(verdict.observable_risk),
                 if verdict.structural_flag { "yes" } else { "no" },
             ));
-            // The closed-end read, where present — its absence is a named gap in
-            // the evidence-gap list below, never a fabricated number.
+            // Its absence is already a named gap below.
             if verdict.is_cef {
                 if let Some(prem) = verdict.nav_premium {
                     p.push('\n');
@@ -3525,13 +3103,9 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
         }
     }
     p.push_str(&prior_action);
-    // The per-holding set as one data line (fix list 3.9, ruled 2026-09-17: no
-    // permission sentence — the return shape's enum shows the ladder). An
-    // outside-the-set rung persists as authored with the departure on the audit
-    // (`outside_set_annotation`), never a bar. Since `portfolio-v49` (ruled
-    // 2026-09-27) the line says the list is complete and that an unlisted rung
-    // is outside the read; since `portfolio-v71` the rule is named on the line
-    // itself, the two-reads preamble that glossed "computed" having gone.
+    // One data line, no permission sentence: the return shape's enum shows the
+    // ladder, and an outside-the-set rung persists as authored
+    // (`outside_set_annotation`), never barred.
     let set: Vec<&str> = input.engine_set.iter().map(Action::as_kebab).collect();
     p.push_str(&format!(
         "\nSUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed \
@@ -3539,10 +3113,9 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
         set.join(", ")
     ));
     // The cash row is deliberately not rendered: available capital is
-    // whole-book context — the planner's domain — kept out of this
-    // tunnel-vision call by input isolation (Codex 2026-08-14, finding 3). The
-    // tax row is not rendered either: the tax posture is read by the app after
-    // the rung is fixed (`with_tax_caveat`), never by the decision.
+    // whole-book context, kept out of this call by input isolation. The tax
+    // row is not either: the tax posture is read by the app after the rung is
+    // fixed (`with_tax_caveat`), never by the decision.
     let profile = input.profile.display();
     p.push_str(&format!(
         "\nINVESTOR PROFILE\n- objective: {}\n- risk tolerance: {}\n- horizon: {}\n",
@@ -3552,19 +3125,13 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     p
 }
 
-/// POSITION — the holding as the account carries it
-/// (`docs/portfolio-analysis.md` §Portfolio action): the shares held, the
-/// total cost basis, the market value, the unrealized gain or loss as dollars
-/// and as a share of the cost basis, and the change in the shares held since
-/// the last pull — the quantity move with the shares then and now, never the
-/// paid-up / averaged-down read, which stays on the app's surfaces
-/// (`docs/portfolio-analysis.md` §Holdings change tracking). The basis follows
-/// the card's contract (`docs/portfolio-analysis.md` §Storage and display): an
-/// exactly-zero basis is indistinguishable on the wire from an unreported one
-/// (the adapter maps a missing `averagePrice` to zero), so it renders as not
+/// POSITION (`docs/portfolio-analysis.md` §Portfolio action): the quantity
+/// move only, never the paid-up / averaged-down read, which stays on the app's
+/// surfaces (`docs/portfolio-analysis.md` §Holdings change tracking). An
+/// exactly-zero basis is an unreported one on the wire, so it renders as not
 /// reported with no gain or loss; a negative netted basis keeps its dollar
-/// gain or loss and renders no percentage. The one model-facing packet that
-/// sees the position's economics; the thesis message renders none of it.
+/// gain or loss and renders no percentage (`docs/portfolio-analysis.md`
+/// §Storage and display).
 fn position_section(d: &HoldingDossier) -> String {
     let pos = &d.position;
     let (basis, pl_line) = if pos.cost_basis == 0.0 {
@@ -3615,8 +3182,7 @@ fn position_section(d: &HoldingDossier) -> String {
     )
 }
 
-/// A share count for the POSITION lines: whole where it is whole, else to four
-/// places with the trailing zeros dropped; a negative quantity reads as short.
+/// A negative quantity reads as short.
 fn fmt_shares(q: f64) -> String {
     let n = q.abs();
     let digits = if (n - n.round()).abs() < 1e-9 {
@@ -3631,8 +3197,6 @@ fn fmt_shares(q: f64) -> String {
     }
 }
 
-/// A dollar amount for the POSITION lines: two places and thousands separators,
-/// a negative total signed; a non-finite value prints as a gap.
 fn fmt_usd(v: f64) -> String {
     if !v.is_finite() {
         return "(gap)".to_string();
@@ -3649,15 +3213,12 @@ fn fmt_usd(v: f64) -> String {
     format!("{}${grouped}.{frac}", if v < 0.0 { "-" } else { "" })
 }
 
-/// The current price where one is usable — finite and positive — for the
-/// implied-move legs; `None` otherwise (unreachable on a priced holding, the
-/// quote floor, so the guard stays defensive).
+/// `None` is unreachable on a priced holding (the quote floor); the guard stays
+/// defensive.
 fn usable_spot(d: &HoldingDossier) -> Option<f64> {
     d.financials.current_price.filter(|s| s.is_finite() && *s > 0.0)
 }
 
-/// A price as the action packet prints one: two places, with the move it
-/// implies from the current price where one is usable.
 fn fmt_price_move(spot: Option<f64>, v: f64) -> String {
     match spot {
         Some(s) => format!("{v:.2} ({:+.1}%)", (v / s - 1.0) * 100.0),
@@ -3665,10 +3226,8 @@ fn fmt_price_move(spot: Option<f64>, v: f64) -> String {
     }
 }
 
-/// The engine's own rung as its own read under COMPUTED: the rung a fixed rule
-/// gives from the computed reads, a data line and never a recommendation
-/// (`docs/portfolio-analysis.md` §Portfolio action). Labelled COMPUTED ACTION
-/// rather than ACTION so the sub-block never reads as the output item.
+/// Labelled COMPUTED ACTION rather than ACTION so the sub-block never reads as
+/// the output item (`docs/portfolio-analysis.md` §Portfolio action).
 fn engine_rung_section(graded: &GradedVerdict) -> String {
     format!(
         "\nCOMPUTED ACTION\nThe rung a fixed rule gives from the computed reads: {}.\n",
@@ -3676,10 +3235,7 @@ fn engine_rung_section(graded: &GradedVerdict) -> String {
     )
 }
 
-/// GRADE under COMPUTED: the letter with its derivation glossed once and the
-/// imputed-score disclosure where it applies. The sub-scores and the risk tier
-/// render on the thesis message alone (ruled 2026-10-08: the docs name the
-/// grade for this packet).
+/// The sub-scores and the risk tier render on the thesis message alone.
 fn grade_section(graded: &GradedVerdict) -> String {
     format!(
         "\nGRADE\nA letter from A to F, derived from the computed quality, valuation and risk \
@@ -3693,13 +3249,8 @@ fn grade_section(graded: &GradedVerdict) -> String {
     )
 }
 
-/// PRICE BANDS under COMPUTED: the three computed legs as prices with the move
-/// each implies from the current price, the analyst's expected price from
-/// VERDICT beside each horizon (ruled 2026-10-08), and the method clauses the
-/// thesis message renders. A band the scenario function could not derive
-/// prints "(gap)"; a horizon the document stated no price for prints "none".
-/// With no usable current price the prices render without moves (unreachable
-/// on a priced holding — the quote floor — so the guard stays defensive).
+/// A band the engine could not derive prints "(gap)"; a horizon the document
+/// stated no price for prints "none".
 fn price_bands_section(
     d: &HoldingDossier,
     graded: &GradedVerdict,
@@ -3764,12 +3315,8 @@ fn price_bands_section(
     p
 }
 
-/// VERDICT: an analyst's read of the holding — on a priced holding the
-/// conviction and the expected share price at each horizon with the move each
-/// implies, a null field as "none", then the thesis document verbatim; on the
-/// role/risk branch the document alone. The gloss carries the provenance the
-/// two-reads preamble once did, and the packet does not say the read came
-/// from the same model (`docs/portfolio-analysis.md` §Portfolio action).
+/// VERDICT: the packet never says the read came from the same model
+/// (`docs/portfolio-analysis.md` §Portfolio action).
 fn verdict_section(d: &HoldingDossier, appendix: Option<&ThesisAppendix>, document: &str) -> String {
     let mut p = String::from("\nVERDICT\n");
     if let Some(a) = appendix {
@@ -3804,10 +3351,8 @@ fn verdict_section(d: &HoldingDossier, appendix: Option<&ThesisAppendix>, docume
     p
 }
 
-/// CAPITAL EFFICIENCY as numbers (ruled 2026-09-17 off the v39 read's L19): the
-/// three tested twelve-month total returns and the hurdle rate with one gloss —
-/// no state word, no reach sentence. The sunk-cost rule is one clause of the
-/// task. An unscorable read, or one missing a figure, says no assessment exists.
+/// CAPITAL EFFICIENCY as numbers only — no state word; the sunk-cost rule is
+/// one clause of the task.
 fn capital_efficiency_section(h: &engine::HurdleRead) -> String {
     let scorable = h.state != crate::portfolio::HurdleState::Unscorable;
     match (scorable, h.hurdle_rate, h.tr_bear, h.tr_base, h.tr_bull) {
@@ -3825,13 +3370,11 @@ fn capital_efficiency_section(h: &engine::HurdleRead) -> String {
     }
 }
 
-/// PRIOR ACTION, rendered only with a prior verdict that carries an action: a
-/// model-chosen rung glossed as chosen in the prior analysis, with its
-/// rationale less the app's caveat sentence (`investment_sentence`); a
-/// rule-demoted rung glossed as set by rule after the prior analysis, with no
-/// rationale, since that rationale argued the rung the rule replaced
-/// (`docs/portfolio-analysis.md` §Portfolio action; ruled 2026-10-08). An
-/// abstained or not-rated prior renders nothing.
+/// PRIOR ACTION (`docs/portfolio-analysis.md` §Portfolio action): a
+/// model-chosen rung with its rationale less the app's caveat
+/// (`investment_sentence`); a rule-demoted rung with no rationale, since that
+/// rationale argued the rung the rule replaced. Empty where the prior carries
+/// no action.
 fn prior_action_section(d: &HoldingDossier) -> String {
     let Some(prior) = d.prior_verdict.as_ref() else {
         return String::new();
@@ -3858,13 +3401,8 @@ fn prior_action_section(d: &HoldingDossier) -> String {
     }
 }
 
-/// Part 2 of the action message: the two items in output order, each naming
-/// the Part 1 sections it draws on — the weighing order as a task clause with
-/// POSITION in the refining list (ruled 2026-10-08), the profile tie-break, on
-/// a priced holding the sunk-cost rule as one clause on every packet naming
-/// its sub-block under COMPUTED (`docs/portfolio-analysis.md` §Portfolio
-/// action), with a chosen prior the firmness clause — and the
-/// placeholder-only shape.
+/// Part 2 of the action message (`docs/portfolio-analysis.md` §Portfolio
+/// action).
 fn action_task_section(input: &ActionInput) -> String {
     let prior = input.dossier.prior_verdict.as_ref();
     let prior_chosen = prior.is_some_and(|v| {
@@ -3946,22 +3484,19 @@ fn action_task_section(input: &ActionInput) -> String {
     p
 }
 
-/// Which packet a shared section is rendered into. The facts are the same on
-/// both; the consequence lines (the overlay's and the forensic sweep's) render
-/// on the thesis-document message only — the action packet's SUPPORTED
-/// ACTIONS line already carries the narrowed set (ruled 2026-09-17, F1).
+/// Which packet a shared section is rendered into. The consequence lines (the
+/// overlay's and the forensic sweep's) render on the thesis-document message
+/// only; the action packet's SUPPORTED ACTIONS line already carries the
+/// narrowed set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PromptStage {
-    /// The thesis-document message (Step 6f): authors the document, no action.
     Thesis,
-    /// The per-holding action call: authors the rung, no document.
     Action,
 }
 
-/// Render the finalized pre-profit execution / financing overlay for an eligible
-/// stock's interpretation prompt and its per-holding action prompt
-/// (`docs/portfolio-workflow.md` §Step 6f): the computed states as data on both,
-/// the consequence lines on the interpretation packet only (see [`PromptStage`]).
+/// The pre-profit overlay for both 6f packets (`docs/portfolio-workflow.md`
+/// §Step 6f); the consequence lines on the thesis packet only
+/// ([`PromptStage`]).
 fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String {
     use crate::portfolio::pre_profit::FinancingState;
     let i = &o.statement_inputs;
@@ -4006,16 +3541,12 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String
             .map(|c| format!("{:.1}%", c * 100.0))
             .unwrap_or_else(|| "(gap)".to_string()),
     ));
-    // The execution leg has no producer and renders nothing: the financing,
-    // economics and dilution legs are the overlay's rendered evidence
+    // The execution leg has no producer and renders nothing
     // (`docs/portfolio-workflow.md` §Step 6f).
     p.push_str(&format!(
         "- severe deterioration: {}\n",
         if o.severe_deterioration { "YES" } else { "no" }
     ));
-    // The consequence lines state the computed rule's effect; the action packet
-    // carries the narrowed set on its own line, so they render on the
-    // interpretation packet only (ruled 2026-09-17, F1).
     if stage == PromptStage::Action {
         return p;
     }
@@ -4031,21 +3562,11 @@ fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String
     p
 }
 
-/// The statement-basis line — the one place the prompt says which basis the
-/// flow metrics stand on this run. The instants are named as instants, since
-/// debt / equity and price / book read the latest balance sheet on either basis
-/// (Codex round 1). The basis is the holding's `statement_basis`,
-/// stamped at `dossier::apply_ttm_statement_basis` and settled by the SEC merge.
-/// `None` — no flow lines this run (a fund, a stock whose statement surface
-/// resolved to nothing, or a balance-sheet instant standing alone, FMP's or an
-/// equity-only SEC fill) — says so:
-/// the flow series are unevaluable here rather than silently on some basis, while
-/// an instant still reads where a balance sheet exists
-/// (`docs/portfolio-analysis.md` §Starting parameters; large-scale review
-/// 2026-08-24, Priority-1 minor). The instants' sentence names which balance
-/// sheet supplied their equity this run (`equity_source`, stamped at the SEC
-/// merge — Codex I13, `portfolio-v23`); `None` — no equity line reached the
-/// engine — says the instants are unevaluable here.
+/// The one place the prompt says which basis the flow metrics stand on this
+/// run. The instants are named separately, since debt / equity and price /
+/// book read the latest balance sheet on either basis. A `None` basis or
+/// equity source says the lines are unevaluable here rather than silently on
+/// some basis (`docs/portfolio-analysis.md` §Starting parameters).
 fn statement_basis_line(
     basis: Option<crate::portfolio::StatementBasis>,
     equity_source: Option<crate::portfolio::EquitySource>,
@@ -4077,11 +3598,9 @@ fn statement_basis_line(
     format!("{flow_line} {instants_line}\n")
 }
 
-/// The role/risk verdict assembled from a fresh thesis document: the readout's
-/// computed surface app-stamped, the document as authored, the action fields
-/// placeholders the per-holding action call overwrites (never rendered into
-/// that call's prompt). One assembly serves the pipeline and the
-/// fixed-evidence harness, beside [`graded_verdict_from_model_arm`].
+/// The action fields are placeholders the action call overwrites, never
+/// rendered into its prompt. One assembly serves the pipeline and the
+/// fixed-evidence harness.
 pub(crate) fn role_risk_verdict_from_model_arm(
     readout: &RoleRiskReadout,
     thesis_document: String,
@@ -4108,13 +3627,10 @@ pub(crate) fn role_risk_verdict_from_model_arm(
     }
 }
 
-/// The priced verdict assembled from a fresh model arm: the engine arm's
-/// figures app-stamped from the engine output, the thesis document and its
-/// appendix persisted exactly as authored (the two-arm contract —
-/// `docs/portfolio-analysis.md` §The holding verdict). The action fields are
-/// placeholders the per-holding action call overwrites; they are never
-/// rendered into that call's prompt. One assembly serves the pipeline and the
-/// fixed-evidence harness.
+/// The engine arm's figures app-stamped, the model arm persisted exactly as
+/// authored (`docs/portfolio-analysis.md` §The holding verdict). The action
+/// fields are placeholders the action call overwrites, never rendered into its
+/// prompt.
 pub(crate) fn graded_verdict_from_model_arm(
     engine_output: &EngineOutput,
     options_signal: crate::portfolio::OptionsSignal,
@@ -4141,11 +3657,10 @@ pub(crate) fn graded_verdict_from_model_arm(
     }
 }
 
-/// Spot's authoring-time relation to the engine's twelve-month band — the stamp
-/// the quick check's band monitor compares against (`docs/portfolio-analysis.md`
-/// §The quick check). `None` wherever no band or spot exists: a missing spot
-/// stamps nothing rather than guessing, and the caller withholds the band when
-/// the split bridge is unresolvable.
+/// Spot's authoring-time relation to the engine's twelve-month band, the stamp
+/// the quick check's monitor compares against (`docs/portfolio-analysis.md`
+/// §The quick check). `None` where no band or spot exists; the caller withholds
+/// the band when the split bridge is unresolvable.
 pub(crate) fn authored_band_relation(
     spot: Option<f64>,
     twelve_month: Option<&crate::portfolio::PriceTarget>,
@@ -4158,16 +3673,13 @@ pub(crate) fn authored_band_relation(
 
 // ---- The deterministic stub analyst (offline) --------------------------------
 
-/// A deterministic, offline [`HoldingAnalyst`] used by `cargo test` and any
-/// daemon-free path. It derives a coherent interpretation from the engine's grade
-/// (numbers still come from the engine), so the whole pipeline produces a schema-valid
-/// verdict with no model call.
+/// A deterministic, offline [`HoldingAnalyst`]: a grade-derived interpretation,
+/// so the whole pipeline produces a schema-valid verdict with no model call.
 pub struct StubAnalyst;
 
 impl HoldingAnalyst for StubAnalyst {
-    // Research rides the trait's offline default (no write-up, so consolidation
-    // spends no call on a demo or test run); the two consolidation renders
-    // below serve a scripted research run deterministically.
+    // Research rides the trait's offline default; the consolidation renders
+    // below serve a scripted research run.
 
     fn distill(&self, input: &distill::DistillInput<'_>) -> Result<String> {
         Ok(distill::stub_distillate(input))
@@ -4185,10 +3697,9 @@ impl HoldingAnalyst for StubAnalyst {
             crate::portfolio::Grade::C => Conviction::Medium,
             _ => Conviction::Low,
         };
-        // The stub's expected prices: the engine's base values deterministically
-        // nudged, so the two arms are distinguishable in tests and demo runs
-        // without being random; a horizon the engine carries no band for
-        // states no price — the appendix's null, as a document's silence would.
+        // The engine's base values nudged, so the two arms are distinguishable
+        // in tests without being random; a horizon with no band states no
+        // price.
         let nudged = |t: Option<&crate::portfolio::PriceTarget>, scale: f64| t.map(|t| t.base * scale);
         let appendix = ThesisAppendix {
             conviction: Some(conviction),
@@ -4252,12 +3763,9 @@ impl HoldingAnalyst for StubAnalyst {
     }
 
     fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision> {
-        // The stub's decision is the deterministic grade-mapped rung (hold for a
-        // role/risk vehicle), deliberately kept inside the engine set so no
-        // outside-set annotation fires — the annotation path is rogue-stub
-        // territory. Falls back to the least-drastic offered rung (hold is not
-        // always offered — a severe pre-profit overlay restricts the set to the
-        // exit family).
+        // Deliberately kept inside the engine set so no outside-set annotation
+        // fires (that path is rogue-stub territory); hold is not always
+        // offered, so the fallback is the least drastic offered rung.
         let preferred = match &input.subject {
             ActionSubject::Priced { graded, .. } => match graded.grade {
                 crate::portfolio::Grade::A => Action::Add,
@@ -4291,46 +3799,33 @@ impl HoldingAnalyst for StubAnalyst {
 
 // ---- The live local analyst (Ollama daemon) ----------------------------------
 
-/// The live [`HoldingAnalyst`]: wraps a [`LocalModelClient`] and the roster's
-/// reasoner and fast model ids. Distillation normally runs on the fast model,
-/// routes an oversized prompt or reservation-bound retry to the reasoner, and
-/// uses the reasoner directly when no fast tier is configured. Interpretation
-/// runs on the reasoner in thinking mode with the grammar-constrained schema,
-/// so the returned object is structurally valid by construction.
+/// The live [`HoldingAnalyst`]. Distillation normally runs on the fast model,
+/// routing an oversized prompt or a reservation-bound retry to the reasoner;
+/// the reasoner alone when no fast tier is configured.
 pub struct LocalAnalyst {
     client: LocalModelClient,
     reasoner_model: String,
     fast_model: String,
-    /// Routed model ids accumulated for the current holding, in outbound-call
-    /// order. This is separate from prompt usage because provenance must also
-    /// survive a transport failure before the daemon returns counters.
+    /// Routed model ids for the current holding, in outbound-call order;
+    /// separate from prompt usage so provenance survives a transport failure
+    /// before the daemon returns counters.
     model_calls: std::sync::Mutex<Vec<String>>,
-    /// The bounded retry-once gate shared by every model-call site this run
-    /// (`docs/local-models.md §The local-model adapter seam`); its fired
-    /// events drain through [`HoldingAnalyst::take_retry_events`].
+    /// The retry-once gate shared by every model-call site
+    /// (`docs/local-models.md §The local-model adapter seam`).
     retry: crate::local_model::RetryOnce,
-    /// The live web tool + tracker context for the 6c research loop
-    /// ([`LocalAnalyst::with_research`]); `None` runs the trait's offline
-    /// research default — the demo path and any construction without a web
-    /// stack.
+    /// `None` runs the trait's offline research default.
     research_ctx: Option<LiveResearchCtx>,
 }
 
-/// What the live research loop needs beyond the model client: the web seam
-/// (search + cached fetch + telemetry) and the run's progress context.
 pub struct LiveResearchCtx {
     pub web: std::sync::Arc<dyn research::ResearchWeb + Send + Sync>,
     pub progress: std::sync::Arc<crate::progress::RunContext>,
 }
 
-/// The fast tier's effective model id: a blank `fast_model` falls back to the
-/// reasoner — the fast tier is **optional** and never gates
-/// (`docs/configuration.md §Local Analysis Suite Configuration`), and the
-/// documented roster default runs distillation on the resident reasoner anyway
-/// (`docs/local-models.md §The model roster and per-task routing`) — so a
-/// reasoner-only setup runs rather than failing mid-run on an empty id.
-/// The single home for the rule: [`LocalAnalyst::new`] and the resume-status
-/// roster check both read it, so the two cannot drift.
+/// A blank `fast_model` falls back to the reasoner: the fast tier is optional
+/// and never gates (`docs/configuration.md §Local Analysis Suite
+/// Configuration`). The single home for the rule, read by [`LocalAnalyst::new`]
+/// and the resume-status roster check so the two cannot drift.
 pub fn effective_fast_model(reasoner_model: &str, fast_model: &str) -> String {
     if fast_model.trim().is_empty() {
         reasoner_model.to_string()
@@ -4353,25 +3848,22 @@ impl LocalAnalyst {
         }
     }
 
-    /// Attach the live web tool + progress context so [`HoldingAnalyst::research`]
-    /// runs the real 6c loop; without it the offline default runs (fail-soft,
-    /// a recorded gap — never a failed run).
+    /// Without it the offline research default runs: a recorded gap, never a
+    /// failed run.
     pub fn with_research(mut self, ctx: LiveResearchCtx) -> Self {
         self.research_ctx = Some(ctx);
         self
     }
 
-    /// Test seam: the retry-once gate without its pause, so a retry test
-    /// against a daemon stand-in does not sleep.
+    /// Test seam: the retry-once gate without its pause.
     #[cfg(test)]
     fn without_retry_delay(mut self) -> Self {
         self.retry = crate::local_model::RetryOnce::without_delay();
         self
     }
 
-    /// Record the request's actual routed model immediately before issue.
-    /// Failed and retried attempts count as calls; the holding audit dedups the
-    /// drained sequence while retaining first-call order.
+    /// Recorded immediately before issue; failed and retried attempts count as
+    /// calls.
     fn record_model_call(&self, req: &ChatRequest) {
         self.model_calls
             .lock()
@@ -4380,15 +3872,11 @@ impl LocalAnalyst {
     }
 }
 
-/// Cap on how much of a model body a parse-failure context embeds. serde's own
-/// error names the line/column; the head is for eyeballing shape — the full
-/// body (up to ~250 KB at the construction reservation) must never ride an
-/// error chain into a tracker step detail, a stderr tee line, or the persisted
-/// `job_runs.detail`. Mirrors the `analyst_agent` snippet idiom.
+/// Cap on how much of a model body a parse-failure context embeds: the full
+/// body (up to ~250 KB) must never ride an error chain into a tracker step
+/// detail, a stderr line or the persisted `job_runs.detail`.
 const PARSE_CONTEXT_BODY_CAP: usize = 500;
 
-/// Truncate a model body to [`PARSE_CONTEXT_BODY_CAP`] chars on a char
-/// boundary, marking the cut with the full length.
 fn body_snippet(content: &str) -> String {
     let (head, cut) = crate::data_sources::cap_chars(content, PARSE_CONTEXT_BODY_CAP);
     if cut {
@@ -4399,10 +3887,9 @@ fn body_snippet(content: &str) -> String {
 }
 
 /// Fail a stage whose generation stopped at the output budget — a length stop
-/// still returns `Ok` with a partial body and HTTP 200, so without this check
-/// the truncation surfaces only as an opaque downstream parse failure
-/// (`docs/verification/2026-08-10-big-run-attempt-1.md` §Fix candidates 4).
-/// Called after adapter telemetry capture, so the observation survives on the run's
+/// still returns `Ok` with a partial body, so without this check the
+/// truncation surfaces only as an opaque downstream parse failure. Called
+/// after adapter telemetry capture, so the observation survives on the
 /// data-health read even though the call fails.
 fn ensure_not_output_limited(
     stage: &str,
@@ -4416,11 +3903,9 @@ fn ensure_not_output_limited(
         let show_res =
             |n: Option<u32>| n.map(|v| v.to_string()).unwrap_or_else(|| "unset".into());
         // `done_reason: "length"` covers two stops with different levers: the
-        // request's own `num_predict` reservation (generated ≈ reservation), or
-        // the shared context filling first (generated well under it). The
-        // classification is single-homed in `length_stop_reading` — the
-        // data-health line reads the same stop through the same predicate —
-        // and incomplete or phase-limited counts name no lever at all.
+        // request's own reservation, or the shared context filling first. The
+        // classification is single-homed so the data-health line reads the
+        // same stop through the same predicate.
         match crate::local_model::observed_length_stop_reading(generated, reservation, crate::local_model::phase_limited(req.think, req.format_schema.is_some())) {
             crate::local_model::LengthStopReading::AtReservation => anyhow::bail!(
                 "{stage}: response truncated at the output reservation (num_predict {}, \
@@ -4450,10 +3935,9 @@ fn ensure_not_output_limited(
 
 /// Fail a stage whose call completed with no completion at all: a blank
 /// `content` and no tool calls (a research turn's tool request carries its
-/// substance in `tool_calls`, so it passes). Without this check an empty body
-/// dies at the call site's parse as an opaque serde EOF; typed here it carries
-/// the class the bounded retry-once classifies on. Runs after
-/// [`ensure_not_output_limited`], so a length stop keeps its own reading.
+/// substance in `tool_calls`, so it passes). Typed so the retry-once can
+/// classify it; runs after [`ensure_not_output_limited`], so a length stop
+/// keeps its own reading.
 fn ensure_nonempty_completion(
     stage: &str,
     resp: &crate::local_model::ChatResponse,
@@ -4469,15 +3953,11 @@ fn ensure_nonempty_completion(
     Ok(())
 }
 
-/// Decode the appendix message's completion: the schema-valid parse, then the
-/// declared domain ([`crate::portfolio::validate_appendix_domain`]). Each
-/// failure carries the class the bounded retry-once classifies on — a parse
-/// failure `SchemaParse`, an off-domain value `ModelArmDomain` — so the
-/// re-issue fires for both and a hard failure's annotation names which one.
-/// Runs inside the retry closure, after [`ensure_nonempty_completion`], so an
-/// off-domain response gets exactly the one re-issue every content failure
-/// gets and never a second retry layer; the object is rejected whole, never
-/// clamped.
+/// The schema-valid parse, then the declared domain
+/// ([`crate::portfolio::validate_appendix_domain`]), each failure carrying its
+/// retry class. Runs inside the retry closure so an off-domain response gets
+/// exactly the one re-issue every content failure gets, never a second retry
+/// layer; the object is rejected whole, never clamped.
 fn decode_appendix(stage: &str, content: &str) -> Result<ThesisAppendix> {
     let appendix: ThesisAppendix = serde_json::from_str(content)
         .map_err(|e| anyhow::Error::new(e).context(crate::local_model::RetryClass::SchemaParse))
@@ -4489,65 +3969,44 @@ fn decode_appendix(stage: &str, content: &str) -> Result<ThesisAppendix> {
 }
 
 // Per-stage context sizes (`docs/local-model-operations.md §The num_ctx trap`):
-// always explicit — the daemon's memory-dependent auto-size (~256 K on 128 GB)
-// over-allocates KV cache, while an unset small default silently front-truncates
-// the deterministic packet. Sized to hold packet + thinking budget + output.
-/// Distillation: a compact findings condense — small packet, no thinking chain.
-/// The fast rung of [`distill_route`]'s issue guard: a distillation prompt that
-/// outgrows this context's budget issues on the reasoner at
-/// [`NUM_CTX_INTERPRET`] instead of front-truncating here.
+// always explicit, since the daemon's auto-size over-allocates KV cache while
+// an unset small default silently front-truncates the packet.
+/// A distillation prompt that outgrows this budget issues on the reasoner at
+/// [`NUM_CTX_INTERPRET`] instead of front-truncating here ([`distill_route`]).
 pub(super) const NUM_CTX_DISTILL: u32 = 32_768;
-/// Interpretation: the vendor advises ≥ 128 K context to preserve thinking
-/// capability (chains run tens of thousands of tokens); hybrid attention keeps
-/// the KV cost of this a few GB (`docs/local-model-operations.md §Context window`).
+/// The vendor advises ≥ 128 K context to preserve thinking capability
+/// (`docs/local-model-operations.md §Context window`).
 pub(crate) const NUM_CTX_INTERPRET: u32 = 131_072;
-/// Ollama `keep_alive: -1` — never idle-unload. The roster's documented posture:
-/// the reasoner stays resident between calls and runs
-/// (`docs/local-models.md §The model roster and per-task routing`).
+/// Ollama `keep_alive: -1`: never idle-unload (`docs/local-models.md §The
+/// model roster and per-task routing`).
 const KEEP_ALIVE_RESIDENT: i64 = -1;
 
-// Per-stage output reservations (`num_predict`) — diagnostic ceilings, drafted
-// and calibratable like the engine's other starting parameters, none yet
-// calibrated against live evidence. Attempt 1's construction calls generated
-// for 7–8 minutes (`docs/verification/2026-08-10-big-run-attempt-1.md` §Cost of
-// the failed stage), roughly 12–15 K tokens with thinking included, so these sit
-// far above any legitimate answer: a stop at the limit is evidence of a runaway
-// or a squeeze, surfaced as a typed truncation error rather than an opaque
-// parse failure. Generation shares `num_ctx` with the prompt, so a large prompt
-// can exhaust the context before the ceiling binds — that stop reports the same
-// `done_reason: "length"` and lands in the same typed guard.
-/// Thinking stages (the research turns, the analysis, the review, the thesis
-/// document, the role/risk read and the action call): chains run tens of
-/// thousands of tokens and count against the same budget as the answer.
+// Per-stage output reservations (`num_predict`): diagnostic ceilings far above
+// any legitimate answer, so a stop at the limit is evidence of a runaway or a
+// squeeze, surfaced as a typed truncation error. Generation shares `num_ctx`
+// with the prompt, so a large prompt can exhaust the context before the
+// ceiling binds; that stop reports the same `done_reason: "length"`.
+/// Thinking stages: chains run tens of thousands of tokens and count against
+/// the same budget as the answer.
 pub(super) const NUM_PREDICT_THINKING: u32 = 65_536;
-/// The appendix message's ceiling: four short fields under the grammar, so a
-/// stop at this reservation is a runaway, never a legitimate transcription.
+/// Four short fields under the grammar, so a stop at this reservation is a
+/// runaway, never a legitimate transcription.
 pub(super) const NUM_PREDICT_APPENDIX: u32 = 1_024;
-/// Normal distillation ceiling. The response is the distilled write-ups as
-/// prose, one per topic. A reservation-bound stop gets one larger
-/// retry below; this first ceiling remains the runaway/latency guardrail.
-/// Raised from 8,192 after attempt 8 (Finding 3, ruled 2026-09-27): a
-/// six-topic stock's ordinary distillation ran to 8,055 tokens, so the old
-/// ceiling bound on ordinary work and the wasted first pass cost more than
-/// the guardrail protected. 12,288 leaves 1.5× that output, and beside the
-/// issue guard's input budget it still fits a 32 K fast-tier context
-/// (`distill::input_budget_chars`), so the exact-reservation stop stays the
-/// data-health signal for an oversized distillation rather than a routine
-/// event.
+/// The normal distillation ceiling; a reservation-bound stop gets one larger
+/// retry ([`NUM_PREDICT_DISTILL_RETRY`]), so this one remains the
+/// runaway/latency guardrail. Beside the issue guard's input budget it still
+/// fits a 32 K fast-tier context (`distill::input_budget_chars`).
 pub(super) const NUM_PREDICT_DISTILL: u32 = 12_288;
-/// One evidence-triggered distillation re-attempt after the normal reservation
-/// binds exactly. It issues on the reasoner's 128 K context so the prompt and
-/// this full ceiling fit together under the same 60% input sizing guard.
+/// One re-attempt after the normal reservation binds exactly, issued on the
+/// reasoner's 128 K context so the prompt and this ceiling fit together under
+/// the same input sizing guard.
 pub(super) const NUM_PREDICT_DISTILL_RETRY: u32 = 32_768;
 
-/// The distill stage's context size, resolved per *model*, not per call: Ollama
-/// reloads a resident runner whenever a request's load-time options — `num_ctx`
-/// included — differ from the loaded ones, even under `keep_alive: -1`. So when
-/// the fast tier fell back to the reasoner (the documented default roster),
-/// distillation shares the interpretation context rather than bouncing the 81 GB
-/// runner between 32 K and 128 K at every stage transition; the smaller distill
-/// context applies only to a genuinely distinct fast model
-/// (`docs/local-model-operations.md §The num_ctx trap`).
+/// Resolved per model, not per call: Ollama reloads a resident runner whenever
+/// a request's `num_ctx` differs from the loaded one, even under `keep_alive:
+/// -1`, so when the fast tier fell back to the reasoner distillation shares
+/// the interpretation context rather than bouncing the runner between 32 K
+/// and 128 K (`docs/local-model-operations.md §The num_ctx trap`).
 pub(super) fn distill_num_ctx(fast_model: &str, reasoner_model: &str) -> u32 {
     if fast_model == reasoner_model {
         NUM_CTX_INTERPRET
@@ -4556,21 +4015,13 @@ pub(super) fn distill_num_ctx(fast_model: &str, reasoner_model: &str) -> u32 {
     }
 }
 
-/// Where one distillation call issues — the app-side guard against the
-/// daemon's silent front-truncation (`docs/local-models.md §The local-model
-/// adapter seam`; the 2026-08-24 review's reduce-prompt minor, ruled
-/// 2026-08-28). The rendered prompt — the instruction scaffolding and the
-/// write-ups it distills together — is measured in chars against its
-/// model's input budget before any request exists. Within the fast tier's
-/// budget it issues there at [`distill_num_ctx`]; over it but within the
-/// reasoner's, it issues on the resident reasoner at the interpretation
-/// context — a model choice, never a `num_ctx` change (the reasoner already
-/// loads at that size, so nothing reloads, and the fast tier co-resides by
-/// the roster's own precondition); over the widest budget it is refused here,
-/// unclassified so the retry gate never re-issues a deterministic outcome,
-/// and the run fails legibly. On the default roster (fast = reasoner) the two
-/// rungs are one budget and only the refusal is live. Pure, so the routing is
-/// pinned offline.
+/// Where one distillation call issues (`docs/local-models.md §The local-model
+/// adapter seam`): the rendered prompt is measured in chars against its
+/// model's input budget before any request exists. Over the fast tier's
+/// budget it issues on the reasoner at the interpretation context — a model
+/// choice, never a `num_ctx` change, so nothing reloads; over the widest
+/// budget it is refused here, unclassified so the retry gate never re-issues
+/// a deterministic outcome. Pure, so the routing is pinned offline.
 fn distill_route<'a>(
     stage: &str,
     prompt_chars: usize,
@@ -4592,19 +4043,16 @@ fn distill_route<'a>(
     )
 }
 
-/// Build one distillation call's request: **explicitly non-thinking**
-/// (`Some(false)` — an omitted flag rides Qwen's thinking-on default and cost
-/// the first live run ~45 minutes, F3), non-thinking sampling, **no grammar**
-/// (`docs/portfolio-workflow.md` §Step 6d: a distillation returns prose), the
-/// caller-routed model and context size ([`distill_route`]). Pure, so the
-/// per-stage wiring is asserted offline.
+/// Explicitly non-thinking (`Some(false)`: an omitted flag rides the model's
+/// thinking-on default), no grammar (`docs/portfolio-workflow.md` §Step 6d: a
+/// distillation returns prose), on the caller-routed model and context
+/// ([`distill_route`]). Pure, so the wiring is asserted offline.
 pub(super) fn distill_request(
     model: &str,
     num_ctx: u32,
     num_predict: u32,
     prompt: &distill::DistillPrompt,
 ) -> ChatRequest {
-    // The role line and the two-part message (`portfolio-v44`).
     let mut req = ChatRequest::new(
         model,
         vec![
@@ -4619,10 +4067,9 @@ pub(super) fn distill_request(
     req
 }
 
-/// The only stop that activates the larger distillation attempt: the normal
-/// request declared the normal ceiling and the daemon reports that it generated
-/// exactly that many tokens. A stop below it is context-bound or unattributable
-/// and keeps the existing hard-failure posture.
+/// The only stop that activates the larger distillation attempt; a stop below
+/// the reservation is context-bound or unattributable and keeps the
+/// hard-failure posture.
 fn hit_normal_distill_reservation(
     req: &ChatRequest,
     resp: &crate::local_model::ChatResponse,
@@ -4632,14 +4079,10 @@ fn hit_normal_distill_reservation(
         && resp.eval_count == Some(u64::from(NUM_PREDICT_DISTILL))
 }
 
-/// One distillation call on the live adapter — the [`HoldingAnalyst::distill`]
-/// seam: the issue guard sizes the rendered prompt — both messages — against
-/// its model's budget before any request exists ([`distill_route`]); a reply
-/// that stops exactly at the normal reservation takes the one expanded
-/// re-attempt on the reasoner (`docs/local-models.md §The local-model adapter
-/// seam`). `expanded_spent` is set the moment that re-attempt issues — on the
-/// error path too — so the transport retry gate above never layers a third
-/// request after it: the expanded attempt is final for the stage.
+/// One distillation call on the live adapter. `expanded_spent` is set the
+/// moment the expanded re-attempt issues — on the error path too — so the
+/// retry gate never layers a third request after it: the expanded attempt is
+/// final for the stage (`docs/local-models.md §The local-model adapter seam`).
 fn distill_prose_call(
     analyst: &LocalAnalyst,
     stage: &str,
@@ -4658,11 +4101,9 @@ fn distill_prose_call(
     let resp = analyst.client.chat(&req)?;
 
     if hit_normal_distill_reservation(&req, &resp) {
-        // The rendered prompt already passed the reasoner's 60% input guard,
-        // leaving more than the 32 K expanded ceiling in its 128 K context.
-        // Route the one evidence-triggered re-attempt there even when the
-        // normal call used a 32 K fast tier, whose shared context could not
-        // hold both.
+        // Routed to the reasoner even when the normal call used the fast tier:
+        // its 128 K context holds the prompt plus the expanded ceiling, which a
+        // 32 K tier could not.
         expanded_spent.set(true);
         let mut expanded_req = distill_request(
             &analyst.reasoner_model,
@@ -4688,10 +4129,9 @@ fn distill_prose_call(
     Ok(resp.content)
 }
 
-/// Build one research-loop turn's request: thinking on, the shared interpret
-/// context (one `num_ctx` per model). The gathering turns carry `tools` with
-/// no `format`; the synthesis conversation carries neither — its write-up and
-/// its follow-up reply are prose (`docs/portfolio-workflow.md` §Step 6c).
+/// Thinking on, at the shared interpret context (one `num_ctx` per model).
+/// Gathering turns carry `tools` with no `format`; the synthesis conversation
+/// carries neither (`docs/portfolio-workflow.md` §Step 6c).
 pub(super) fn research_turn_request(
     reasoner_model: &str,
     messages: Vec<ChatMessage>,
@@ -4707,9 +4147,7 @@ pub(super) fn research_turn_request(
     req
 }
 
-/// Build the analysis request (`docs/portfolio-workflow.md` §Step 6d): the
-/// resident reasoner, thinking on, **no grammar** — the analysis is prose —
-/// thinking sampling, the interpret-sized context, resident.
+/// Thinking on, no grammar (`docs/portfolio-workflow.md` §Step 6d).
 pub(super) fn analysis_request(reasoner_model: &str, input: &distill::AnalysisInput<'_>) -> ChatRequest {
     let prompt = distill::analysis_prompt(input);
     let mut req = ChatRequest::new(
@@ -4723,9 +4161,7 @@ pub(super) fn analysis_request(reasoner_model: &str, input: &distill::AnalysisIn
     req
 }
 
-/// Build the self-review request (`docs/portfolio-workflow.md` §Step 6e): the
-/// resident reasoner, thinking on, **no grammar** — the review is prose —
-/// thinking sampling, the interpret-sized context, resident.
+/// Thinking on, no grammar (`docs/portfolio-workflow.md` §Step 6e).
 pub(super) fn review_request(reasoner_model: &str, input: &review::ReviewInput) -> ChatRequest {
     let prompt = review::review_prompt(input);
     let mut req = ChatRequest::new(
@@ -4739,9 +4175,7 @@ pub(super) fn review_request(reasoner_model: &str, input: &review::ReviewInput) 
     req
 }
 
-/// Build the thesis-document request (`docs/portfolio-workflow.md` §Step 6f):
-/// thinking on, **no grammar** — the document is free prose — thinking
-/// sampling, the interpret-sized context.
+/// Thinking on, no grammar (`docs/portfolio-workflow.md` §Step 6f).
 pub(super) fn thesis_request(reasoner_model: &str, input: &ThesisInput) -> ChatRequest {
     let is_fund = dossier_is_fund(input.dossier);
     let mut req = ChatRequest::new(
@@ -4758,11 +4192,9 @@ pub(super) fn thesis_request(reasoner_model: &str, input: &ThesisInput) -> ChatR
     req
 }
 
-/// Build the appendix request — the same conversation's second message: the
-/// system and user messages of the thesis request, the document as the
-/// assistant's turn, then the transcription ask; **thinking off**, the
-/// appendix grammar ([`crate::portfolio::appendix_schema`]), non-thinking
-/// sampling at the shared context.
+/// The same conversation's second message — the document as the assistant's
+/// turn, then the transcription ask — thinking off under the appendix grammar
+/// ([`crate::portfolio::appendix_schema`]).
 pub(super) fn appendix_request(
     reasoner_model: &str,
     input: &ThesisInput,
@@ -4785,8 +4217,7 @@ pub(super) fn appendix_request(
     req
 }
 
-/// Build the `role_risk_only` thesis-document request — the thesis request's
-/// wiring on the branch's message: thinking on, no grammar.
+/// Thinking on, no grammar, as [`thesis_request`].
 pub(super) fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> ChatRequest {
     let mut req = ChatRequest::new(
         reasoner_model,
@@ -4802,12 +4233,9 @@ pub(super) fn role_risk_request(reasoner_model: &str, input: &RoleRiskInput) -> 
     req
 }
 
-/// Build the per-holding action request under the chosen engine-set rendering
-/// (fix list 3.9; the pipeline passes `List`): thinking on (the rung is a judgment
-/// call weighing the whole verdict against the profile), the action schema, and
-/// the **shared** interpret context size — the one-`num_ctx`-per-model rule (an
-/// Ollama `num_ctx` change reloads the resident runner,
-/// `docs/local-model-operations.md §The num_ctx trap`).
+/// Thinking on (the rung is a judgment call), the action schema, and the
+/// shared interpret context — one `num_ctx` per model, since a change reloads
+/// the resident runner (`docs/local-model-operations.md §The num_ctx trap`).
 pub(super) fn action_request(reasoner_model: &str, input: &ActionInput) -> ChatRequest {
     let mut req = ChatRequest::new(
         reasoner_model,
@@ -4825,14 +4253,8 @@ pub(super) fn action_request(reasoner_model: &str, input: &ActionInput) -> ChatR
 
 impl HoldingAnalyst for LocalAnalyst {
     fn distill(&self, input: &distill::DistillInput<'_>) -> Result<String> {
-        // Non-streaming and non-thinking: the issue guard, the expanded
-        // re-attempt and the completion checks live in the call. The bounded
-        // retry-once gate wraps the issued call like every chat call
-        // (`docs/local-models.md §The local-model adapter seam`): a transient
-        // first failure re-issues the identical request exactly once, a
-        // second failure fails hard annotated with the first attempt's class,
-        // and once the expanded re-attempt has issued the stage is final —
-        // no third request after it.
+        // The retry gate wraps the call (`docs/local-models.md §The local-model
+        // adapter seam`); the expanded re-attempt is final for the stage.
         let prompt = distill::distillation_prompt(input);
         let stage = input.stage.as_str();
         let expanded_spent = std::cell::Cell::new(false);
@@ -4845,10 +4267,7 @@ impl HoldingAnalyst for LocalAnalyst {
     }
 
     fn analyze(&self, input: &distill::AnalysisInput<'_>) -> Result<String> {
-        // Stream step-scoped like the thesis document: the chain lands on this
-        // holding's own "Analyze {SYM}" step. The retry gate re-issues the
-        // identical request once on a transient class; a length stop is not
-        // re-issued.
+        // Streamed onto the holding's own step; a length stop is not re-issued.
         let step_key = crate::portfolio::holding_step_key(input.symbol);
         let mut req = analysis_request(&self.reasoner_model, input);
         let stage = input.stage();
@@ -4866,10 +4285,7 @@ impl HoldingAnalyst for LocalAnalyst {
     }
 
     fn review(&self, input: &review::ReviewInput) -> Result<String> {
-        // Stream step-scoped like the analysis: the review lands on this
-        // holding's own "Analyze {SYM}" step. The retry gate re-issues the
-        // identical request once on a transient class; a length stop is not
-        // re-issued.
+        // Streamed onto the holding's own step; a length stop is not re-issued.
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
         let mut req = review_request(&self.reasoner_model, input);
         let stage = input.stage();
@@ -4892,14 +4308,10 @@ impl HoldingAnalyst for LocalAnalyst {
         plan: &ResearchPlan,
     ) -> Result<HoldingResearch> {
         let Some(ctx) = &self.research_ctx else {
-            // No web stack attached: the offline default, its absence a
-            // recorded gap on the audit (never a failed run).
+            // A recorded gap, never a failed run.
             return Ok(research::offline_stub(plan));
         };
-        // The model seam: a thinking gathering turn carries the tools (no
-        // grammar); the pass's findings ride a separate synthesis call with the
-        // grammar (no tools), so the two never share a request (attempt-4
-        // Finding 4, fix B).
+        // Tools and a grammar never share a request.
         struct TurnAdapter<'a> {
             analyst: &'a LocalAnalyst,
             stage: &'a str,
@@ -4920,8 +4332,8 @@ impl HoldingAnalyst for LocalAnalyst {
                 );
                 req.stage = Some(stage.to_string());
                 self.analyst.record_model_call(&req);
-                // Non-streaming (the tool protocol), the reply's thinking
-                // forwarded whole onto the holding's step once it lands.
+                // Non-streaming (the tool protocol); the thinking is forwarded
+                // whole onto the step once it lands.
                 let resp = self
                     .analyst
                     .client
@@ -4963,13 +4375,10 @@ impl HoldingAnalyst for LocalAnalyst {
 
     fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
         let symbol = &input.dossier.position.symbol;
-        // Stream step-scoped: the reasoning and the document stream onto this
-        // holding's own "Analyze {SYM}" step, so the tracker shows live thinking
-        // instead of a minutes-long quiet stretch (the first live run's F8).
+        // Streamed onto the holding's own step so the tracker shows live
+        // thinking.
         let step_key = crate::portfolio::holding_step_key(symbol);
-        // The thesis document: the retry gate re-issues the identical request
-        // once on a transient class (transport, an empty completion); a length
-        // stop is not re-issued.
+        // A length stop is not re-issued.
         let mut req = thesis_request(&self.reasoner_model, input);
         let stage = format!("thesis {symbol}");
         req.stage = Some(stage.clone());
@@ -4983,10 +4392,8 @@ impl HoldingAnalyst for LocalAnalyst {
             ensure_nonempty_completion(&stage, &resp)?;
             Ok(resp.content)
         })?;
-        // The appendix: the same conversation's second message, decoded under
-        // the grammar and the declared domain; an off-domain or unparseable
-        // object re-issues the identical appendix message once under the same
-        // gate (`docs/portfolio-analysis.md` §The holding verdict).
+        // The same conversation's second message (`docs/portfolio-analysis.md`
+        // §The holding verdict).
         let mut req = appendix_request(&self.reasoner_model, input, &thesis_document);
         let stage = format!("appendix {symbol}");
         req.stage = Some(stage.clone());
@@ -5022,8 +4429,6 @@ impl HoldingAnalyst for LocalAnalyst {
 
     fn decide_action(&self, input: &ActionInput) -> Result<crate::portfolio::ActionDecision> {
         let mut req = action_request(&self.reasoner_model, input);
-        // Stream step-scoped like interpretation: the decision's reasoning lands
-        // on this holding's own "Analyze {SYM}" step.
         let step_key = crate::portfolio::holding_step_key(&input.dossier.position.symbol);
         let stage = format!("action {}", input.dossier.position.symbol);
         req.stage = Some(stage.clone());
@@ -5049,8 +4454,8 @@ impl HoldingAnalyst for LocalAnalyst {
     }
 
     fn fast_id(&self) -> String {
-        // The reasoner's id when the fast tier fell back to it (`new`), so the
-        // audit records the model distillation actually ran on.
+        // The reasoner's id when the fast tier fell back to it, so the audit
+        // records the model distillation actually ran on.
         self.fast_model.clone()
     }
 
@@ -5177,17 +4582,16 @@ pub(crate) mod tests {
         }
     }
 
-    /// An action packet with its POSITION block cut out — the gloss and the
-    /// values up to the blank line before the next section — so a test can
-    /// pin that a repriced position changes nothing else.
+    /// The action packet with its POSITION block cut out, so a test can pin
+    /// that a repriced position changes nothing else.
     pub(crate) fn without_position(packet: &str) -> String {
         let start = packet.find("\nPOSITION\n").expect("a POSITION block");
         let end = start + 1 + packet[start + 1..].find("\n\n").expect("the block's end");
         format!("{}{}", &packet[..start], &packet[end..])
     }
 
-    /// The shared rate anchors as a static reference — a struct literal's
-    /// field can borrow it without a binding.
+    /// A static reference so a struct literal's field can borrow it without a
+    /// binding.
     pub(crate) fn rates_static() -> &'static RateAnchors {
         static RATES: std::sync::OnceLock<RateAnchors> = std::sync::OnceLock::new();
         RATES.get_or_init(rates)
@@ -5267,7 +4671,6 @@ pub(crate) mod tests {
             price_history: vec![170.0, 180.0, 188.0, 195.0],
             daily_closes,
             quarterly_income,
-            // The factor composite's value, quality and low-risk legs (grade-v3).
             quarterly_balance_sheet: ends
                 .iter()
                 .map(|end| QuarterlyBalanceSheetRow {
@@ -5348,10 +4751,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_technology_topic_fires_from_the_pre_flag_alone_and_only_once() {
-        // The pre-flag is the topic's only trigger (`docs/portfolio-analysis.md`
-        // §The per-holding pipeline): a fresh news lead fires nothing on its
-        // own — it rides the pass brief — and the fired flag adds
-        // the topic once.
+        // A news lead rides the brief and fires nothing on its own.
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.news_leads = vec![research::NewsLead {
             headline: "Rival unveils a competing chip".into(),
@@ -5365,7 +4765,6 @@ pub(crate) mod tests {
                 .filter(|t| t.key == "technology-event")
                 .count()
         };
-        // A lead with nothing standing behind it fires nothing.
         assert_eq!(tech_topics(research::AgendaTriggers::default()), 0);
         assert_eq!(
             tech_topics(research::AgendaTriggers {
@@ -5482,15 +4881,9 @@ pub(crate) mod tests {
 
     #[test]
     fn only_a_verdict_that_reached_interpretation_claims_the_house_view() {
-        // The audit's sources must name what the VERDICT consulted, and the house view
-        // is loaded once per run and rides every dossier — so the claim has to be
-        // earned by reaching an interpretation call, not inherited from assembly.
-        //
-        // The routes that return first are the reason: the eligibility gate, the
-        // listing guard, a net-short or fully-offset position, and every
-        // evidence-floor abstention. Enumerating them is the shape that kept going
-        // wrong (the first fix covered two of them), so the default is absent and the
-        // two interpretation paths opt in.
+        // The house view rides every dossier, so the source claim has to be
+        // earned by reaching an interpretation call; the default is absent and
+        // the two interpretation paths opt in.
         let with_house_view = |asset_class, quantity: f64| {
             let mut d = dossier(asset_class, strong_financials());
             d.position.quantity = quantity;
@@ -5505,25 +4898,18 @@ pub(crate) mod tests {
         };
         let claims = |sources: Vec<String>| sources.iter().any(|s| s.contains("house view"));
 
-        // The ordinary priced path reads it, so it is recorded.
         assert!(
             claims(with_house_view(AssetClass::Stock, 100.0)),
             "an interpreted holding records the house view it read"
         );
 
-        // A net-short position returns not-rated before either 6f prompt — Codex
-        // round 2's reachable case, which the dossier-level gate could not see.
         assert!(
             !claims(with_house_view(AssetClass::Stock, -100.0)),
             "a net-short position never reaches interpretation"
         );
-        // A fully-offset (zero) netted position, same route.
         assert!(!claims(with_house_view(AssetClass::Stock, 0.0)));
-        // And a class the equity pipeline never grades.
         assert!(!claims(with_house_view(AssetClass::Cash, 100.0)));
 
-        // The listing guard: a guard-terminal stock routes to not-rated on the profile
-        // read alone.
         let mut guarded = dossier(AssetClass::Stock, strong_financials());
         guarded.house_view = house_view_of(Some("## Thesis\nrisk-on."), 0);
         guarded.listing = Some(crate::portfolio::listing::ListingResolution::Unresolved);
@@ -5534,8 +4920,7 @@ pub(crate) mod tests {
                 .sources
         ));
 
-        // An evidence-floor abstention: no current price, so the engine stage exits
-        // below the floor before any interpretation call.
+        // No current price exits below the evidence floor.
         let mut floored = dossier(AssetClass::Stock, strong_financials());
         floored.house_view = house_view_of(Some("## Thesis\nrisk-on."), 0);
         floored.financials.current_price = None;
@@ -5578,13 +4963,9 @@ pub(crate) mod tests {
 
     #[test]
     fn a_summary_only_house_view_is_claimed_by_both_prompts_since_both_render_the_stances() {
-        // Both messages render the house view through one MARKET ANALYSIS
-        // section — the latest sections and the recent stances (`portfolio-v42`;
-        // through v41 the role/risk message rendered the sections only). And
-        // `load_house_view` deliberately keeps the summaries when the latest
-        // report's Markdown is missing or unreadable, so a summary-only house
-        // view is reachable and reaches both verdicts as the stance lines — which
-        // the one predicate the audit reads says.
+        // `load_house_view` keeps the summaries when the latest report's
+        // Markdown is missing, so a summary-only house view is reachable and
+        // renders as the stance lines on both messages.
         for d in [
             {
                 let mut d = fund_dossier(us_equity_fund());
@@ -5604,7 +4985,6 @@ pub(crate) mod tests {
             "no house view at all: nothing renders, nothing is claimed"
         );
 
-        // End to end on the role/risk branch.
         let mut bond = us_equity_fund();
         bond.symbol = "BND".into();
         bond.asset_class = Some("Fixed Income".into());
@@ -5635,8 +5015,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// A stub with a distinct fast tier and reasoner, so the audit's model list can
-    /// be checked against the calls that actually ran.
+    /// A distinct fast tier and reasoner, so the audit's model list can be
+    /// checked against the calls that ran.
     struct TieredStub;
     impl HoldingAnalyst for TieredStub {
         fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
@@ -5656,8 +5036,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// Exact-call telemetry stub: research really is the first modeled stage,
-    /// followed by distillation and the reasoner judgments.
+    /// Exact-call telemetry: research is the first modeled stage.
     #[derive(Default)]
     struct TelemetryTieredStub {
         calls: std::sync::Mutex<Vec<String>>,
@@ -5699,7 +5078,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// The role/risk fixture: a bond fund routes to the union's other branch.
+    /// A bond fund routes to the role/risk branch.
     fn bond_fund() -> FundData {
         let mut bond = us_equity_fund();
         bond.symbol = "BND".into();
@@ -5710,55 +5089,40 @@ pub(crate) mod tests {
 
     #[test]
     fn audit_model_ids_name_only_the_models_actually_called() {
-        // M3 of the 2026-08-18 doc/code audit: the audit's model list was the
-        // analyst's configured roster on every row — a not-rated cash row and an
-        // evidence-floor abstention both "used" two models. It must record only
-        // the calls that ran.
         let run = |d: &HoldingDossier| {
             analyze_holding(&TieredStub, d, &rates(), "2026-08-03").unwrap()
         };
 
-        // No-model exits persist an empty list: the eligibility gate ...
+        // No-model exits persist an empty list.
         let (v, a) = run(&dossier(AssetClass::Cash, strong_financials()));
         assert!(matches!(v.disposition, VerdictDisposition::NotRated { .. }));
         assert!(a.model_ids.is_empty(), "{:?}", a.model_ids);
-        // ... a net-short position ...
         let mut short = dossier(AssetClass::Stock, strong_financials());
         short.position.quantity = -100.0;
         let (v, a) = run(&short);
         assert!(matches!(v.disposition, VerdictDisposition::NotRated { .. }));
         assert!(a.model_ids.is_empty(), "{:?}", a.model_ids);
-        // ... the listing guard ...
         let mut guarded = dossier(AssetClass::Stock, strong_financials());
         guarded.listing = Some(crate::portfolio::listing::ListingResolution::Unresolved);
         let (_, a) = run(&guarded);
         assert!(a.model_ids.is_empty(), "{:?}", a.model_ids);
-        // ... and an evidence-floor abstention (no current price).
         let mut floored = dossier(AssetClass::Stock, strong_financials());
         floored.financials.current_price = None;
         let (v, a) = run(&floored);
         assert!(matches!(v.disposition, VerdictDisposition::InsufficientEvidence { .. }));
         assert!(a.model_ids.is_empty(), "{:?}", a.model_ids);
 
-        // The role/risk branch runs the fund agenda's research on the reasoner,
-        // then the reasoner's role read + action call: the reasoner alone, once
-        // (no distillation call exists until consolidation lands).
         let (v, a) = run(&fund_dossier(bond_fund()));
         assert!(matches!(v.disposition, VerdictDisposition::RoleRiskOnly(_)));
         assert_eq!(a.model_ids, vec!["reasoner".to_string()]);
 
-        // The priced path likewise: research, then the reasoner's
-        // interpretation + action call — one id, deduplicated in place.
         let (v, a) = run(&dossier(AssetClass::Stock, strong_financials()));
         assert!(matches!(v.disposition, VerdictDisposition::Priced(_)));
         assert_eq!(a.model_ids, vec!["reasoner".to_string()]);
-        // And the priced fund path likewise.
         let (v, a) = run(&fund_dossier(us_equity_fund()));
         assert!(matches!(v.disposition, VerdictDisposition::Priced(_)), "{v:?}");
         assert_eq!(a.model_ids, vec!["reasoner".to_string()]);
 
-        // One entry when the fast tier is the reasoner (the blank-fast-tier
-        // fallback, or a same-model stub) — never the same id twice.
         let (_, a) = analyze_holding(
             &StubAnalyst,
             &dossier(AssetClass::Stock, strong_financials()),
@@ -5768,10 +5132,7 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(a.model_ids, vec!["stub-analyst".to_string()]);
 
-        // Exact telemetry supersedes configured-stage guesses: live research
-        // is the first model call and every later judgment runs on the same
-        // reasoner, so the recorded ids dedup to the one in place; the fast
-        // tier is never called while no distillation issues.
+        // Exact telemetry supersedes the configured-id fallback.
         let exact = TelemetryTieredStub::default();
         let (_, a) = analyze_holding(
             &exact,
@@ -5785,11 +5146,6 @@ pub(crate) mod tests {
 
     #[test]
     fn rate_anchors_are_a_source_only_where_a_prompt_or_a_priced_output_read_them() {
-        // The FRED anchors feed the scenario targets and the hurdle read, and both
-        // thesis-document messages state the prints under FETCHED VALUES — so the
-        // priced paths and the role/risk branch name the source. Every earlier
-        // exit renders no prompt and computes nothing from them, so its audit must
-        // not name them (M3, 2026-08-18).
         let sources = |d: &HoldingDossier| {
             analyze_holding(&StubAnalyst, d, &rates(), "2026-08-03")
                 .unwrap()
@@ -5813,9 +5169,6 @@ pub(crate) mod tests {
 
     #[test]
     fn role_risk_audit_persists_the_branch_computed_metrics() {
-        // The role/risk branch computes the expense ratio plus the price-derived
-        // legs; the audit row must carry
-        // them, not the empty default it used to persist (M3, 2026-08-18).
         let (verdict, audit) = analyze_holding(
             &StubAnalyst,
             &fund_dossier(bond_fund()),
@@ -5827,14 +5180,12 @@ pub(crate) mod tests {
         assert_eq!(audit.metrics.expense_ratio, Some(0.0003));
         assert!(audit.metrics.trailing_return.is_some(), "{:?}", audit.metrics);
         assert!(audit.metrics.return_volatility.is_some(), "{:?}", audit.metrics);
-        // The reduced surface only — no statement-derived stock legs, and the
-        // closed-end read stays None off the CEF form.
+        // The reduced surface only; the closed-end read stays None off the CEF
+        // form.
         assert!(audit.metrics.pe_ratio.is_none());
         assert!(audit.metrics.revenue_growth.is_none());
         assert_eq!(audit.metrics.nav_premium, None);
 
-        // The CEF variant threads the closed-end read into the audit metrics
-        // (Codex 2026-08-21 round 3, finding 3).
         let mut cef = bond_fund();
         cef.profile_is_fund = Some(true);
         cef.profile_description = Some("a closed-end fixed income fund".into());
@@ -5852,9 +5203,6 @@ pub(crate) mod tests {
 
     #[test]
     fn an_empty_action_rationale_fails_the_holding() {
-        // M6 of the 2026-08-18 audit: the schema types the rationale as any string,
-        // so the contract's "never empty" is enforced app-side, fail-hard like the
-        // rest of the model stage — on both branches' action calls.
         struct EmptyRationaleStub;
         impl HoldingAnalyst for EmptyRationaleStub {
             fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
@@ -5902,8 +5250,7 @@ pub(crate) mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("BND") && msg.contains("empty rationale"), "{msg}");
 
-        // A rationale with content passes untouched — the one-sentence shape is a
-        // prompt preference, not validated.
+        // The one-sentence shape is a prompt preference, not validated.
         assert!(analyze_holding(
             &StubAnalyst,
             &dossier(AssetClass::Stock, strong_financials()),
@@ -5922,31 +5269,24 @@ pub(crate) mod tests {
             "2026-08-03",
         )
         .unwrap();
-        // The app-set holdings-change tag rides on the verdict (the dossier's delta is
-        // a new position), independent of the model's prose what_changed.
+        // App-set from the dossier's delta, never the model.
         assert_eq!(verdict.position_change, PositionChange::New);
         match verdict.disposition {
             VerdictDisposition::Priced(g) => {
-                // Engine numbers carried through; model judgment present.
                 assert!(matches!(
                     g.grade,
                     crate::portfolio::Grade::A
                         | crate::portfolio::Grade::B
                         | crate::portfolio::Grade::C
                 ));
-                // The model arm persists exactly as authored: the document as
-                // text and the appendix the stub transcribed from it.
                 assert!(g.thesis_document.starts_with("Thesis: "), "{}", g.thesis_document);
                 assert!(g.appendix.conviction.is_some());
                 assert!(g.appendix.expected_price_12m.is_some());
-                // The options signal rides on the verdict but never entered the grade.
                 assert!(g.options_signal.put_call_volume.is_some());
-                // The new engine reads persist on the priced branch.
             }
             other => panic!("expected a priced verdict, got {other:?}"),
         }
         assert_eq!(audit.prompt_version, PROMPT_VERSION);
-        // The audit records how the targets were derived, versioned for calibration.
         let meta = audit.target_meta.expect("target meta rides the audit");
         assert_eq!(
             meta.parameter_version,
@@ -5965,13 +5305,11 @@ pub(crate) mod tests {
         .unwrap();
         match verdict.disposition {
             VerdictDisposition::Priced(g) => {
-                // The fund grade contract: neutral-imputed quality + the visible
-                // low-confidence marker; fund-form targets.
+                // Neutral-imputed quality with the visible low-confidence marker.
                 assert_eq!(g.sub_scores.quality, 50.0);
                 assert!(g.low_confidence_grade);
                 let tm = g.price_targets.twelve_month.as_ref().unwrap();
                 assert!(tm.methodology.contains("fund exposure composite"));
-                // The deterministic classification reaches the card-visible verdict.
                 assert_eq!(g.fund_class_label.as_deref(), Some("US equity fund"));
             }
             other => panic!("expected a priced fund verdict, got {other:?}"),
@@ -5981,9 +5319,7 @@ pub(crate) mod tests {
 
     #[test]
     fn engine_gap_notes_reach_the_audit() {
-        // A partially covered fund (80% P/E-usable) grades, and the engine's
-        // uncovered-share note lands in the audit's degraded inputs — reported,
-        // never silently dropped.
+        // A partially covered fund (80% P/E-usable) still grades.
         let mut partial = us_equity_fund();
         partial.sector_weights = vec![
             ("Technology".into(), 0.5),
@@ -6024,8 +5360,7 @@ pub(crate) mod tests {
         match verdict.disposition {
             VerdictDisposition::RoleRiskOnly(r) => {
                 assert_eq!(r.class_label, "bond fund");
-                // The per-holding action call authors the branch's action; the
-                // stub's role/risk decision is hold.
+                // The stub's role/risk decision is hold.
                 assert_eq!(r.action, Action::Hold);
                 assert!(r.thesis_document.starts_with("Role: "), "{}", r.thesis_document);
                 assert!(!r.evidence_gaps.is_empty());
@@ -6051,9 +5386,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_net_short_position_is_not_rated_with_a_short_reason() {
-        // A net-short equity is a direction the prescriptive layer doesn't model —
-        // not-rated with a short-position reason, never graded with long-side
-        // semantics (`docs/portfolio-analysis.md` §Asset eligibility).
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.position.quantity = -100.0;
         d.position.market_value = -19_500.0;
@@ -6064,8 +5396,8 @@ pub(crate) mod tests {
         });
         let (verdict, audit) =
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
-        // A no-research exit outside the floor retains nothing: no research
-        // record and no analysis, the prior's included.
+        // A no-research exit outside the floor retains nothing, the prior
+        // analysis included.
         assert!(audit.research.is_none() && audit.analysis.is_none());
         match verdict.disposition {
             VerdictDisposition::NotRated { reason } => {
@@ -6077,10 +5409,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_fully_offset_zero_position_is_not_rated_not_graded_long() {
-        // Exactly-zero netted shares (long and short legs fully offset,
-        // deliberately kept by netting) is neither long nor short — the strict
-        // `< 0.0` gate previously waved it onto the long-semantics ladder with
-        // zero economic exposure.
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.position.quantity = 0.0;
         d.position.market_value = 0.0;
@@ -6097,9 +5425,7 @@ pub(crate) mod tests {
     #[test]
     fn an_unsupported_listing_is_not_rated_with_that_reason() {
         use crate::portfolio::listing::ListingResolution;
-        // Strong financials prove the gate routes before the engine could grade —
-        // no resolution and a non-US primary listing are structural can't-grades
-        // (`docs/portfolio-analysis.md` §Asset eligibility).
+        // Strong financials prove the gate routes before the engine could grade.
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.listing = Some(ListingResolution::Unresolved);
         let (verdict, _audit) =
@@ -6170,10 +5496,7 @@ pub(crate) mod tests {
     #[test]
     fn a_conflicting_identity_abstains_and_retains_the_prior_thesis_document() {
         use crate::portfolio::listing::ListingResolution;
-        // The evidence floor's conflicting-identity arm: a wrong-issuer mapping
-        // must never grade the wrong company's financials — and like every
-        // abstention, the prior thesis document rides through unrewritten,
-        // here from a prior that was itself an abstention carrying one.
+        // The prior is itself an abstention carrying a retained document.
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.listing = Some(ListingResolution::Conflict {
             fmp_name: "Zenith Mining Corp".into(),
@@ -6208,10 +5531,8 @@ pub(crate) mod tests {
             other => panic!("expected insufficient-evidence, got {other:?}"),
         }
         assert_eq!(verdict.thesis_document(), Some("The prior document, verbatim."));
-        // The prior analysis record is retained whole on the abstention's
-        // audit — its own date and anchor with it — the way the anchor bar
-        // is, with no research record of its own, so the next continuity run
-        // loads it by identity.
+        // The prior analysis is retained whole, with its own date and anchor,
+        // and no research record.
         assert_eq!(audit.analysis, d.prior_analysis);
         assert!(audit.research.is_none());
     }
@@ -6238,15 +5559,13 @@ pub(crate) mod tests {
         }
     }
 
-    /// Write → split and abstain → recover: an abstention retains the prior
-    /// document on the basis it was written and carries the document's own
-    /// anchor bar, so the next continuity run's bridge reads the split factor
-    /// and PRIOR THESIS carries the conversion line beside the pre-split
-    /// prices. A fresh stamp on the abstention would have read factor 1 there.
+    /// An abstention carries the retained document's own anchor bar, so the next
+    /// continuity run's bridge reads the split factor; a fresh stamp would have
+    /// read factor 1.
     #[test]
     fn an_abstention_carries_the_retained_documents_anchor_across_a_split() {
         use crate::portfolio::listing::ListingResolution;
-        // Run 1 writes the document on the pre-split basis and stamps its anchor.
+        // Run 1 writes on the pre-split basis.
         let d1 = dossier(AssetClass::Stock, strong_financials());
         let (v1, a1) = analyze_holding(&StubAnalyst, &d1, &rates(), "2026-08-03").unwrap();
         let document = v1.thesis_document().expect("a priced document").to_string();
@@ -6290,21 +5609,14 @@ pub(crate) mod tests {
             )),
             "{message}"
         );
-        // The recovering pass re-stamps its own fresh anchor on the new basis.
         let fresh = a3.authoring_close.expect("run 3 stamps its anchor");
         assert_eq!(fresh.date, anchor.date);
         assert!((fresh.value - anchor.value / 4.0).abs() < 1e-9, "{fresh:?}");
     }
 
-    /// Write → unresolvable bridge → recover: a successful pass whose prior
-    /// anchor bar is missing from the fetched window records the excluded prior
-    /// comparisons as a degraded input, renders PRIOR THESIS under the
-    /// unverifiable line, and still stamps its OWN anchor with its quick basis
-    /// and band relation — its row is on its own basis — so the next pass, the
-    /// bar back in the window, bridges from that anchor at factor 1 and renders
-    /// no split line beside a document written on today's basis. (A carried
-    /// anchor there would have told the next pass to re-base already-adjusted
-    /// prices.)
+    /// A pass whose prior anchor bar is missing from the window still stamps its
+    /// own anchor, so the next pass bridges from it at factor 1; a carried
+    /// anchor would have told the next pass to re-base already-adjusted prices.
     #[test]
     fn an_unresolvable_pass_stamps_its_own_anchor_so_its_document_is_never_rebridged() {
         // Run A on the pre-split basis stamps the 2026-07-15 bar.
@@ -6345,7 +5657,6 @@ pub(crate) mod tests {
             "{message}"
         );
         assert!(!message.contains("by a factor of"), "{message}");
-        // B's row is on its own basis: its own anchor, its basis, its band relation.
         let anchor_b = a2.authoring_close.clone().expect("run B stamps its own anchor");
         assert_ne!(anchor_b, anchor_a, "never the carried pre-split anchor");
         assert_eq!(anchor_b.date, "2026-06-30", "the newest bar before the session");
@@ -6353,8 +5664,7 @@ pub(crate) mod tests {
         let VerdictDisposition::Priced(g2) = &v2.disposition else { unreachable!() };
         assert!(g2.authored_band_relation.is_some(), "the band relation stamps too");
         let doc_b = g2.thesis_document.clone();
-        // Run C: the bar back in the window, the series on B's basis — the
-        // bridge from B's anchor is 1 and B's document renders with no line.
+        // Run C: the bar back in the window, on B's basis.
         let mut d3 = dossier(AssetClass::Stock, rebased);
         d3.prior_verdict = Some(v2.clone());
         d3.prior_vintage = Some("2026-08-04T20:00:00Z".into());
@@ -6374,8 +5684,6 @@ pub(crate) mod tests {
     #[test]
     fn an_unverified_guard_proceeds_and_records_the_degraded_input() {
         use crate::portfolio::listing::ListingResolution;
-        // An FMP outage must never mass-not-rate a book: the holding grades
-        // normally with the unverified cross-check recorded as a degraded input.
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.listing = Some(ListingResolution::Unverified {
             detail: "FMP profile unavailable (unavailable)".into(),
@@ -6395,7 +5703,6 @@ pub(crate) mod tests {
 
     #[test]
     fn below_the_evidence_floor_abstains() {
-        // Only a price — the engine abstains, and no model interpretation is attempted.
         let thin = CompanyFinancials {
             symbol: "X".into(),
             current_price: Some(50.0),
@@ -6416,20 +5723,13 @@ pub(crate) mod tests {
 
     #[test]
     fn the_research_brief_carries_prior_analysis_before_prior_thesis_each_dated() {
-        // The holding-constant block on a continuity run
-        // (`docs/portfolio-workflow.md` §Step 6c): PRIOR ANALYSIS then PRIOR
-        // THESIS, each verbatim under the prior vintage's ET session date with
-        // the same split-context line; a debut carries neither; the analysis
-        // message's PRIOR ANALYSIS section is the same bytes.
         let mut d = dossier(AssetClass::Stock, strong_financials());
         assert_eq!(research_brief(&d, rates_static(), None).prior_documents, "");
         let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         d.prior_verdict = Some(v);
         d.prior_vintage = Some("2026-08-03T20:00:00Z".into());
-        // The analysis record carries its own date and its own anchor bar: an
-        // anchor stored at twice this run's close on the same bar date reads
-        // as a 2-for-1 re-basis of the analysis alone, while the verdict's
-        // bridge (the thesis document's line) is this run's own.
+        // An anchor at twice this run's close on the same bar date reads as a
+        // 2-for-1 re-basis of the analysis alone.
         let bar = d.financials.daily_closes[0].clone();
         d.prior_analysis = Some(crate::portfolio::AnalysisRecord {
             text: "The prior analysis, verbatim.".into(),
@@ -6453,8 +5753,8 @@ pub(crate) mod tests {
         assert!(docs[thesis_at..].contains("Thesis: hold AAPL "), "{docs}");
         let section = prior_analysis_section(&d);
         assert!(docs.starts_with(&section) && section.ends_with("The prior analysis, verbatim.\n"), "{section}");
-        // An anchor whose bar is missing from the fetched window: the basis is
-        // unverifiable and the line says so; no anchor at all: no line.
+        // A bar missing from the window is unverifiable; no anchor at all, no
+        // line.
         d.prior_analysis.as_mut().unwrap().anchor = Some(crate::portfolio::engine::DatedValue {
             date: "1999-01-04".into(),
             value: 1.0,
@@ -6463,9 +5763,6 @@ pub(crate) mod tests {
         d.prior_analysis.as_mut().unwrap().anchor = None;
         let bare = prior_analysis_section(&d);
         assert!(bare.starts_with("\nPRIOR ANALYSIS (written 2026-08-01)\nThe prior analysis, verbatim.\n"), "{bare}");
-        // The thesis-document message never carries PRIOR ANALYSIS — it reads
-        // this run's analysis under ANALYSIS and the prior document under
-        // PRIOR THESIS (`docs/portfolio-workflow.md` §Step 6f).
         let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
@@ -6484,14 +5781,13 @@ pub(crate) mod tests {
         });
         assert!(!thesis.contains("PRIOR ANALYSIS"), "{thesis}");
         assert!(thesis.contains("\nANALYSIS\nThis run's analysis.\n") && thesis.contains("\nPRIOR THESIS (written 2026-08-03)\n"), "{thesis}");
-        // A prior carrying no analysis renders PRIOR THESIS alone.
         d.prior_analysis = None;
         let docs = research_brief(&d, rates_static(), None).prior_documents;
         assert!(docs.starts_with("\nPRIOR THESIS (written 2026-08-03)\n") && !docs.contains("PRIOR ANALYSIS"), "{docs}");
     }
 
-    /// An analysis record written this session on the test fixture's date,
-    /// with no anchor — the tests' shorthand for "this run's analysis".
+    /// The tests' shorthand for "this run's analysis": written on the fixture's
+    /// date, no anchor.
     fn analysis_record(text: &str) -> crate::portfolio::AnalysisRecord {
         crate::portfolio::AnalysisRecord {
             text: text.into(),
@@ -6502,11 +5798,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_carried_analysis_renders_dated_and_bridged_under_analysis_on_both_thesis_messages() {
-        // A holding whose loop wrote nothing carries the prior analysis as
-        // this run's (Step 6d): under ANALYSIS it renders with the date it was
-        // written and the split-context line its own anchor bar yields, so
-        // the model never reads pre-split figures as today's; a fresh
-        // analysis renders undated with no line.
         let d = dossier(AssetClass::Stock, strong_financials());
         let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
@@ -6549,7 +5840,6 @@ pub(crate) mod tests {
         let fresh = thesis_user_prompt(&input(analysis_record("This run's analysis.")));
         assert!(fresh.contains("\nANALYSIS\nThis run's analysis.\n"), "{fresh}");
         assert!(!fresh.contains("re-based the price series") && !fresh.contains("ANALYSIS (written"), "{fresh}");
-        // The role/risk message takes the same render.
         let fund = fund_dossier(bond_fund());
         let role = role_risk_user_prompt(&RoleRiskInput {
             dossier: &fund,
@@ -6568,11 +5858,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_scripted_research_run_persists_the_analysis_and_the_thesis_message_reads_it() {
-        // Steps 6c → 6d → 6f end to end on the offline seam: a research loop
-        // that writes two write-ups yields an analysis — the stub's render of
-        // the write-ups under their titles, within budget so no distillation —
-        // persisted on the audit beside the research record, and the
-        // thesis-document message carries it under ANALYSIS.
+        // Two write-ups within budget, so no distillation.
         #[derive(Default)]
         struct Scripted(std::cell::RefCell<Option<String>>);
         impl HoldingAnalyst for Scripted {
@@ -6600,7 +5886,6 @@ pub(crate) mod tests {
         let (verdict, audit) = analyze_holding(&analyst, &d, &rates(), "2026-08-03").unwrap();
         assert!(matches!(verdict.disposition, VerdictDisposition::Priced(_)), "{verdict:?}");
         let written = audit.analysis.as_ref().expect("the analysis persists on the audit");
-        // Written this run: stamped with this run's session date and anchor bar.
         assert_eq!(written.written, d.analysis_date);
         assert_eq!(written.anchor, audit.authoring_close);
         assert!(written.anchor.is_some());
@@ -6618,8 +5903,7 @@ pub(crate) mod tests {
         assert_eq!(record.distillation, distill::DistillationRecord::none());
         let message = analyst.0.take().expect("the thesis message was captured");
         assert!(message.contains(&format!("\nANALYSIS\n{analysis}\n")), "{message}");
-        // The default seam refuses a stub that never scripted the call, naming
-        // the stage, so a double with write-ups must implement it.
+        // The default seam refuses an unscripted analysis call, naming the stage.
         struct Bare;
         impl HoldingAnalyst for Bare {
             fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
@@ -6687,11 +5971,10 @@ pub(crate) mod tests {
             ),
             "{interp}"
         );
-        // Data only: no score-input narration (`portfolio-v40`).
+        // Data only, no score-input narration.
         for narration in ["COMMODITY CONTEXT", "never a score input", "as-of evidence"] {
             assert!(!interp.contains(narration), "`{narration}` leaked: {interp}");
         }
-        // A holding with no sector-matched prints renders no section.
         let bare = dossier(AssetClass::Stock, strong_financials());
         let interp = thesis_user_prompt(&ThesisInput {
             rates: rates_static(),
@@ -6708,13 +5991,7 @@ pub(crate) mod tests {
         assert!(!interp.contains("COMMODITY PRICES"), "{interp}");
     }
 
-    /// The research brief's FETCHED VALUES is the thesis-document message's
-    /// block to the byte on both branches, so the gathering, synthesis and
-    /// thesis messages share one rendering (`docs/portfolio-workflow.md`
-    /// §Step 6c); the statement line carries every headline the dossier holds,
-    /// diluted shares and capital expenditure among them, as reported.
-    /// The full evidence record over the reference bodies' values — every
-    /// row FETCHED VALUES renders, so the order pin reads the whole block.
+    /// Every row FETCHED VALUES renders, so the order pin reads the whole block.
     fn full_evidence() -> crate::portfolio::evidence::CompanyEvidence {
         use crate::portfolio::evidence::*;
         CompanyEvidence {
@@ -6907,7 +6184,6 @@ pub(crate) mod tests {
             link: Some("https://sec.gov/x".into()),
         }];
         let block = fetched_values_section(&d, rates_static());
-        // Step 6c's order, each row as rendered.
         let expected = [
             "Profile: name Apple Inc.; exchange NASDAQ; sector Technology; industry Consumer \
              Electronics; market capitalization 3000.0B; shares outstanding 15.0B.",
@@ -6964,8 +6240,7 @@ pub(crate) mod tests {
                 .unwrap_or_else(|| panic!("missing or out of order: {line}\n{block}"));
             cursor += at + line.len();
         }
-        // The computations stay out: the trailing dividend sum, the computed
-        // 52-week range over the closes, the short-interest trend percentage.
+        // The computations stay out.
         assert!(
             !block.contains("over the trailing twelve months"),
             "{block}"
@@ -6975,7 +6250,6 @@ pub(crate) mod tests {
             "{block}"
         );
         assert!(!block.contains("% vs the prior settlement"), "{block}");
-        // The block is the same bytes on the brief and both thesis messages.
         assert_eq!(
             research_brief(&d, rates_static(), None).fetched_values,
             block
@@ -7011,14 +6285,12 @@ pub(crate) mod tests {
                 "{absent} rendered with no source:\n{block}"
             );
         }
-        // An empty evidence record renders nothing either.
         let mut d = d;
         d.evidence = Some(crate::portfolio::evidence::CompanyEvidence::empty("AAPL"));
         let block = fetched_values_section(&d, rates_static());
         assert!(!block.contains("Trailing-twelve-month ratios"), "{block}");
         assert!(!block.contains("Street price"), "{block}");
-        // A fund: every sector weighting, the ten largest countries.
-        // The countries are served smallest first here, so the cut must sort.
+        // The countries are served smallest first, so the cut must sort.
         let mut fund = us_equity_fund();
         fund.sector_weights = (0..12).map(|i| (format!("Sector {i}"), 0.05)).collect();
         fund.country_weights = (0..12)
@@ -7125,7 +6397,6 @@ pub(crate) mod tests {
         assert!(!plain.iter().any(|s| s.contains("M&A feed")), "{plain:?}");
     }
 
-    /// The thesis message's SCORES block for a stock under a profile.
     fn scores_block(fin: CompanyFinancials, profile: engine::GradeProfile) -> String {
         let d = dossier(AssetClass::Stock, fin);
         let engine_output = match engine::analyze(&d.financials, &rates(), profile) {
@@ -7165,8 +6436,6 @@ pub(crate) mod tests {
             ),
             "{block}"
         );
-        // Each score's factors, in the four scores' order, with the band, its
-        // anchor row, both legs and the blend; an unresolved factor scored 50.
         assert!(
             block.contains(
                 "\nquality\n- gross profit over total assets: 0.5143; band 0.3500 ± 0.3500 \
@@ -7177,7 +6446,6 @@ pub(crate) mod tests {
         );
         assert!(block.contains("\nvaluation\n- net income over market value: 0.0333; band 0.0264 ± 0.0264 (Technology): 63; score 63\n"), "{block}");
         assert!(block.contains("\nmomentum\n- price return from a year ago to a month ago: not available; scored 50\n"), "{block}");
-        // A lower-is-better factor says so; a value past an edge is marked.
         assert!(block.contains("\nrisk\n- beta (lower is better): 1.1000; band 1.0000 ± 0.6000 (market-wide): 42; score 42\n"), "{block}");
         assert!(
             block.contains("- debt over equity (lower is better): 1.4286; band 0.4000 ± 0.4000 (Technology): 0, past its edge; rank among 12 earlier readings: 50; score 25\n"),
@@ -7227,8 +6495,8 @@ pub(crate) mod tests {
 
     #[test]
     fn an_imputed_axis_and_thin_history_are_said_once() {
-        // No gross profit and no operating income or cash flows: every quality
-        // factor is unavailable, so the score is imputed.
+        // With no gross profit every quality factor is unavailable, so the
+        // score is imputed.
         let mut fin = strong_financials();
         for row in &mut fin.quarterly_income {
             row.gross_profit = None;
@@ -7283,7 +6551,6 @@ pub(crate) mod tests {
             review: None,
         });
         let block = &user[user.find("\nSCORES\n").unwrap()..user.find("\nPRICE BANDS (USD)\n").unwrap()];
-        // The gloss ends at the grade sentence and the scores follow it.
         assert!(block.contains("risk scores.\nquality 50, valuation "), "{block}");
         assert!(!block.contains("Each score is the mean"), "{block}");
         assert!(!block.contains("\nquality\n"), "{block}");
@@ -7398,8 +6665,6 @@ pub(crate) mod tests {
     #[test]
     fn the_pre_flag_wires_through_analyze_holding_onto_the_audit() {
         use crate::portfolio::dossier::BenchmarkSeries;
-        // A carried stock with a benchmark series records an evaluated flag (or
-        // its typed gap); a debut records neither.
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.prior_vintage = Some("2026-07-20T14:00:00Z".to_string());
         d.sector_benchmark = Some(BenchmarkSeries {
@@ -7415,7 +6680,6 @@ pub(crate) mod tests {
                     .any(|g| g.contains("technology-event pre-flag unevaluable")),
             "an evaluable carried stock records the flag or its typed gap: {audit:?}"
         );
-        // A carried stock with NO benchmark series records the typed gap.
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.prior_vintage = Some("2026-07-20T14:00:00Z".to_string());
         let (_, audit) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
@@ -7428,7 +6692,6 @@ pub(crate) mod tests {
             "{:?}",
             audit.degraded_inputs
         );
-        // A debut records neither a flag nor a gap.
         let d = dossier(AssetClass::Stock, strong_financials());
         let (_, audit) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         assert!(audit.tech_event_pre_flag.is_none());
@@ -7440,10 +6703,6 @@ pub(crate) mod tests {
 
     #[test]
     fn newly_consulted_feeds_land_on_the_audit_source_labels() {
-        // The actually-consulted discipline extends to the Step-5 feeds: the
-        // backdrop and a fund's positioning label where a prompt rendered
-        // them, the benchmark where the pre-flag evaluation read it — and none
-        // of them label where absent (Codex 2026-08-20, finding 5).
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.put_call_backdrop = Some(crate::cboe::PutCallBackdrop {
             as_of: "2026-08-19".into(),
@@ -7490,16 +6749,12 @@ pub(crate) mod tests {
             audit.sources
         );
 
-        // Absent feeds claim nothing.
         let bare = dossier(AssetClass::Stock, strong_financials());
         let (_, audit) = analyze_holding(&StubAnalyst, &bare, &rates(), "2026-08-03").unwrap();
         assert!(!audit.sources.iter().any(|s| {
             s.contains("CBOE") || s.contains("CFTC") || s.contains("benchmark")
         }));
 
-        // The commodity context labels only where a prompt rendered it: on the
-        // interpreted path, never on an early exit that consumed no prompt
-        // (Codex 2026-08-20 round 2, finding 4).
         let commodity_print = crate::portfolio::dossier::CommodityPrint {
             label: "WTI Crude Oil".into(),
             unit: "USD per barrel".into(),
@@ -7530,7 +6785,7 @@ pub(crate) mod tests {
         );
 
         // An unreadable prior vintage never hands the benchmark series to the
-        // evaluation, so it must not label it.
+        // evaluation.
         let mut unreadable = dossier(AssetClass::Stock, strong_financials());
         unreadable.prior_vintage = Some("soon".to_string());
         unreadable.sector_benchmark = Some(crate::portfolio::dossier::BenchmarkSeries {
@@ -7592,7 +6847,6 @@ pub(crate) mod tests {
             review: None,
         });
         assert!(role.contains(LINE), "{role}");
-        // Absent, neither prompt claims it.
         let bare = dossier(AssetClass::Stock, strong_financials());
         let interp = thesis_user_prompt(&ThesisInput {
             rates: rates_static(),
@@ -7623,20 +6877,16 @@ pub(crate) mod tests {
         d.filing_events = Some(ForensicFilingState::Events { events: vec![event] });
         let (v, audit) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
 
-        // The audit records the sweep state with the engine-matched hard rule.
         let forensic = audit.forensic.expect("the sweep state persists on the audit");
         assert!(forensic.state.hard_tripped());
         assert!(
             forensic.matched_rule.as_deref().unwrap_or("").contains("reads the exit family"),
             "{forensic:?}"
         );
-        // The engine arm is bound: its own rung reads the exit family; the
-        // model arm persists as authored (the stub's own conviction survives).
         let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
             panic!("expected a priced verdict");
         };
         assert!(matches!(graded.engine_rung, Action::Trim | Action::SellAll), "{:?}", graded.engine_rung);
-        // Both prompts render the typed section; the sweep is a consulted source.
         let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
@@ -7661,8 +6911,7 @@ pub(crate) mod tests {
             ),
             "{interp}"
         );
-        // The consequence is stated as the rule's effect on the computed read —
-        // no arm, trigger or binding narration (`portfolio-v40`).
+        // No arm, trigger or binding narration.
         const RULE: &str = "By rule: the computed action set excludes adding and the computed \
                             action reads the exit family; the grade is unchanged.\n";
         assert!(interp.contains(RULE), "{interp}");
@@ -7687,9 +6936,8 @@ pub(crate) mod tests {
             profile: &d.profile,
         });
         assert!(action.contains("\nFORENSIC FILINGS (8-K sweep)\nEvents found:\n"), "{action}");
-        // The action packet carries the narrowed set on its own line, so the
-        // sweep's rule sentence renders on the interpretation packet only
-        // (ruled 2026-09-17, F1).
+        // The rule sentence renders on the thesis packet only; the action
+        // packet carries the narrowed set on its own line.
         assert!(!action.contains("By rule:"), "{action}");
         assert!(
             action.contains("\nSUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed in full: sell-all, trim, hold. A rung not listed is outside that rule.\n"),
@@ -7697,7 +6945,6 @@ pub(crate) mod tests {
         );
         assert!(!action.contains("HARD TRIGGER TRIPPED"), "{action}");
 
-        // An `Unknown` sweep renders as unknown and never trips the rule.
         let mut unknown = dossier(AssetClass::Stock, strong_financials());
         unknown.filing_events = Some(ForensicFilingState::Unknown {
             reason: "no CIK mapping for AAPL".into(),
@@ -7711,7 +6958,6 @@ pub(crate) mod tests {
         let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
             panic!("expected a priced verdict");
         };
-        // The rung is the untripped rule's — whatever the hurdle and grade read.
         assert_eq!(
             graded.engine_rung,
             engine::engine_action(engine_output.grade, &engine_output.hurdle, None, false)
@@ -7740,10 +6986,6 @@ pub(crate) mod tests {
 
     #[test]
     fn action_prompt_is_two_parts_with_both_reads_the_supported_set_and_the_profile() {
-        // The action call is the profile's ONE entry point (tunnel vision): the
-        // message renders the two reads, the computed per-holding set as one
-        // data line, and the profile — and names no app concept
-        // (`portfolio-v41`; `docs/verification/2026-09-17-action-prompt-rewrite.md`).
         let d = dossier(AssetClass::Stock, strong_financials());
         let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
@@ -7771,9 +7013,6 @@ pub(crate) mod tests {
         );
         let (part1, part2) = user.split_once("\n======== PART 2: TASK ========\n").unwrap();
         assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{part1}");
-        // The sections in the docs' order (`docs/portfolio-workflow.md` §Step 6f),
-        // each once: POSITION, VERDICT, then one COMPUTED heading with its
-        // labelled sub-blocks, SUPPORTED ACTIONS and the profile.
         let sections = [
             "POSITION\n",
             "VERDICT\n",
@@ -7794,7 +7033,6 @@ pub(crate) mod tests {
             assert!(at > last, "{section} out of order: {part1}");
             last = at;
         }
-        // POSITION: the test position's economics and the debut's change tag.
         assert!(
             part1.contains(
                 "\nPOSITION\nThe holding as the account carries it: the shares held, the total \
@@ -7808,8 +7046,8 @@ pub(crate) mod tests {
             ),
             "{part1}"
         );
-        // The COMPUTED heading names the section it runs to — SUPPORTED ACTIONS
-        // on a debut, which carries no PRIOR ACTION.
+        // On a debut COMPUTED runs to SUPPORTED ACTIONS, there being no PRIOR
+        // ACTION.
         assert!(
             part1.contains(
                 "\nCOMPUTED\nThe computed reads follow under their labels, up to SUPPORTED \
@@ -7824,7 +7062,7 @@ pub(crate) mod tests {
             )),
             "{part1}"
         );
-        // Part 1 instructs nothing; Part 2 carries the two items and the shape.
+        // Part 1 instructs nothing.
         assert!(!part1.contains("Return "), "{part1}");
         assert!(
             part2.contains(
@@ -7853,10 +7091,8 @@ pub(crate) mod tests {
             crate::portfolio::action_return_shape(),
             "{\"action\":\"<sell-all|trim|hold|add|add-aggressively>\",\"rationale\":\"\"}"
         );
-        // The computed bands reach the rung with the move each implies, the
-        // analyst's expected price beside each horizon (ruled 2026-10-08): the
-        // stub authors its twelve-month base at 1.05× the computed base, so the
-        // two moves differ on the line.
+        // The stub authors its twelve-month base at 1.05× the computed base, so
+        // the two moves differ.
         let spot = d.financials.current_price.unwrap();
         let leg = |v: f64| format!("{v:.2} ({:+.1}%)", (v / spot - 1.0) * 100.0);
         let engine_12 = graded.price_targets.twelve_month.as_ref().unwrap();
@@ -7869,10 +7105,6 @@ pub(crate) mod tests {
             "{user}"
         );
         assert_ne!(leg(engine_12.base), leg(model_12));
-        // The analyst's read is the VERDICT section: its gloss carries the
-        // provenance, then the appendix's conviction and expected prices with
-        // the move each implies, a null as none, then the thesis document
-        // verbatim.
         assert!(
             user.contains(&format!(
                 "\nVERDICT\nAn analyst's read of the holding's data and research: the conviction, \
@@ -7890,10 +7122,6 @@ pub(crate) mod tests {
         assert_eq!(user.matches("- three-month: ").count(), 1, "{user}");
         assert_eq!(user.matches("- three-year: ").count(), 1, "{user}");
         assert!(user.contains("- three-year: bear ") && user.contains("extrapolation"), "{user}");
-        // GRADE carries the letter with its derivation glossed once; the
-        // sub-scores, their polarity gloss and the risk tier stay on the thesis
-        // message (ruled 2026-10-08). The set once as data with no permission
-        // sentence (3.9, ruled 2026-09-17), the rule named on the line.
         assert!(
             user.contains(&format!(
                 "\nGRADE\nA letter from A to F, derived from the computed quality, valuation and \
@@ -7913,9 +7141,8 @@ pub(crate) mod tests {
             )),
             "{user}"
         );
-        // No app concept, no whole-book vocabulary, no provenance suffix or
-        // two-reads preamble, and — on a debut — no continuity section or
-        // firmness clause.
+        // No app concept or whole-book vocabulary; on a debut, no continuity
+        // section or firmness clause.
         for absent in [
             "ENGINE SET", "ENGINE ARM", "MODEL ARM", "THE VERDICT", "ACTION BASIS", "IMPLIED ",
             "TARGET PROVENANCE", "engine arm", "model arm", "engine targets",
@@ -7966,9 +7193,8 @@ pub(crate) mod tests {
         };
 
         let exempt = render(&d);
-        // A rule-demoted prior renders as data with its gloss (ruled 2026-09-17,
-        // F4), carries no rationale — its rationale argued the rung the rule
-        // replaced (ruled 2026-10-08) — and anchors no firmness clause.
+        // A rule-demoted prior carries no rationale and anchors no firmness
+        // clause.
         assert!(
             exempt.contains("\nPRIOR ACTION\nhold, set by rule after the prior analysis, not chosen in it.\n\nSUPPORTED ACTIONS\n"),
             "{exempt}"
@@ -7977,12 +7203,9 @@ pub(crate) mod tests {
         assert!(!exempt.contains("chosen in the prior analysis."), "{exempt}");
         assert!(!exempt.contains("Move from PRIOR ACTION"), "{exempt}");
         assert!(!exempt.contains("rule-demoted"), "{exempt}");
-        // The COMPUTED heading runs to PRIOR ACTION on a continuity run.
         assert!(exempt.contains("under their labels, up to PRIOR ACTION; each"), "{exempt}");
-        // No tax row and no caveat under either profile, and the two renders
-        // are byte-identical, so the tax posture cannot reach the rung by any
-        // route; the position's economics render once, under POSITION alone
-        // (ruled 2026-10-08).
+        // The two renders are byte-identical, so the tax posture cannot reach
+        // the rung by any route.
         for token in ["tax", "Tax", "P/L"] {
             assert!(!exempt.contains(token), "{token} leaked: {exempt}");
         }
@@ -7993,7 +7216,6 @@ pub(crate) mod tests {
         d.profile.tax_sensitive = true;
         let taxable = render(&d);
         assert_eq!(exempt, taxable, "the tax posture must not change the packet");
-        // A repriced position changes POSITION's lines and nothing else.
         d.position.cost_basis *= 3.0;
         let repriced = render(&d);
         assert_ne!(exempt, repriced);
@@ -8020,9 +7242,7 @@ pub(crate) mod tests {
                 dossier: &d, subject: ActionSubject::Priced { graded: &low, engine: &engine, pre_profit: None },
                 engine_set: &[Action::Hold], profile: &d.profile,
             });
-            // CAPITAL EFFICIENCY as numbers (ruled 2026-09-17 off L19): the three
-            // tested returns and the hurdle, no state word, no reach sentence; an
-            // unscorable read says no assessment exists.
+            // CAPITAL EFFICIENCY as numbers: no state word, no reach sentence.
             assert_eq!(prompt.matches("Name the returns you weighed by their values").count(), 1);
             let h = &engine.hurdle;
             if state == crate::portfolio::HurdleState::Unscorable {
@@ -8047,10 +7267,7 @@ pub(crate) mod tests {
             ] {
                 assert!(!prompt.contains(absent), "`{absent}`: {prompt}");
             }
-            // The sunk-cost rule is one task clause on every priced packet,
-            // naming its sub-block under COMPUTED.
             assert_eq!(prompt.matches("Where even the bull case under CAPITAL EFFICIENCY misses the hurdle").count(), 1, "{prompt}");
-            // The low-confidence letter is a gloss on the GRADE line.
             assert!(
                 prompt.contains(&format!(
                     "\nGRADE\nA letter from A to F, derived from the computed quality, valuation and risk scores.\n{}; one of those scores is imputed, so the letter is low-confidence.\n",
@@ -8058,10 +7275,6 @@ pub(crate) mod tests {
                 )),
                 "{prompt}"
             );
-            // The continuity section: the prior action as chosen with its
-            // rationale, and the firmness clause in the task; the retired PRIOR
-            // ANALYSIS and CHANGES sections render nowhere — the thesis document
-            // carries the continuity read.
             assert!(
                 prompt.contains(&format!(
                     "\nPRIOR ACTION\n{}, chosen in the prior analysis.\nRationale: Stub action: the grade-mapped rung inside the engine set.\n",
@@ -8074,7 +7287,6 @@ pub(crate) mod tests {
             for absent in ["PRIOR ANALYSIS", "CHANGES SINCE", "Prior engine grade", "continuity baseline", "CompanyInformation", "THESIS (analyst)", "SCENARIOS (analyst)"] {
                 assert!(!prompt.contains(absent), "`{absent}`: {prompt}");
             }
-            // With no hurdle rate there is no assessment to render.
             let mut no_rate = engine.clone();
             no_rate.hurdle.hurdle_rate = None;
             let prompt = action_user_prompt(&ActionInput {
@@ -8110,12 +7322,10 @@ pub(crate) mod tests {
                 review: None,
             })
         };
-        // Absent legs stay silent — no empty scaffolding sections.
         let base = interp(&d, None);
         assert!(!base.contains("SHORT INTEREST"), "{base}");
         assert!(!base.contains("SAME-UNDERLYING OPTION OVERLAY"), "{base}");
         assert!(!base.contains("NARRATIVE VS REALITY"), "{base}");
-        // Present legs render with their evidence framing.
         d.short_interest = Some(crate::finra::ShortInterestRead {
             settlement_date: "2026-07-31".into(),
             current_short_interest: 5_000_000.0,
@@ -8168,8 +7378,6 @@ pub(crate) mod tests {
         assert!(!p.contains("binds the ENGINE arm"), "{p}");
         assert!(p.contains("- What the current price implies, at each scenario's multiple:"), "{p}");
         assert!(!p.contains("IMPLIED EXPECTATIONS"), "{p}");
-        // The action call sees the overlay too — it changes what the right
-        // action is (`docs/portfolio-analysis.md` §The per-holding pipeline).
         let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
             panic!("expected a priced verdict");
@@ -8192,201 +7400,9 @@ pub(crate) mod tests {
 
     #[test]
     fn prompt_version_is_stamped_for_the_model_arm_domain_gate() {
-        // Codex I5 changed the action call's evidence set (both arms' targets,
-        // both horizons) and Codex I6 made the model arm's declared domain a
-        // decode gate with its clauses in the prompt, so a pre-fix checkpoint
-        // cannot resume into rows the gate would reject: the stamp moved and
-        // stays pinned. Group 3 (Codex I8 / I10 / I12 renders and the I19
-        // period-word guard, ruled 2026-08-29) moved it again, and group 4
-        // (the Codex I11 target-boundary NOTE and the I13 equity-source line
-        // in the basis sentence, beside the new evaluation-state stamp) again;
-        // Review 2 M11's constant-period revision semantics moved it to v25;
-        // M1's forward-assumption currency admission moved it to v26; the M4 /
-        // M5 / Q4 fund-classification contract moved it to v27; M14's
-        // industry-routed commodity context moved it to v28; M17 / M19 / M20's
-        // comparison-safe delta, action-provenance, and profile-tax contract
-        // moved it to v29; M24–M27's typed-channel validation and seed-lineage
-        // contract moved it to v30; the 2026-08-30 big-run Finding 2
-        // schema-carrying prompt-clarity touches (the ledger `quant` object and
-        // its prose-only anti-pattern with `technology_class` explained, the same
-        // anti-pattern on the distillation typed fields, and the what-changed
-        // row's named fields) move it to v31; the same run's Finding 3 action-call
-        // prompt clarity (the app-stamps-the-departure statement and the
-        // non-`fails` capital-efficiency neutrality clause, both prompts) moves it
-        // to v32; attempt 4's Finding 4 fix B — splitting the research gathering
-        // turn (tools, no grammar) from a fresh, tool-history-free synthesis call
-        // (grammar, no tools) — reworded both the gathering and synthesis prompts,
-        // moving it to v33 (so an interrupted pre-fix run cannot resume into the
-        // new synthesis contract); fix B's post-landing review reworded the
-        // synthesis brief again (drop empty-body pages, lead each source with its
-        // title, prepend a gathering-degradation note), changing the synthesis
-        // input and so a completed holding's analysis, moving it to v34. The
-        // final pre-debut sweep's aggregate gather-packet / tool-batch bounds and
-        // joint header-plus-body evidence selector fold into that same never-run
-        // v34 contract. Attempt 5 ran v34 (four holdings persist under it); its
-        // Finding-5 fix shows the synthesis prompt the findings object's shape,
-        // changing the synthesis input again, so it moves to v35.
-        // Attempt 6 ran v35 (six holdings persist under it); the ledger-authoring
-        // contract, the 6g agreement checks and the investment-only action packet
-        // change the prompts and the model-facing contract, so they move to v36.
-        // The §8.2 live read of v36 (never run at book scale) raised the
-        // validator follow-up — no-level, the cadence exemption, the lexicon
-        // narrowing, the margin caps, the contract's threshold sentence and the
-        // capital-efficiency wording — changing the prompts and what 6g keeps,
-        // so it moves to v37.
-        // The §3 interpretation slice renames the target rationale with its
-        // meaning, strips account economics from every packet, scopes the
-        // schema per call and rewords two contract lines, changing the prompts,
-        // the grammar and a persisted field, so it moves to v38 (and the
-        // checkpoint trail to v10).
-        // The residue slice (3.5–3.9) moved it to v39; the interpretation
-        // rewrite — one message in two parts, no app narration, the caps unshown
-        // — changes the interpretation prompts and their contract, so it moves
-        // to v40. The checkpoint trail is unchanged. The action rewrite moved it
-        // to v41 and the role/risk rewrite to v42, the trail still unchanged;
-        // the research rewrite to v43. The distillation rewrite moves it to v44
-        // and the trail to v11 (the audit's persisted typed shapes change).
-        // The rendered-ledger slice (2026-09-18) authors a quantitative condition
-        // as fields plus a name and renders its statement from the core, refusing
-        // a core that already holds at authoring: the prompt, the persisted
-        // condition (`label`) and the trail move to v45 / v12.
-        // Attempt-8 Slice A (2026-09-27) moves the synthesis task, its shape's
-        // value placeholder and the SUPPORTED ACTIONS line to v49; the retry
-        // cause grew as a string, so the trail stays at v15.
-        // The prompt read-through (2026-09-28) moves the gathering brief's
-        // tool-results legend onto the tool descriptions, states the tier scale's
-        // range, conditions item 1 on a shown page, folds the news leads into
-        // its fetch clause, names the two tools in the gathering system message
-        // and moves the fallible-source clause onto the weighing sentence, the
-        // header's subject field reading `trusted on`: v50, the trail unchanged.
-        // File 02 of the read-through (2026-09-28) splits the follow-up pass's
-        // opening into two sentences, names the FOLLOW-UP question in its items,
-        // shortens the claim provenance label to `published` and glosses it,
-        // and adds the last-reply line to the countdown: v51, the trail unchanged.
-        // File 03 (2026-09-29) names the value `source tier` on every model-facing
-        // surface, states the weighing preference by the scales' endpoints and
-        // moves the subject-tier relation onto the task: v52, the trail unchanged.
-        // The same file then drops that sentence from both calls, the header's
-        // fields carrying the relation: v53, the trail unchanged.
-        // Then PRIOR FINDINGS takes the CLAIMS SO FAR shape and gloss, the
-        // fact-period gloss aligns across surfaces and the continuity clause
-        // names its headings: v54, the trail unchanged.
-        // File 04 (2026-09-29) gives the disconfirming pass a two-sentence
-        // opening naming TOPIC and CLAIMS SO FAR, singular items and the
-        // provenance gloss: v55, the trail unchanged.
-        // File 05 (2026-09-29) points the reused-pages gloss at web_fetch's
-        // header: v56, the trail unchanged.
-        // File 06 (2026-09-29) drops the filler words from the agenda's topic
-        // questions: v57, the trail unchanged.
-        // File 07 (2026-09-29) gives the failed tool results fixed sentences by
-        // class and makes the empty search an empty answer: v58, the trail
-        // unchanged.
-        // File 08 (2026-09-29) restates the synthesis EVIDENCE gloss in the
-        // fetch description's shape, naming TOPIC, the fallible-source clause
-        // on the weighing sentence, drops the SEARCHING note from the
-        // synthesis brief and restates the task's items as plain sentences:
-        // v59, the trail unchanged.
-        // File 09 (2026-09-29) points the follow-up pass at its headings as
-        // "the question under FOLLOW-UP", "the questions under TOPIC" and "the
-        // claims under CLAIMS SO FAR", in the synthesis subject and the
-        // gathering opening and items, and asks a topic's last pass under the
-        // depth cap for no follow-up proposal: v60, the trail unchanged.
-        // File 10 (2026-09-29) glosses the disconfirming synthesis's CLAIMS SO
-        // FAR fields and names its one question in the EVIDENCE gloss: v61,
-        // the trail unchanged.
-        // File 11 (2026-09-29) puts the output names — the object's keys — before
-        // the two-part frame on every object-returning call's system message,
-        // the frame then saying Part 2 defines those outputs; the distillation
-        // TOPICS gloss names its claim-line fields, the task opens in the
-        // synthesis's words, "one statement per claim", and the claim rules
-        // get the CLAIM RULES heading: v62, the trail unchanged.
-        // Item 1 of file 11 (2026-09-29) gives every distillation claim line a
-        // pass-local id the reply cites as evidence_id, an enum of the shown
-        // ids, in place of the copied reference and address: v63, the trail
-        // unchanged (the persisted claim carries no reference).
-        // The last sweep of file 11 (2026-09-30) names the topic heading's key
-        // in the TOPICS gloss and points item 2 at it, splits the claims item
-        // into one sentence per rule, states a claim line's fields as one
-        // semicolon list in the CLAIMS SO FAR, PRIOR FINDINGS and TOPICS
-        // glosses, adds the serial comma to the distillation's other lists,
-        // and shows a nullable number's both halves in the shape ("<0|null>"):
-        // v64, the trail unchanged.
-        // File 12 (2026-09-30) names the current analysis's side "the searches"
-        // and "in this analysis" (no "this time"), says the leading indicator
-        // "confirms" a driver as the field does and asks for its id alone,
-        // binds the one-claim rule to the searched topics where one rides
-        // dormant, glosses confidence's referent, states coverage's
-        // denominator, and drops item 1's prior-findings clause: v65, the
-        // trail at v16 (the persisted indicator loses the model-authored name).
-        // File 14 (2026-09-30) opens the TOPICS gloss on one topic and closes
-        // CLAIM RULES on the call's own outputs on the tier-1, pass-level and
-        // tree-level calls: v66, the trail unchanged.
-        // File 15 (2026-09-30) says the pass-level call shows one of the
-        // topic's searches and makes its summary item reconcile, pointing at
-        // CLAIM RULES: v67, the trail unchanged.
-        // The engine arm at three horizons (2026-10-07) prints the three bands
-        // and the engine's own rung in place of the stand-in: v68, the trail
-        // to checkpoint-v17.
-        // Its task 2 (2026-10-07) drops the overlay's guidance-attainment line
-        // — the execution leg has no producer — and persists the soft forensic
-        // flags on the audit: v69, the trail to checkpoint-v18.
-        // Its task 3 (2026-10-07) sweeps the quick check on the two engine
-        // monitors alone — the ledger-condition evaluation and the news-seed
-        // leg gone; no prompt renders the sweep, so v69 stands, the trail to
-        // checkpoint-v19 (the pinned tail sweep loses its condition states).
-        // The holding verdict, task 1 (2026-10-07): the model arm becomes the
-        // thesis document and its typed appendix — the interpretation grammar,
-        // the ledger, the what-changed rows and the self-assessment gone; the
-        // action packet reads VERDICT — v70, the trail to checkpoint-v20 (the
-        // verdict record's shape).
-        // Its task 2 (2026-10-08) gives the action packet the docs' shape —
-        // POSITION, VERDICT, one COMPUTED heading with the grade alone and the
-        // analyst's price beside each band, PRIOR ACTION with its rationale
-        // less the caveat, the suffixes and the two-reads preamble gone: v71,
-        // the trail unchanged (no persisted shape moves).
-        // The research chain, task 1 (2026-10-08): the loop writes prose —
-        // the synthesis returns the write-up under no grammar and its second
-        // message the follow-up question or `none`; the brief leads with the
-        // holding-constant block (FETCHED VALUES, NEWS LEADS, PRIOR THESIS);
-        // the claims layer, PRIOR FINDINGS, CLAIMS SO FAR and the distillation
-        // grammar with its typed channels gone — v72, the trail to
-        // checkpoint-v21 (the audit's research record: the write-ups and the
-        // typed roster).
-        // Its task 2 (2026-10-08): consolidation — the analysis call writes
-        // the holding's analysis over the write-ups (thinking, no grammar),
-        // a distillation first (non-thinking, no grammar) only where that
-        // prompt is over budget, in the merged or the per-write-up shape; the
-        // brief carries PRIOR ANALYSIS before PRIOR THESIS; ANALYSIS is the
-        // analysis — v73, the trail to checkpoint-v22 (the audit's analysis
-        // and the record's distillation shape with its call count).
-        // Its task 3 (2026-10-08): the endpoint table's remaining pulls —
-        // FETCHED VALUES carries the full Step 6c block (the issuer line,
-        // the last four dividends, the served 52-week range, the 8-K list,
-        // the short-interest print, the street, the insiders, the surprises,
-        // the ratio lines, owner earnings, enterprise value, the float, the
-        // M&A match, the segments; a fund's full weightings) and the split
-        // line names the split — v74, the trail to checkpoint-v23 (the M&A
-        // feed pinned on the header); data health's count of the walk's gap
-        // moves the archive to format 19.
-        // The self-review (2026-10-09): the review call over PRIOR POSITION,
-        // PRIOR THESIS, ANALYSIS and REALIZED with the accuracy record, and
-        // REVIEW on both thesis-document messages — v75, the trail to
-        // checkpoint-v24 (the audit's review and read-through mark, the fund
-        // basis's NAV) and the archive to format 21.
-        // The removal sweep (2026-10-09): no prompt moves; the verdict's basis
-        // read and the overlay's dropped observation history set the trail's
-        // final Portfolio shape at checkpoint-v25 and the archive's at format
-        // 22, which refuses every earlier pre-release format.
-        // The M&A line (2026-10-12): FETCHED VALUES names the feed as SEC merger
-        // registration filings and each match's date as its filing date — v76;
-        // the trail and the archive stay.
-        // The factor machinery's task 2 (2026-10-13): a stock's SCORES lists the
-        // factors each score is the mean of, and the review names the factor
-        // rebuild and the redrawn cutoffs — v77; the audit's composite and the
-        // verdict's grade basis move the trail to checkpoint-v26 and the archive
-        // to format 23.
-        // The factor machinery's task 4 (2026-10-14): no prompt or trail moves;
-        // the shared factor-distribution store joins the archive at format 24.
+        // Each stamp moves with every change to its prompts or persisted
+        // shapes, so an interrupted pre-change run cannot resume into the new
+        // contract; the pins here move with each bump.
         assert_eq!(PROMPT_VERSION, "portfolio-v77");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
@@ -8397,11 +7413,6 @@ pub(crate) mod tests {
 
     #[test]
     fn the_narrative_render_names_an_overflowed_ratio_and_never_prints_inf() {
-        // Codex I16, round 2 (`portfolio-v21`): a hype read with no persisted
-        // ratio is either a non-positive reality leg or a positive one the
-        // expansion outran beyond any finite multiple — the prompt must say
-        // which — and a finite leg whose ×100 overflows renders as the decimal
-        // ratio, never `inf%`.
         let read = |expansion: f64, reality: f64, ratio: Option<f64>| engine::NarrativeRead {
             form: engine::NarrativeForm::RevisionBased,
             expansion,
@@ -8426,10 +7437,6 @@ pub(crate) mod tests {
 
     #[test]
     fn action_prompt_names_a_chosen_prior_action_and_the_firmness_clause() {
-        // A model-chosen prior renders as PRIOR ACTION and the task's firmness
-        // clause refers to it (ruled 2026-09-17, F4). The retired whole-book-era
-        // history label went with the pre-v9 legacy (fresh-start ruling
-        // 2026-08-17).
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let (prior, _) =
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
@@ -8459,9 +7466,7 @@ pub(crate) mod tests {
             user.contains(&format!("\nPRIOR ACTION\n{}, chosen in the prior analysis.\n", prior_action.as_kebab())),
             "{user}"
         );
-        // The prior rationale rides the line less the app's caveat sentence
-        // (ruled 2026-10-08): the profile is tax-aware and the position carries
-        // a gain, so a prior exit rung persisted with the caveat appended.
+        // The prior rationale renders less the app's caveat.
         let prior_rationale = crate::portfolio::carried_rationale(d.prior_verdict.as_ref().unwrap()).unwrap();
         assert_eq!(investment_sentence(prior_rationale), "Stub action: the grade-mapped rung inside the engine set.");
         assert!(
@@ -8480,9 +7485,6 @@ pub(crate) mod tests {
 
     #[test]
     fn action_call_outside_engine_set_records_an_audit_annotation() {
-        // A rogue stub choosing outside the engine set: the choice persists as
-        // authored; the departure is app-stamped on the audit (annotate, never
-        // bar — the two-arm contract).
         struct RogueActionStub;
         impl HoldingAnalyst for RogueActionStub {
             fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
@@ -8510,8 +7512,8 @@ pub(crate) mod tests {
                 "rogue-stub".to_string()
             }
         }
-        // A weak book: the C-ish fixture's engine set won't offer add-aggressively
-        // (A/B only), so the rogue choice lands outside it.
+        // The fixture's engine set should not offer add-aggressively, so the
+        // rogue choice lands outside it.
         let d = dossier(AssetClass::Stock, strong_financials());
         let (v, audit) =
             analyze_holding(&RogueActionStub, &d, &rates(), "2026-08-03").unwrap();
@@ -8560,15 +7562,11 @@ pub(crate) mod tests {
             anchored.contains("percentile of their spread to the 10-year Treasury over the last 40 quarterly observations"),
             "{anchored}"
         );
-        // The facts are one data clause under COMPUTED PRICE TARGETS, never a
-        // provenance heading (`portfolio-v40`).
+        // One data clause, never a provenance heading.
         assert!(!anchored.contains("TARGET PROVENANCE"), "{anchored}");
         assert!(!anchored.contains("spread-anchored on "), "{anchored}");
-        // Prompt-posture audit (F6 trim): the provenance TYPE renders as a fact,
-        // but the how-to-weigh narrative that spelled out how a `fails` interacts
-        // with target signal quality was cut — the model infers it from the
-        // provenance facts rendered beside it. Attempt 5 re-checks the regression
-        // risk the F6 lesson guarded against.
+        // The how-to-weigh narrative stays out; the model infers it from the
+        // provenance facts.
         assert!(!anchored.contains("Weigh the targets by this provenance"), "{anchored}");
         assert!(!anchored.contains("robust exit evidence"), "{anchored}");
         assert!(!anchored.contains("discount the band's width, not its level"), "{anchored}");
@@ -8591,14 +7589,12 @@ pub(crate) mod tests {
             review: None,
         });
         assert!(carried.contains("× the current P/E multiple (no anchor history"), "{carried}");
-        // The signal-quality FACT survives the trim — the carry branch still names
-        // it, so the model has the fact without the weighing narrative.
+        // The signal-quality fact survives without the weighing narrative.
         assert!(carried.contains("carry little forward signal"), "{carried}");
         assert!(carried.contains("- Notes: ") && carried.contains("the driver is held flat across scenarios"), "{carried}");
         assert!(!carried.contains("FLAT"), "{carried}");
         assert!(carried.contains("the band was widened to the volatility dispersion floor"), "{carried}");
 
-        // Neither anchored nor carried: the raw-percentile fallback branch.
         engine_output.target_meta.current_multiple_carry = false;
         let fallback = thesis_user_prompt(&ThesisInput {
             rates: rates_static(),
@@ -8642,9 +7638,7 @@ pub(crate) mod tests {
             narrative: None,
             review: None,
         });
-        // The priced message names the latest report for what it is — a
-        // market-level analysis, never by product name — as data with no scope
-        // narration (`portfolio-v40`); the outlook item draws on it by that name.
+        // Named for what it is, never by product name.
         assert!(
             user.contains("\nMARKET ANALYSIS\nA market-level analysis.\nThesis: risk-off.\n"),
             "{user}"
@@ -8653,7 +7647,6 @@ pub(crate) mod tests {
         for narration in ["MARKET SIGNAL", "HOUSE VIEW", "never by itself a reason to exit", "scope:"] {
             assert!(!user.contains(narration), "`{narration}` leaked: {user}");
         }
-        // Absent, the section is absent (the item's reference stays).
         let bare = dossier(AssetClass::Stock, strong_financials());
         let bare_user = thesis_user_prompt(&ThesisInput {
             rates: rates_static(),
@@ -8669,9 +7662,6 @@ pub(crate) mod tests {
         });
         assert!(!bare_user.contains("\nMARKET ANALYSIS\n"), "{bare_user}");
 
-        // The role/risk message renders the same section through the same
-        // renderer (`portfolio-v42`): no product name, no scope clause, and the
-        // role item draws on it by name.
         let readout = RoleRiskReadout {
             class_label: "equity fund below the US-exposure guard".into(),
             structural_kind: None,
@@ -8719,8 +7709,6 @@ pub(crate) mod tests {
             })
         };
 
-        // CLASS carries the label, the fund's reported asset class and the
-        // structure line where one applies (`portfolio-v42`, ruled 2026-09-17).
         let overlay = prompt_for(Some(FundStructuralKind::OptionOverlay));
         assert!(
             overlay.contains(
@@ -8747,10 +7735,8 @@ pub(crate) mod tests {
 
     #[test]
     fn the_price_vs_nav_line_renders_only_on_the_closed_end_form() {
-        // The CEF read (ruled 2026-08-21): prompt evidence + card only, rendered
-        // where the vehicle makes it meaningful — a present premium on a CEF
-        // renders, an absent one stays a named gap, a non-CEF never renders even
-        // with a computed premium (an open-end ETF's transient spread).
+        // A non-CEF never renders even with a computed premium (an open-end
+        // ETF's transient spread).
         let d = fund_dossier(us_equity_fund());
         let readout = |is_cef: bool, nav_premium: Option<f64>| RoleRiskReadout {
             class_label: "closed-end fund".into(),
@@ -8774,7 +7760,6 @@ pub(crate) mod tests {
         };
         let discount = prompt(&readout(true, Some(-0.072)));
         assert!(discount.contains("PRICE VS NAV: -7.2% (discount)"), "{discount}");
-        // A unit gloss only, on every packet (`portfolio-v42`).
         assert!(
             discount.contains(
                 "\nPRICE VS NAV: -7.2% (discount): the closed-end fund's market price against its \
@@ -8787,15 +7772,13 @@ pub(crate) mod tests {
         }
         let premium = prompt(&readout(true, Some(0.031)));
         assert!(premium.contains("PRICE VS NAV: +3.1% (premium)"), "{premium}");
-        // Boundary: a value that renders as 0.0% reads "at par" — never a
-        // signed-zero "+0.0% premium" or "-0.0% discount" (Codex round 3).
         let par = prompt(&readout(true, Some(0.0)));
         assert!(par.contains("PRICE VS NAV: 0.0% (at par)"), "{par}");
         let tiny = prompt(&readout(true, Some(-0.0004)));
         assert!(tiny.contains("PRICE VS NAV: 0.0% (at par)"), "{tiny}");
-        // The exact negative half rounds away from zero (f64::round) — the Vue
-        // helper mirrors this deliberately, since bare Math.round would take
-        // -0.05% to "at par" instead (Codex round 4).
+        // The exact negative half rounds away from zero (f64::round); the Vue
+        // helper mirrors this deliberately, since bare Math.round would read
+        // -0.05% as at par.
         let half = prompt(&readout(true, Some(-0.0005)));
         assert!(half.contains("PRICE VS NAV: -0.1% (discount)"), "{half}");
         let gap = prompt(&readout(true, None));
@@ -8804,7 +7787,6 @@ pub(crate) mod tests {
         let open_end = prompt(&readout(false, Some(0.002)));
         assert!(!open_end.contains("PRICE VS NAV:"), "{open_end}");
 
-        // The action prompt's role-risk arm holds the same gate.
         let mut rr = crate::portfolio::RoleRiskVerdict {
             class_label: "closed-end fund".into(),
             thesis_document: "Role: an income sleeve.".into(),
@@ -8825,16 +7807,11 @@ pub(crate) mod tests {
             profile: &d.profile,
         });
         assert!(action.contains("\nPRICE VS NAV: -7.2% (discount)"), "{action}");
-        // The role/risk message on the same two-part frame (`portfolio-v41`):
-        // its own sections, the reduced set as one data line, no capital
-        // efficiency or targets, and its own weighing clause.
         assert!(action.contains("\nCLASS\nclosed-end fund\n"), "{action}");
         assert!(
             action.contains("\nVERDICT\nAn analyst's read of the holding's data and research: the thesis document.\nThesis document:\nRole: an income sleeve.\n"),
             "{action}"
         );
-        // POSITION renders on this branch too, and no COMPUTED heading does —
-        // the branch's sections stay top-level (ruled 2026-10-08).
         assert_eq!(action.matches("\nPOSITION\n").count(), 1, "{action}");
         assert!(!action.contains("\nCOMPUTED\n"), "{action}");
         assert!(
@@ -8868,10 +7845,8 @@ pub(crate) mod tests {
 
     #[test]
     fn the_priced_fund_prompt_renders_the_closed_end_arm() {
-        // The priced branch's FUND CONTEXT arm — structurally unreachable for a
-        // real CEF today (pricing needs weightings the surface never serves one),
-        // but shipped code: open-end never renders, a closed-end premium renders
-        // the shared line, an absent NAV renders the explicit gap line.
+        // Structurally unreachable for a real CEF (pricing needs weightings the
+        // surface never serves one), but shipped code.
         let mut d = fund_dossier(us_equity_fund());
         let mut engine_output = match engine::analyze(&strong_financials(), &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
@@ -8908,15 +7883,10 @@ pub(crate) mod tests {
 
     #[test]
     fn iv_skew_renders_signed_and_keys_the_sign_on_the_rendered_value() {
-        // `opt()` printed the skew bare — no `+`, no convention — while
-        // put-minus-call lived only in a doc comment, so a model assuming the
-        // inverse read hedging demand as call speculation (large-scale review
-        // 2026-08-24, P1 minor).
         assert_eq!(fmt_iv_skew(Some(0.03)), "+0.030");
         assert_eq!(fmt_iv_skew(Some(-0.02)), "-0.020");
         assert_eq!(fmt_iv_skew(Some(0.0)), "0.000");
-        // A skew that rounds away carries no sign — `+0.000` would assert a
-        // put premium the rendered number no longer shows.
+        // A skew that rounds away carries no sign.
         assert_eq!(fmt_iv_skew(Some(0.0004)), "0.000");
         assert_eq!(fmt_iv_skew(Some(-0.0004)), "0.000");
         assert_eq!(fmt_iv_skew(Some(0.0005)), "+0.001");
@@ -8926,9 +7896,6 @@ pub(crate) mod tests {
 
     #[test]
     fn iv_skew_convention_rides_the_options_line_on_value_negative_and_gap() {
-        // The convention is the line's label, not the value's: it renders
-        // beside a positive, a negative, and a `(gap)` alike, so the line keeps
-        // one shape across holdings.
         let engine_output = match engine::analyze(&strong_financials(), &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
@@ -8960,8 +7927,7 @@ pub(crate) mod tests {
             )),
             "{positive}"
         );
-        // The unit and polarity stay; the trading gloss and the grade-input
-        // disclaimer are gone (`portfolio-v40`).
+        // No trading gloss or grade-input disclaimer.
         for narration in ["hedging demand", "call speculation", "NOT a grade input", "chain-wide"] {
             assert!(!positive.contains(narration), "`{narration}` leaked: {positive}");
         }
@@ -8983,30 +7949,22 @@ pub(crate) mod tests {
 
     #[test]
     fn expense_ratio_renders_the_fraction_and_its_percent_reading() {
-        // A 0.03% fund flattened to `0.000` under `opt()`'s three places — read
-        // as free against the legend's own arithmetic — and the legend's example
-        // 0.0075 was unrepresentable (large-scale review 2026-08-24, P1 minor).
         assert_eq!(fmt_expense_ratio(Some(0.0003)), "0.0003 (0.03%/yr)");
         assert_eq!(fmt_expense_ratio(Some(0.0075)), "0.0075 (0.75%/yr)");
         assert_eq!(fmt_expense_ratio(Some(0.0125)), "0.0125 (1.25%/yr)");
-        // The seam's actual arithmetic (`etf/info` serves percent; the adapter
-        // divides by 100) is not exactly 0.0003 in f64 — fixed precision, never
-        // shortest-round-trip display.
+        // The adapter's percent / 100 is not exactly 0.0003 in f64: fixed
+        // precision, never shortest-round-trip display.
         assert_eq!(fmt_expense_ratio(Some(0.03 / 100.0)), "0.0003 (0.03%/yr)");
         // A fee-waived fund is genuinely zero.
         assert_eq!(fmt_expense_ratio(Some(0.0)), "0.0000 (0.00%/yr)");
-        // A nonzero ratio below half a basis point extends its precision rather
-        // than printing as free.
+        // A nonzero ratio below half a basis point extends its precision.
         assert_eq!(fmt_expense_ratio(Some(0.00004)), "0.00004 (0.004%/yr)");
         assert_eq!(fmt_expense_ratio(None), "(gap)");
     }
 
     #[test]
     fn the_priced_fund_prompt_renders_guards_us_share_and_twelve_month_methodology() {
-        // Codex I8: the FUND CONTEXT line reads `fund::us_share` — every US
-        // alias summed and capped, the ≥ 70% guard's own read — where it had
-        // taken the first label containing "united states", so a `US` row
-        // passed the guard at 97% while the prompt said `(gap)`.
+        // US share sums every US alias and caps, as the ≥ 70% guard reads it.
         let prompt_for = |weights: Vec<(String, f64)>| {
             let mut fund = us_equity_fund();
             fund.country_weights = weights;
@@ -9044,14 +8002,9 @@ pub(crate) mod tests {
         assert!(capped.contains("US share of holdings: 100%."), "{capped}");
         let gap = prompt_for(vec![]);
         assert!(gap.contains("US share of holdings: (gap)."), "{gap}");
-        // Each band carries its method clause — the three-month its proration,
-        // the twelve-month its drivers, the three-year its extrapolation — so
-        // each is weighed as what it is.
         assert!(us.contains("\nPRICE BANDS (USD)\n- three-month: bear "), "{us}");
         let twelve = us.find("- twelve-month: bear ").unwrap_or_else(|| panic!("{us}"));
         let line = us[twelve..].lines().next().unwrap();
-        // The method is a plain clause from the typed target inputs, never the
-        // engine's methodology string with its mechanics and stamp (`portfolio-v40`).
         assert!(line.contains(". Method: ") && line.contains(" × ") && line.contains("percentile"), "{line}");
         let three_month = us.find("- three-month: bear ").unwrap_or_else(|| panic!("{us}"));
         let line = us[three_month..].lines().next().unwrap();
@@ -9068,9 +8021,7 @@ pub(crate) mod tests {
 
     #[test]
     fn expense_ratio_renders_both_readings_on_every_fund_prompt() {
-        // All three fund prompts route through the one formatter: the role-risk
-        // prompt, the priced branch's FUND CONTEXT arm, and the action prompt's
-        // role-risk arm (`expense_drag`). The fixture fund carries 0.0003.
+        // The fixture fund carries 0.0003.
         let d = fund_dossier(us_equity_fund());
         let readout = RoleRiskReadout {
             class_label: "bond fund".into(),
@@ -9085,8 +8036,6 @@ pub(crate) mod tests {
             analysis: analysis_record("No research findings."),
             review: None,
         });
-        // The role/risk message renders the ratio once, as the fund's reported
-        // line under FETCHED VALUES; the computed lines never restate it.
         assert!(
             role.contains("\nFund: asset class Equity; expense ratio 0.0003 (0.03%/yr); "),
             "{role}"
@@ -9159,9 +8108,6 @@ pub(crate) mod tests {
 
     #[test]
     fn cot_positioning_renders_as_of_in_the_fund_prompts() {
-        // A commodity / macro fund's mapped COT row renders as dated positioning
-        // context in the role-risk prompt (where commodity funds land); an
-        // unmapped fund renders no section.
         let mut d = fund_dossier(us_equity_fund());
         if let Some(f) = d.fund.as_mut() {
             f.positioning = Some(crate::data_sources::CotPositioning {
@@ -9192,11 +8138,10 @@ pub(crate) mod tests {
         const SECTION: &str = "\nUNDERLYING POSITIONING (CFTC weekly, as of 2026-08-11)\nGold — \
                                speculator net +200000 contracts (50.0% of OI long), w/w +4000\n";
         assert!(role.contains(SECTION), "{role}");
-        // Dated data only — no layer or score-input narration (`portfolio-v40`).
+        // No layer or score-input narration.
         for narration in ["snapshot", "never a score input", "layer (c)"] {
             assert!(!role.contains(narration), "`{narration}` leaked: {role}");
         }
-        // The priced fund message renders the same line under FUND.
         let engine_output = match engine::analyze(&strong_financials(), &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
@@ -9233,15 +8178,6 @@ pub(crate) mod tests {
 
     #[test]
     fn stage_requests_carry_the_per_stage_mode_options_and_residency() {
-        // The options-wiring contract (`docs/local-model-operations.md`): distill is
-        // explicitly non-thinking (F3 — an omitted flag rides the thinking-on
-        // default) and grammar-constrained since the research slice retired the
-        // stub-era free-prose exception; interpretation thinks; the research
-        // gathering turn thinks with tools and no grammar, while the separate
-        // synthesis call thinks with the findings grammar and no tools (fix B —
-        // never both on one call); every stage pins an explicit `num_ctx` (never
-        // the daemon auto-size), its mode's sampling row, and stay-resident
-        // `keep_alive`.
         let d = dossier(AssetClass::Stock, strong_financials());
 
         let distill = distill_request(
@@ -9258,8 +8194,7 @@ pub(crate) mod tests {
         assert_eq!(opts["temperature"], 0.7, "non-thinking-general row");
         assert!(distill.format_schema.is_none(), "a distillation returns prose under no grammar (docs §Step 6d)");
 
-        // Fix B: gathering and synthesis are separate calls — tools and the
-        // findings grammar never ride one request.
+        // Tools and a grammar never ride one request.
         let tools = crate::portfolio::research::research_tools();
         let gather = research_turn_request(
             "reasoner-model",
@@ -9278,8 +8213,6 @@ pub(crate) mod tests {
         assert_eq!(opts["num_ctx"], NUM_CTX_INTERPRET, "one num_ctx per model");
         assert_eq!(opts["temperature"], 1.0, "thinking-general row");
 
-        // The synthesis conversation carries neither tools nor a grammar: the
-        // write-up and the follow-up reply are prose.
         let synth = research_turn_request(
             "reasoner-model",
             vec![ChatMessage::user("evidence")],
@@ -9322,8 +8255,6 @@ pub(crate) mod tests {
         assert_eq!(opts["num_predict"], NUM_PREDICT_THINKING, "output reservation");
         assert_eq!(opts["temperature"], 1.0, "thinking-general row");
         assert!(interpret.format_schema.is_none(), "the document is free prose");
-        // The appendix: the same conversation continued, thinking off under
-        // the nullable grammar, the non-thinking row at the shared context.
         let appendix = appendix_request("reasoner-model", &ThesisInput {
             rates: rates_static(),
             soft_forensic: None,
@@ -9427,11 +8358,9 @@ pub(crate) mod tests {
 
     #[test]
     fn distill_ceiling_sits_in_the_ruled_band_and_fits_beside_the_input_budget() {
-        // Attempt-8 Finding 3 (ruled 2026-09-27): the normal ceiling sits in
-        // the 12,288–16,384 band, and on either distill context the prompt
-        // budget the issue guard admits plus the reservation fits the window,
-        // so a ceiling-bound stop is a reservation hit, never context
-        // exhaustion in disguise; the expanded ceiling fits the reasoner's.
+        // The prompt budget the issue guard admits plus the reservation fits
+        // the window, so a ceiling-bound stop is a reservation hit, never
+        // context exhaustion in disguise.
         assert!((12_288..=16_384).contains(&NUM_PREDICT_DISTILL));
         let budget_tokens = |num_ctx: u32| {
             (distill::input_budget_chars(num_ctx) as f64 / distill::CHARS_PER_TOKEN) as u32
@@ -9442,9 +8371,6 @@ pub(crate) mod tests {
         assert!(budget_tokens(NUM_CTX_INTERPRET) + NUM_PREDICT_DISTILL_RETRY <= NUM_CTX_INTERPRET);
     }
 
-    /// The output-budget guard: a `done_reason: "length"` response fails typed —
-    /// naming the stage, the reservation, and the generated count — instead of
-    /// surfacing as an opaque schema parse failure downstream.
     #[test]
     fn a_length_stop_fails_the_stage_with_a_typed_truncation_error() {
         let mut req = ChatRequest::new("m", vec![ChatMessage::user("x")]);
@@ -9463,9 +8389,8 @@ pub(crate) mod tests {
         assert!(msg.contains("truncated at the output reservation"), "{msg}");
         assert!(msg.contains("65536"), "{msg}");
 
-        // A length stop well UNDER the reservation is the other cause — the
-        // shared context filled first — and must not be blamed on the
-        // reservation (the two have different levers).
+        // A stop well under the reservation is the context filling first, a
+        // different lever.
         let context_stopped = crate::local_model::ChatResponse {
             content: "{\"partial\":".into(),
             thinking: None,
@@ -9479,8 +8404,8 @@ pub(crate) mod tests {
         assert!(msg.contains("context exhaustion suspected"), "{msg}");
         assert!(!msg.contains("truncated at the output reservation"), "{msg}");
 
-        // A daemon that omits `eval_count` leaves the stop unattributable: the
-        // error must fail typed without naming either lever on a guess.
+        // Without `eval_count` the stop is unattributable; neither lever is
+        // named on a guess.
         let uncounted = crate::local_model::ChatResponse {
             content: "{\"partial\":".into(),
             thinking: None,
@@ -9556,22 +8481,15 @@ pub(crate) mod tests {
 
     #[test]
     fn blank_fast_tier_never_bounces_the_reasoner_context() {
-        // The same-model context rule: an Ollama `num_ctx` change reloads the
-        // resident runner even under `keep_alive: -1`, so when distillation and
-        // interpretation share one model the distill call must ride the
-        // interpretation context — alternating 32 K / 128 K would bounce the 81 GB
-        // load at every stage transition (external review finding, 2026-08-01).
         assert_eq!(
             distill_num_ctx("qwen3.5:122b", "qwen3.5:122b"),
             NUM_CTX_INTERPRET
         );
-        // A genuinely distinct fast model keeps the smaller distill context.
         assert_eq!(
             distill_num_ctx("qwen3.5:35b", "qwen3.5:122b"),
             NUM_CTX_DISTILL
         );
-        // The documented default roster (blank fast tier) resolves to the same-model
-        // path at construction, so the rule engages for the default configuration.
+        // A blank fast tier resolves to the same-model path at construction.
         let analyst = LocalAnalyst::new(
             LocalModelClient::new("http://localhost:11434").unwrap(),
             "qwen3.5:122b".into(),
@@ -9586,11 +8504,6 @@ pub(crate) mod tests {
 
     #[test]
     fn the_analysis_request_is_a_thinking_prose_call_on_the_reasoner() {
-        // Step 6d's analysis call: the resident reasoner at the interpretation
-        // context, thinking on, no tools, no grammar, resident — the thesis
-        // call's wiring over the analysis prompt — under the `analysis {SYM}`
-        // stage; the distillation request keeps the seam's non-thinking,
-        // grammar-free wiring; the offline stub renders both deterministically.
         let brief = HoldingBrief {
             header: "HOLDING\nAAPL (Apple).\nPrice: $195.00 per share.\nDate: 2026-08-03.\n".into(),
             fetched_values: "\nFETCHED VALUES\nQuote: 195.00.\n".into(),
@@ -9658,24 +8571,16 @@ pub(crate) mod tests {
 
     #[test]
     fn distill_calls_are_sized_at_issue_and_route_up_before_they_refuse() {
-        // The issue guard (the 2026-08-24 review's reduce-prompt minor, ruled
-        // 2026-08-28): the rendered prompt is measured against its model's
-        // input budget before any request exists, closing the daemon's silent
-        // front-truncation off from 6d as far as a chars-per-token estimate
-        // can close it.
         let fast_budget = distill::input_budget_chars(NUM_CTX_DISTILL);
         let wide_budget = distill::input_budget_chars(NUM_CTX_INTERPRET);
         assert!(fast_budget < wide_budget);
         let route = |chars: usize, fast: &'static str, reasoner: &'static str| {
             distill_route("distill X reduce", chars, fast, reasoner)
         };
-        // Within the fast tier's budget: the fast model at the distill context.
         assert_eq!(
             route(fast_budget, "qwen3.5:35b", "qwen3.5:122b").unwrap(),
             ("qwen3.5:35b", NUM_CTX_DISTILL)
         );
-        // One char over it: the resident reasoner at the interpretation context
-        // — a model choice, never a num_ctx change.
         assert_eq!(
             route(fast_budget + 1, "qwen3.5:35b", "qwen3.5:122b").unwrap(),
             ("qwen3.5:122b", NUM_CTX_INTERPRET)
@@ -9684,20 +8589,16 @@ pub(crate) mod tests {
             route(wide_budget, "qwen3.5:35b", "qwen3.5:122b").unwrap(),
             ("qwen3.5:122b", NUM_CTX_INTERPRET)
         );
-        // Over the widest budget: refused before issue, naming the stage and
-        // the sizes.
         let err = route(wide_budget + 1, "qwen3.5:35b", "qwen3.5:122b").unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("distill X reduce"), "{msg}");
         assert!(msg.contains(&format!("{} chars", wide_budget + 1)), "{msg}");
         assert!(msg.contains(&format!("{wide_budget} chars")), "{msg}");
         assert!(msg.contains("refused before issue"), "{msg}");
-        // Unclassified: the whitelist gate never re-issues a deterministic
+        // Unclassified, so the retry gate never re-issues a deterministic
         // outcome.
         assert_eq!(crate::local_model::retry_class(&err), None);
-        // The default roster collapses the two rungs into one budget: within
-        // it the reasoner at the interpretation context, over it the same
-        // refusal.
+        // On the default roster the two rungs are one budget.
         assert_eq!(
             route(wide_budget, "qwen3.5:122b", "qwen3.5:122b").unwrap(),
             ("qwen3.5:122b", NUM_CTX_INTERPRET)
@@ -9707,9 +8608,7 @@ pub(crate) mod tests {
 
     #[test]
     fn an_over_budget_distillation_prompt_never_reaches_the_daemon() {
-        // The refusal happens before a request exists: a listener standing in
-        // for the daemon accepts nothing, and the failure names the refusal —
-        // the run fails legibly instead of the daemon front-truncating.
+        // A listener stands in for the daemon and must accept nothing.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -9718,7 +8617,6 @@ pub(crate) mod tests {
             "qwen3.5:122b".into(),
             "qwen3.5:35b".into(),
         );
-        // One rendered prompt that outgrows even the reasoner's budget.
         let over = distill::input_budget_chars(NUM_CTX_INTERPRET) + 1;
         let prompt = distill::DistillPrompt { system: "s".into(), user: "x".repeat(over) };
         let err = distill_prose_call(&analyst, "distill TEST", &prompt, &std::cell::Cell::new(false))
@@ -9726,15 +8624,12 @@ pub(crate) mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("refused before issue"), "{msg}");
         assert!(msg.contains("distill TEST"), "{msg}");
-        // Nothing connected: the refusal preceded any request.
         assert!(
             matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
             "the daemon stand-in must have accepted nothing"
         );
     }
 
-    /// One merged-shape distillation input over a one-line header, for the
-    /// daemon stand-in tests below.
     fn stand_in_distill_input(write_ups: &[distill::WriteUp]) -> distill::DistillInput<'_> {
         distill::DistillInput {
             header: "HOLDING\nAAPL (Apple).\nPrice: $195.00 per share.\nDate: 2026-08-03.\n",
@@ -9755,11 +8650,6 @@ pub(crate) mod tests {
     #[test]
     fn a_transient_distillation_failure_re_issues_once_and_a_second_fails_hard() {
         use crate::test_http::{Canned, MockHttp};
-        // The retry-once gate on the live distillation call
-        // (`docs/local-models.md §The local-model adapter seam`): a daemon
-        // error status on the first attempt re-issues the identical request
-        // exactly once and records the retry; a second failure fails hard,
-        // annotated with the first attempt's class, with no third request.
         let write_ups = [distill::WriteUp { key: "k".into(), title: "T".into(), text: "t".into() }];
         let input = stand_in_distill_input(&write_ups);
         let recovered = MockHttp::serve(vec![
@@ -9797,10 +8687,6 @@ pub(crate) mod tests {
     #[test]
     fn an_expanded_distillation_attempt_is_final_for_the_stage() {
         use crate::test_http::{Canned, MockHttp};
-        // A stop at exactly the normal reservation spends the one expanded
-        // re-attempt; when that attempt then fails on a transient class, the
-        // gate refuses a third request — the expanded attempt is final for
-        // the stage, and no transport retry fires past it.
         let write_ups = [distill::WriteUp { key: "k".into(), title: "T".into(), text: "t".into() }];
         let input = stand_in_distill_input(&write_ups);
         let length_stop: &'static str = Box::leak(
@@ -9832,16 +8718,11 @@ pub(crate) mod tests {
 
     #[test]
     fn blank_fast_tier_falls_back_to_the_reasoner() {
-        // The fast tier is optional and never gates (`docs/configuration.md`), so a
-        // blank slot must not reach the daemon as an empty model id — distillation
-        // runs on the reasoner instead, so the id the audit records for the distill
-        // call is the reasoner's (`analyze_holding` dedups the two into one entry).
         let client = LocalModelClient::new("http://127.0.0.1:1").unwrap();
         let analyst = LocalAnalyst::new(client, "qwen3.5:122b".into(), "  ".into());
         assert_eq!(analyst.fast_id(), "qwen3.5:122b");
         assert_eq!(analyst.reasoner_id(), "qwen3.5:122b");
 
-        // A configured fast tier is used as-is.
         let client = LocalModelClient::new("http://127.0.0.1:1").unwrap();
         let analyst = LocalAnalyst::new(client, "r".into(), "f".into());
         assert_eq!(analyst.reasoner_id(), "r");
@@ -9884,7 +8765,6 @@ pub(crate) mod tests {
 
     #[test]
     fn a_continuity_pass_reviews_before_the_thesis_and_records_the_review_and_its_mark() {
-        // A debut issues no review: REVIEW is absent and the row read nothing.
         let d1 = dossier(AssetClass::Stock, strong_financials());
         let cap = ReviewCapture::default();
         let (v1, a1) = analyze_holding(&cap, &d1, &rates(), "2026-08-03").unwrap();
@@ -9893,9 +8773,6 @@ pub(crate) mod tests {
         assert!(!debut.contains("\nREVIEW\n"), "{debut}");
         assert_eq!((a1.review.as_deref(), a1.accuracy_read_through), (None, None));
 
-        // A continuity pass reviews once, before the thesis document: REVIEW
-        // renders between ANALYSIS and PRIOR THESIS and the summary item draws
-        // on it; the row carries the review and the store's highest check id.
         let mut d2 = dossier(AssetClass::Stock, strong_financials());
         d2.prior_verdict = Some(v1);
         d2.prior_vintage = Some("2026-08-03T20:00:00Z".into());
@@ -9921,13 +8798,11 @@ pub(crate) mod tests {
         assert_eq!(a2.review.as_deref(), Some("The review of AAPL."));
         assert_eq!(a2.accuracy_read_through, Some(9));
 
-        // An unreadable store keeps the prior mark: the review read no record.
+        // An unreadable store keeps the prior mark.
         d2.accuracy = None;
         let (_, a3) = analyze_holding(&ReviewCapture::default(), &d2, &rates(), "2026-08-04").unwrap();
         assert_eq!(a3.accuracy_read_through, Some(3));
 
-        // An abstention writes no review and carries the prior mark with the
-        // retained document.
         d2.listing = Some(crate::portfolio::listing::ListingResolution::Conflict {
             fmp_name: "Zenith Mining Corp".into(),
         });
@@ -9937,7 +8812,6 @@ pub(crate) mod tests {
         assert!(matches!(v4.disposition, VerdictDisposition::InsufficientEvidence { .. }));
         assert_eq!((a4.review.as_deref(), a4.accuracy_read_through), (None, Some(3)));
 
-        // The pass after it reviews what the abstained row retains.
         let mut d5 = dossier(AssetClass::Stock, strong_financials());
         d5.prior_verdict = Some(v4);
         d5.prior_vintage = Some("2026-08-03T20:00:00Z".into());
@@ -9977,7 +8851,6 @@ pub(crate) mod tests {
         assert_eq!(a2.review.as_deref(), Some("The review of BND."));
         // A role read states no price, so its review reads no accuracy record.
         assert_eq!(a2.accuracy_read_through, None);
-        // The fund basis persists its NAV for the next pass's then side.
         assert_eq!(a2.fund_exposure.as_ref().map(|b| b.nav), Some(bond_fund().nav));
     }
 
@@ -10015,14 +8888,9 @@ pub(crate) mod tests {
 
     #[test]
     fn realized_engine_data_resolves_every_stored_value_at_exact_inequality() {
-        // The then-versus-now carrier (`docs/portfolio-workflow.md` §Step 6b):
-        // every stored metric, sub-score, grade, band, tier and hurdle value
-        // beside this run's, resolved at exact `then != now` — a sub-precision
-        // move reads as moved and renders distinguishable, equal values read
-        // unmoved — and the parameter boundaries named on the prior's branch.
         let mut d = dossier(AssetClass::Stock, strong_financials());
-        // The prior vintage's anchor-session close, in the series before either
-        // pass computes, so both passes read one surface.
+        // The prior session's close goes in before either pass computes, so
+        // both read one surface.
         d.financials.daily_closes.push(DatedValue { date: "2026-07-29".into(), value: 180.0 });
         let (prior, audit) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-07-29").unwrap();
         let VerdictDisposition::Priced(pg) = &prior.disposition else {
@@ -10049,7 +8917,6 @@ pub(crate) mod tests {
                 bridge,
             )
         };
-        // Same inputs: nothing moved, every side present, the bands bridged.
         let same = read(Some(engine::SCENARIO_TARGET_PARAMETER_VERSION), Some(1.0), &current);
         assert!(same.sub_scores.iter().all(|(_, p)| !p.moved()));
         assert!(!same.grade.moved() && !same.tier.moved() && !same.hurdle.moved());
@@ -10062,8 +8929,7 @@ pub(crate) mod tests {
         assert!((same.move_since_prior.unwrap() - (spot / 180.0 - 1.0)).abs() < 1e-12);
         assert_eq!(same.price_now, Some(spot));
 
-        // A sub-precision move on one sub-score is a move, and the renderer
-        // keeps the pair distinguishable.
+        // A sub-precision move is a move.
         let mut nudged = (*current).clone();
         nudged.sub_scores.quality += 1e-9;
         let moved = read(Some(engine::SCENARIO_TARGET_PARAMETER_VERSION), Some(1.0), &nudged);
@@ -10072,8 +8938,8 @@ pub(crate) mod tests {
         assert_ne!(pair.then, pair.now);
         assert_eq!(moved.sub_scores.iter().filter(|(_, p)| p.moved()).count(), 1);
 
-        // No certified bridge: the prior band side is withheld, never compared
-        // cross-basis; a prior on an older target stamp names the horizons.
+        // No certified bridge withholds the prior band side; an older target
+        // stamp names the horizons.
         let unbridged = read(Some("targets-v6"), None, &current);
         assert!(unbridged.bands.iter().all(|(_, p)| p.then.is_none() && p.now.is_some()));
         assert_eq!(
@@ -10109,10 +8975,6 @@ pub(crate) mod tests {
 
     #[test]
     fn the_band_relation_stamp_reads_spot_against_the_twelve_month_band() {
-        // The stamp lives on the engine arm (`docs/portfolio-analysis.md` §The
-        // quick check): spot against the twelve-month bear–bull band, `None`
-        // with no spot or no band — the caller withholds the band when the
-        // split bridge is unresolvable.
         let targets = PriceTarget {
             base: 210.0,
             bear: 180.0,
@@ -10128,36 +8990,28 @@ pub(crate) mod tests {
         assert_eq!(authored_band_relation(Some(200.0), None), None);
     }
 
-    /// Finding 4 (`docs/verification/2026-08-10-big-run-attempt-1.md`): the header
-    /// names the issuer. Since portfolio-v38 it carries identity and the per-share
-    /// quote only — no quantity, cost basis or market value on any packet (fix
-    /// list 3.2), the form the action header had held since v36.
     #[test]
     fn the_holding_header_carries_identity_and_spot_only_and_names_the_issuer() {
         let mut d = dossier(AssetClass::Stock, strong_financials());
 
-        // A usable account description is used as-is.
         d.position.description = "Phillips 66".to_string();
         d.company_name = Some("Phillips 66 Company".to_string());
         let h = holding_header(&d);
         assert!(h.starts_with("HOLDING\nAAPL (Phillips 66).\n"), "{h}");
         assert!(h.contains("Price: $195.00 per share.\n"), "{h}");
-        // The analysis date closes the header on every packet (`portfolio-v43`).
         assert!(h.ends_with("Date: 2026-07-28.\n"), "{h}");
         assert!(!h.contains("Current price"), "{h}");
         for absent in ["Quantity", "Cost basis", "Market value", " total"] {
             assert!(!h.contains(absent), "{absent} leaked: {h}");
         }
-        // Account economics cannot change the header at all.
         let mut repriced = d.clone();
         repriced.position.quantity *= 3.0;
         repriced.position.cost_basis *= 3.0;
         repriced.position.market_value *= 3.0;
         assert_eq!(holding_header(&repriced), h);
 
-        // Every no-identity shape falls back to the profile name — blank, whitespace,
-        // the ticker repeated, and corporate-form noise that tokenizes to nothing.
-        // `listing::describes_issuer` owns that rule; the guard pins the same set.
+        // `listing::describes_issuer` owns the no-identity rule; the guard pins
+        // the same set.
         let ticker = d.position.symbol.clone();
         for described in ["", "  ", &ticker, "COMMON STOCK", "CL A ORD SHS"] {
             d.position.description = described.to_string();
@@ -10168,9 +9022,8 @@ pub(crate) mod tests {
             );
         }
 
-        // The fallback is held to the same standard, so profile-side noise cannot
-        // rebuild the header: FMP accepts any non-blank `companyName`, and the guard
-        // never compares it once the description has no identity of its own.
+        // The fallback is held to the same standard: FMP accepts any non-blank
+        // `companyName`.
         d.position.description = String::new();
         for profile_name in ["COMMON STOCK", &ticker, "  ", "ORD SHS"] {
             d.company_name = Some(profile_name.to_string());
@@ -10181,33 +9034,26 @@ pub(crate) mod tests {
             );
         }
 
-        // Nothing to fall back to is stated, never rendered as an empty pair.
         d.company_name = None;
         let h = holding_header(&d);
         assert!(h.contains("name unavailable"), "{h}");
         assert!(!h.contains("()"), "an empty name pair is the defect itself: {h}");
 
-        // A ticker-named issuer: description AND profile name both tokenize to
-        // just the ticker, but the profile name is a canonical legal name and
-        // must render — holding the fallback to the description's stricter
-        // rule starved these headers entirely (combined-range review).
+        // A ticker-named issuer: both tokenize to the ticker, but the profile
+        // name is a canonical legal name and must render.
         d.position.symbol = "ASML".to_string();
         d.position.description = "ASML HOLDING NV".to_string();
         d.company_name = Some("ASML Holding N.V.".to_string());
         let h = holding_header(&d);
         assert!(h.contains("ASML Holding N.V."), "{h}");
         assert!(!h.contains("name unavailable"), "{h}");
-        // The bare ticker as a profile name is still rejected.
         d.company_name = Some("ASML".to_string());
         let h = holding_header(&d);
         assert!(h.contains("name unavailable"), "{h}");
     }
 
-    /// The fund half of Finding 4's fallback: a fund's profile read is
-    /// structure-only (no identity mapping), so `company_name` is structurally
-    /// `None` on the role-risk branch — the fetched fund data's own name is
-    /// that branch's only naming source, and a blank Schwab description must
-    /// reach it rather than "name unavailable".
+    /// A fund's `company_name` is structurally `None`, so the fund data's own
+    /// name is the role-risk branch's only naming source.
     #[test]
     fn the_holding_header_falls_back_to_the_fund_name_for_funds() {
         let mut d = dossier(AssetClass::Etf, strong_financials());
@@ -10223,8 +9069,7 @@ pub(crate) mod tests {
         let h = holding_header(&d);
         assert!(h.contains("Total US Market ETF"), "{h}");
 
-        // The fund name is held to the same identity standard: noise or the
-        // ticker repeated must not rebuild the header.
+        // The fund name is held to the same identity standard.
         if let Some(f) = d.fund.as_mut() {
             f.fund.name = Some(d.position.symbol.clone());
         }
@@ -10232,12 +9077,8 @@ pub(crate) mod tests {
         assert!(h.contains("name unavailable"), "{h}");
     }
 
-    /// Finding 2: each grammar-constrained call declares the object it is enforced
-    /// to produce, so the model does not re-derive the key set on the shared budget.
-    /// The required-key list is read off each schema rather than restated here, so a
-    /// field added to a grammar fails this test until its prompt declares it. A
-    /// hand-copied list would drift silently, which is the whole defect Finding 2
-    /// describes: a contract enforced in one place and unstated in the other.
+    /// Read off each schema rather than restated, so a field added to a grammar
+    /// fails the test until its prompt declares it.
     fn required_keys(schema: &serde_json::Value) -> Vec<String> {
         schema["required"]
             .as_array()
@@ -10253,16 +9094,6 @@ pub(crate) mod tests {
         keys
     }
 
-    /// The thesis conversation's requests are scoped to the vehicle and the
-    /// debut / continuity shape: the thesis request free prose under thinking
-    /// (no grammar), its system line naming an equity analyst on a stock and an
-    /// investment analyst on a fund, its METRICS block the vehicle's own
-    /// series; the appendix request the same conversation continued under the
-    /// nullable grammar with thinking off, every key the grammar requires
-    /// declared in the ask (Finding 2: a contract enforced in one place and
-    /// unstated in the other drifts silently); PRIOR THESIS and the continuity
-    /// clause only with a prior document; the role/risk request the thesis
-    /// wiring with no grammar.
     #[test]
     fn the_thesis_conversation_requests_are_scoped_to_the_vehicle_and_the_debut_shape() {
         let stock = dossier(AssetClass::Stock, strong_financials());
@@ -10297,8 +9128,6 @@ pub(crate) mod tests {
             assert!(!user.contains(absent), "`{absent}` leaked: {user}");
         }
 
-        // The appendix: the conversation continued, the grammar's required keys
-        // each declared in the ask.
         let appendix = appendix_request("qwen", &input(&stock, &engine_output), "The document.");
         assert_eq!(appendix.format_schema.as_ref(), Some(&crate::portfolio::appendix_schema()));
         assert_eq!(appendix.think, Some(false));
@@ -10316,8 +9145,6 @@ pub(crate) mod tests {
             Some(serde_json::json!(NUM_PREDICT_APPENDIX))
         );
 
-        // A continuity run: PRIOR THESIS under the prior's date — the stub's
-        // document verbatim — and the continuity clause on the summary item.
         let mut cont = dossier(AssetClass::Stock, strong_financials());
         let (v, _) = analyze_holding(&StubAnalyst, &cont, &rates(), "2026-08-03").unwrap();
         assert!(v.thesis_document().is_some(), "{v:?}");
@@ -10328,12 +9155,7 @@ pub(crate) mod tests {
         let user = &cont_req.messages[1].content;
         assert!(user.contains("\nPRIOR THESIS (written 2026-08-03)\nThesis: hold AAPL "), "{user}");
         assert!(user.contains(", and what changed since the prior analysis, drawing on PRIOR THESIS.\n"), "{user}");
-        // FETCHED VALUES states the close on the prior analysis's date — the
-        // vintage's ET session, the date PRIOR THESIS is written under.
         assert!(user.contains("; close on the prior analysis date 2026-08-03: "), "{user}");
-        // The twelve-month consensus blend is a computation: it renders under
-        // COMPUTED as a METRICS line, while FETCHED VALUES states the published
-        // fiscal-period rows alone.
         let (part1, _) = user.split_once("======== PART 2: TASK ========").unwrap();
         let fetched = part1.split("\nFETCHED VALUES\n").nth(1).unwrap().split("\nCOMPUTED\n").next().unwrap();
         assert!(fetched.contains("Consensus EPS by fiscal period end, as published: "), "{fetched}");
@@ -10341,8 +9163,6 @@ pub(crate) mod tests {
         let metrics = part1.split("\nMETRICS\n").nth(1).unwrap().split("\nSCORES\n").next().unwrap();
         assert!(metrics.contains("- forward consensus, next twelve months blended over "), "{metrics}");
 
-        // A fund: the investment analyst's line and the fund's series — no
-        // stock multiple, and the expense ratio under FETCHED VALUES alone.
         let fund = fund_dossier(us_equity_fund());
         let fund_req = thesis_request("qwen", &input(&fund, &engine_output));
         assert!(fund_req.messages[0].content.starts_with("You are an investment analyst writing the thesis document"), "{}", fund_req.messages[0].content);
@@ -10351,9 +9171,6 @@ pub(crate) mod tests {
         assert!(metrics.contains("- daily realized return volatility: ") && !metrics.contains("price / earnings multiple") && !metrics.contains("fund expense ratio"), "{metrics}");
         assert!(user.contains("; expense ratio 0.0003 (0.03%/yr); "), "{user}");
 
-        // A role/risk prior and an abstained prior that kept its document
-        // render PRIOR THESIS the same way; an abstained prior without one
-        // renders no section and no continuity clause.
         let prior_of = |disposition: VerdictDisposition| HoldingVerdict {
             symbol: "AAPL".into(),
             asset_class: AssetClass::Stock,
@@ -10413,11 +9230,6 @@ pub(crate) mod tests {
         assert_eq!(role_req.messages[0].content, role_risk_system_prompt());
     }
 
-    /// An off-domain appendix is rejected whole under `ModelArmDomain` and an
-    /// unparseable body under `SchemaParse`, so the bounded retry-once
-    /// re-issues the identical message exactly once and then fails the
-    /// holding naming the class; a null-bearing in-domain body decodes as the
-    /// document's silence.
     #[test]
     fn an_off_domain_appendix_re_issues_once_then_fails() {
         use crate::local_model::{retry_class, RetryClass, RetryOnce};
@@ -10433,9 +9245,6 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(silent.is_empty());
-        // The retry gate over the decode: two off-domain replies are exactly
-        // two attempts and a failure, one retry event between them; nothing
-        // is clamped into domain.
         let retry = RetryOnce::without_delay();
         let progress = crate::progress::RunContext::noop();
         let attempts = std::cell::Cell::new(0u32);
@@ -10451,10 +9260,6 @@ pub(crate) mod tests {
         assert!(events[0].cause.to_lowercase().contains("domain"), "{}", events[0].cause);
     }
 
-    /// The soft forensic flags render under COMPUTED as typed evidence in all
-    /// three states — fired, clear, and unevaluable naming the missing input
-    /// — each with the inputs it read; a holding without them renders no
-    /// section.
     #[test]
     fn the_soft_forensic_section_renders_fired_clear_and_unevaluable() {
         use crate::portfolio::soft_forensic::{
@@ -10553,8 +9358,8 @@ pub(crate) mod tests {
 
     #[test]
     fn every_stock_records_an_overlay_and_funds_record_none() {
-        // A profitable stock with no operating-income prints: the eligibility result
-        // still persists (unscorable — not entered, gap recorded).
+        // A profitable stock with no operating-income prints is unscorable, not
+        // entered.
         let (_, audit) = analyze_holding(
             &StubAnalyst,
             &dossier(AssetClass::Stock, strong_financials()),
@@ -10568,15 +9373,13 @@ pub(crate) mod tests {
             overlay.eligibility,
             crate::portfolio::pre_profit::PreProfitEligibility::Unscorable { .. }
         ));
-        // The soft forensic flags ride beside it — typed, every missing input
-        // unevaluable (the fixture carries no scores and no balance rows).
+        // The fixture carries no scores, so the flags are unevaluable.
         let flags = audit.soft_forensic.expect("every stock records its soft flags");
         assert!(matches!(
             flags.altman_z.state,
             crate::portfolio::soft_forensic::SoftFlagState::Unevaluable { .. }
         ));
 
-        // A priced fund records none — the overlay and the flags are stock surface.
         let (_, audit) = analyze_holding(
             &StubAnalyst,
             &fund_dossier(us_equity_fund()),
@@ -10597,9 +9400,6 @@ pub(crate) mod tests {
         let overlay = audit.pre_profit.expect("overlay rides the audit");
         assert!(overlay.is_eligible());
         assert_eq!(overlay.execution, crate::portfolio::pre_profit::ExecutionLeg::Unscorable);
-        // The execution leg has no producer, the engine caps no conviction,
-        // and the model's conviction — the stub's, off the letter — persists as
-        // authored.
         assert!(overlay.consequences.matched_rules.is_empty());
         let VerdictDisposition::Priced(g) = verdict.disposition else {
             panic!("expected a priced verdict");
@@ -10611,8 +9411,6 @@ pub(crate) mod tests {
         };
         assert_eq!(g.appendix.conviction, Some(authored));
 
-        // The prompt renders the overlay block under the same input the live
-        // call builds.
         let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
@@ -10630,8 +9428,7 @@ pub(crate) mod tests {
             review: None,
         });
         assert!(user.contains("\nPRE-PROFIT EXECUTION AND FINANCING\n"), "{user}");
-        // The states render as data, with no arm narration and no binding
-        // language aimed at the model (`portfolio-v40`; Codex round 1, finding 1).
+        // No arm narration or binding language aimed at the model.
         assert!(!user.contains("computed conviction capped"), "{user}");
         for narration in [
             "PRE-PROFIT EXECUTION / FINANCING OVERLAY",
@@ -10665,20 +9462,13 @@ pub(crate) mod tests {
                 assert!(!prompt.contains(narration), "`{narration}` leaked: {prompt}");
             }
         }
-        // The action packet renders the facts alone — its SUPPORTED ACTIONS
-        // line carries the narrowed set (ruled 2026-09-17, F1) — and the facts
-        // block is shared byte for byte.
+        // The action packet renders the facts alone, shared byte for byte.
         assert!(!action.contains("computed action set"), "{action}");
         assert!(interp.starts_with(action.as_str()), "{interp}\n{action}");
     }
 
     #[test]
     fn severe_overlay_binds_the_engine_arm_never_the_model() {
-        // Economics deterioration + constrained runway (tiny cash against the
-        // burn) → the severe conjunction, statement legs alone. A defiant model
-        // lean and conviction persist exactly as authored — no bail, no clamp —
-        // while the consequences bind the ENGINE arm's action and stay recorded
-        // for the annotation render.
         struct DefiantAnalyst;
         impl HoldingAnalyst for DefiantAnalyst {
             fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {
@@ -10732,8 +9522,6 @@ pub(crate) mod tests {
             g.engine_rung
         );
 
-        // The overlay section keeps the engine rule factual in both prompts and
-        // states the model arm's freedom only where that prompt returns the field.
         let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
@@ -10777,9 +9565,6 @@ pub(crate) mod tests {
             profile: &d.profile,
         });
         assert!(!action.contains("UNRESTRICTED"), "{action}");
-        // The overlay's facts render on the action packet; its consequence
-        // lines do not — SUPPORTED ACTIONS carries the narrowed set (ruled
-        // 2026-09-17, F1).
         assert!(action.contains("- severe deterioration: YES\n"), "{action}");
         assert!(!action.contains("guidance attainment"), "the execution leg renders nothing: {action}");
         assert!(!action.contains("conviction capped"), "{action}");
@@ -10800,7 +9585,6 @@ pub(crate) mod tests {
             }
         }
 
-        // The retired "lean" vocabulary is gone from both renders.
         for prompt in [&interp, &action] {
             assert!(!prompt.contains("lean set"), "{prompt}");
             assert!(!prompt.contains("your lean"), "{prompt}");
@@ -10810,8 +9594,7 @@ pub(crate) mod tests {
 
     #[test]
     fn abstaining_stock_still_records_the_overlay() {
-        // No consensus at all: the engine abstains (no-admissible-driver), but the
-        // overlay record persists with the abstention.
+        // No consensus abstains the engine.
         let mut fin = pre_profit_financials();
         fin.consensus = None;
         let d = dossier(AssetClass::Stock, fin);
@@ -10830,9 +9613,6 @@ pub(crate) mod tests {
     fn a_guard_conflict_abstention_records_the_overlay() {
         use crate::portfolio::listing::ListingResolution;
         use crate::portfolio::pre_profit::PreProfitEligibility;
-        // The conflicting-identity exit takes the floor exit's full overlay
-        // semantics: the guard-terminal skip fetched no statements, so the
-        // record reads eligibility-unscorable with its input gaps.
         let mut d = dossier(
             AssetClass::Stock,
             CompanyFinancials { symbol: "X".into(), ..CompanyFinancials::default() },
@@ -10852,8 +9632,6 @@ pub(crate) mod tests {
             "no statement was fetched — the read is unscorable, never inferred: {:?}",
             overlay.eligibility
         );
-        // The flags take the same posture: recorded, every input missing,
-        // nothing inferred clear.
         let flags = audit.soft_forensic.expect("the flags survive the guard exit");
         for state in [
             &flags.altman_z.state,
@@ -10867,9 +9645,6 @@ pub(crate) mod tests {
             );
         }
     }
-
-
-    // ---- The 6g core checks and the rendered statement (`portfolio-v45`) --------
 
     // ---- The investment-only action packet and the app-appended tax caveat ------
 
@@ -10911,9 +9686,6 @@ pub(crate) mod tests {
             engine_set: &engine_set,
             profile: &d.profile,
         });
-        // The set once, as one data line with no permission sentence (2.2; 3.9
-        // ruled 2026-09-17); the sub-scores' polarity gloss stays on the thesis
-        // message (ruled 2026-10-08).
         assert_eq!(user.matches("higher is better on every axis").count(), 0, "{user}");
         assert_eq!(user.matches("\nSUPPORTED ACTIONS\n").count(), 1, "{user}");
         for absent in [
@@ -10922,9 +9694,7 @@ pub(crate) mod tests {
         ] {
             assert!(!user.contains(absent), "{absent}: {user}");
         }
-        // The position's economics render once, under POSITION (ruled
-        // 2026-10-08); the header carries identity and spot only, and the
-        // overlay renders structure and ratios, never the held share count.
+        // The overlay renders structure and ratios, never the held share count.
         assert_eq!(user.matches("\nPOSITION\n").count(), 1, "{user}");
         for once in ["Shares held: 100.", "Cost basis: $14,000.00.", "Market value: $19,500.00."] {
             assert_eq!(user.matches(once).count(), 1, "{once}: {user}");
@@ -10938,9 +9708,6 @@ pub(crate) mod tests {
         );
         assert!(user.contains("covering 100% of the held shares; net delta -70% of the held shares"), "{user}");
         assert!(user.contains("- SHORT CALL — strike 220.00"), "{user}");
-        // The interpretation prompt renders the same unsized overlay since
-        // portfolio-v38 (fix list 3.2, the Codex plan review): contracts over
-        // coverage had given the held share count away.
         let interp = thesis_user_prompt(&ThesisInput {
             rates: rates_static(),
             soft_forensic: None,
@@ -10971,29 +9738,23 @@ pub(crate) mod tests {
         assert!(gain.ends_with(TAX_CAVEAT_GAIN));
         assert_eq!(investment_sentence(&gain), "Trim on the verdict.");
         assert_eq!(investment_sentence(&format!("Sell it. {TAX_CAVEAT_LOSS}")), "Sell it.");
-        // No caveat, nothing stripped — a sentence that merely mentions tax stays.
+        // A sentence that merely mentions tax stays.
         assert_eq!(investment_sentence("Hold; tax is not the reason."), "Hold; tax is not the reason.");
         assert_eq!(investment_sentence(""), "");
     }
 
     #[test]
     fn position_section_renders_the_economics_and_the_change_since_the_last_pull() {
-        // POSITION (`portfolio-v71`, ruled 2026-10-08): the shares held, the
-        // cost basis, the market value, the unrealized gain or loss as dollars
-        // and as a share of the cost basis, and the change tag with the shares
-        // then and now — never the paid-up / averaged-down read.
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let values = |d: &HoldingDossier| {
             let s = position_section(d);
             s.lines().last().unwrap().to_string()
         };
-        // A gain on a debut (every position is new with no prior snapshot).
         assert_eq!(
             values(&d),
             "Shares held: 100. Cost basis: $14,000.00. Market value: $19,500.00. Unrealized gain: \
              $5,500.00 (+39.3% of the cost basis). Change since the last pull: new."
         );
-        // A loss, the position increased since the last pull.
         d.position.cost_basis = 30_000.0;
         d.position_delta = PositionDelta {
             change: PositionChange::Increased,
@@ -11007,7 +9768,6 @@ pub(crate) mod tests {
              60 to 100."
         );
         assert!(!values(&d).contains("averaged"), "{}", values(&d));
-        // Decreased, fractional shares, at cost.
         d.position.quantity = 12.5;
         d.position.cost_basis = 2_437.5;
         d.position.market_value = 2_437.5;
@@ -11021,9 +9781,8 @@ pub(crate) mod tests {
             "Shares held: 12.5. Cost basis: $2,437.50. Market value: $2,437.50. Unrealized gain or \
              loss: none. Change since the last pull: decreased, from 20 to 12.5."
         );
-        // Unchanged; a short reads as short on both counts, and its negative
-        // netted basis keeps the dollar gain with no percentage — the card's
-        // contract (`docs/portfolio-analysis.md` §Storage and display).
+        // A negative netted basis keeps the dollar gain with no percentage
+        // (`docs/portfolio-analysis.md` §Storage and display).
         d.position.quantity = -40.0;
         d.position.cost_basis = -8_000.0;
         d.position.market_value = -7_800.0;
@@ -11037,9 +9796,7 @@ pub(crate) mod tests {
             "Shares held: 40 short. Cost basis: -$8,000.00. Market value: -$7,800.00. Unrealized \
              gain: $200.00. Change since the last pull: unchanged at 40 short."
         );
-        // An exactly-zero basis is an unreported one on the wire (the adapter
-        // maps a missing `averagePrice` to zero): not reported, and no gain or
-        // loss — never the market value read as a gain.
+        // An exactly-zero basis is an unreported one on the wire.
         d.position.quantity = 5.0;
         d.position.cost_basis = 0.0;
         d.position.market_value = 50.0;
@@ -11050,7 +9807,6 @@ pub(crate) mod tests {
              loss: not available without a reported cost basis. Change since the last pull: new."
         );
         assert!(!values(&d).contains("Unrealized gain:"), "{}", values(&d));
-        // The gloss once, above the values.
         let s = position_section(&d);
         assert!(s.starts_with("\nPOSITION\nThe holding as the account carries it: "), "{s}");
         assert!(s.contains("as a share of a positive cost basis; not available where no basis is reported)"), "{s}");
@@ -11072,9 +9828,6 @@ pub(crate) mod tests {
 
     #[test]
     fn the_thesis_message_renders_no_position_block() {
-        // The intrinsic verdict is of no investor and no position: POSITION is
-        // the action packet's alone (`docs/portfolio-analysis.md` §Intrinsic
-        // verdict).
         let d = dossier(AssetClass::Stock, strong_financials());
         let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
@@ -11110,8 +9863,6 @@ pub(crate) mod tests {
         assert_eq!(tax_caveat(&profile, &pos, Action::SellAll), Some(TAX_CAVEAT_LOSS));
         pos.cost_basis = pos.market_value;
         assert_eq!(tax_caveat(&profile, &pos, Action::SellAll), None, "break-even");
-        // An unreported basis (zero on the wire) has no defined gain, so no
-        // caveat; a negative netted basis keeps its dollar gain and the caveat.
         pos.cost_basis = 0.0;
         assert_eq!(tax_caveat(&profile, &pos, Action::SellAll), None, "unreported basis");
         pos.cost_basis = -1_000.0;
@@ -11124,8 +9875,6 @@ pub(crate) mod tests {
             format!("Trim on the verdict. {TAX_CAVEAT_GAIN}")
         );
 
-        // Through the pipeline: the persisted rationale is the model's sentence
-        // plus the app's caveat, appended after the rung is fixed.
         struct Trimmer;
         impl HoldingAnalyst for Trimmer {
             fn interpret(&self, input: &ThesisInput) -> Result<PricedModelArm> {

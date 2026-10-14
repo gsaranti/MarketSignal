@@ -1,29 +1,13 @@
-//! Cboe daily put/call statistics — the run-level **venue-level
-//! options-sentiment backdrop** (`docs/data-sources.md §CBOE`): the exchange's
-//! own daily put/call ratios (total / index / equity), a broad-market context
-//! signal, never a per-name one. Keyless and wholly fail-soft.
+//! Cboe daily put/call statistics — the run-level venue-level options-sentiment
+//! backdrop (`docs/data-sources.md §CBOE`), a broad-market context signal,
+//! never a per-name one. Keyless and wholly fail-soft.
 //!
-//! **This adapter reads JSON embedded in the served page, not an API.** No
-//! machine-readable current-day endpoint exists (the cdn.cboe.com ratio CSVs
-//! froze at 2019-10-04), and the daily page is a client-rendered app whose raw
-//! response carries the day's statistics as an **embedded JSON payload** —
-//! `"name":"TOTAL PUT/CALL RATIO","value":"0.80"` rows plus a
-//! `"selectedDate"` (live-verified 2026-08-20 against the served markup; the
-//! legacy `/us/options/market_statistics/daily/` URL redirects here). The
-//! extraction is a bounded scan for those labels and the date key, escaping
-//! variants tolerated. Every LOCALLY detectable form of structure drift —
-//! wrong key or label shape, wrong quote representation, disagreeing
-//! same-form candidates — fails the parse into the caller's typed gap; the
-//! feed is optional by contract, so a broken extraction degrades the
-//! backdrop, never the run. The guarantee is exactly that strong and no
-//! stronger: parsing the payload whole would mean first extracting and
-//! reassembling the chunk-split script stream — a heavier retrieval
-//! strategy declined by ruling 2026-08-21 for this optional feed — so
-//! within the bounded scan a well-formed sole candidate in the document's own
-//! form reads as the payload wherever it sits. That sole-impostor case is
-//! the accepted residual risk, sized to the backdrop's optional
-//! venue-context role ([`QuoteForm`]'s doc carries the mechanism-level
-//! statement).
+//! The adapter reads JSON embedded in the served page, not an API: no
+//! machine-readable current-day endpoint exists. The extraction is a bounded
+//! scan for the ratio labels and the `selectedDate` key; every locally
+//! detectable structure drift fails the parse into the caller's typed gap, and
+//! a well-formed sole same-form impostor is the accepted residual risk
+//! ([`QuoteForm`] carries the mechanism).
 
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
@@ -32,17 +16,15 @@ use anyhow::{Context, Result};
 
 use crate::progress::RunContext;
 
-/// The daily statistics page (the current canonical URL — the legacy
-/// `/us/options/market_statistics/daily/` path redirects here). The backdrop
-/// wants the venue's latest posted day, so no date parameter is sent.
+/// The daily statistics page. No date parameter is sent: the backdrop wants
+/// the venue's latest posted day.
 const CBOE_DAILY_URL: &str = "https://www.cboe.com/markets/us/options/market-statistics/daily";
 
 const CBOE_TIMEOUT: StdDuration = StdDuration::from_secs(15);
 
 /// The venue-level put/call backdrop: Cboe's own posted ratios for its latest
-/// trading day. `as_of` is the date label the extraction reads, verbatim —
-/// the page decides which session it shows, never a local clock — carried
-/// under the module-level guarantee scope and its sole-impostor residual.
+/// trading day. `as_of` is the page's date label verbatim — the page decides
+/// which session it shows, never a local clock.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PutCallBackdrop {
     pub as_of: String,
@@ -71,7 +53,7 @@ impl CboeDataSource {
         })
     }
 
-    /// Redirect at a localhost mock so the wire path runs offline. Test-only.
+    /// Point at a localhost mock so the wire path runs offline.
     #[cfg(test)]
     fn with_url(mut self, url: &str) -> Self {
         self.url = url.to_string();
@@ -123,10 +105,9 @@ impl CboeDataSource {
     }
 }
 
-/// Extract the backdrop from the served page's embedded JSON payload. Pure, so
-/// the extraction contract is fixture-testable offline. Requires the
-/// `selectedDate` key and at least one parsed ratio — a page serving neither is
-/// drift, `Err`, never an empty success.
+/// Extract the backdrop from the served page's embedded JSON payload. Requires
+/// the `selectedDate` key and at least one parsed ratio — a page serving
+/// neither is drift, `Err`, never an empty success.
 fn parse_daily_stats(html: &str) -> Result<PutCallBackdrop> {
     let (as_of, form) = date_after_key(html, "selectedDate")
         .context("Cboe daily page: no selectedDate in the embedded payload — structure drift")?;
@@ -143,13 +124,11 @@ fn parse_daily_stats(html: &str) -> Result<PutCallBackdrop> {
     Ok(backdrop)
 }
 
-/// The first **calendar-valid** `YYYY-MM-DD` date inside a short window after
-/// `key` — escaping variants (`\"selectedDate\":\"…\"` vs plain JSON) don't
-/// matter, since only the date shape is matched, and the shape is then parsed
-/// so an impossible date ("2026-99-99") reads as drift, never an as-of.
-/// Returns the date **with the [`QuoteForm`] its key opened in**: the date is
-/// the payload's one mandatory anchor, so its form classifies the whole
-/// document and every ratio read must match it (round 9).
+/// The first calendar-valid `YYYY-MM-DD` date inside a short window after
+/// `key`, parsed so an impossible date ("2026-99-99") reads as drift, never an
+/// as-of. Returns the date with the [`QuoteForm`] its key opened in: the date
+/// is the payload's one mandatory anchor, so its form classifies the whole
+/// document and every ratio read must match it.
 fn date_after_key(html: &str, key: &str) -> Option<(String, QuoteForm)> {
     let mut candidates: Vec<(Option<String>, QuoteForm)> = Vec::new();
     let mut from = 0;
@@ -157,35 +136,30 @@ fn date_after_key(html: &str, key: &str) -> Option<(String, QuoteForm)> {
         let at = from + found;
         let rest = &html[at + key.len()..];
         from = at + key.len();
-        // Exact key, quoted on BOTH sides IN ONE FORM: the key's own opening
-        // quote classifies the representation — plain vs escaped payload —
-        // and rejects prefix extensions ("fallbackselectedDate"); the close
-        // must agree with that form, rejecting suffix extensions
-        // ("selectedDateTime") and, since round 8, a plain-form literal
-        // quote posing as the boundary (Codex rounds 4–5, 8).
+        // The key must be quoted on both sides in one form: the opening quote
+        // classifies the representation (plain vs escaped) and rejects prefix
+        // extensions ("fallbackselectedDate"); the close must agree with that
+        // form, rejecting suffix extensions ("selectedDateTime") and a
+        // plain-form literal quote posing as the boundary.
         let Some(form) = quote_form_opening_at(&html[..at]) else {
             continue;
         };
         if !closes_string(rest, form) {
             continue;
         }
-        // Bind to the key's IMMEDIATE scalar — skip only the JSON / escaping
-        // punctuation between key and value, then require a calendar-valid
-        // date shape at that exact position. Scanning any further would let a
-        // null / drifted `selectedDate` borrow a nearby valid date
-        // (`"minDate"`) as the as-of (Codex 2026-08-20 rounds 3–4).
+        // Bind to the key's immediate scalar: skip only the JSON / escaping
+        // punctuation, then require a calendar-valid date at that exact
+        // position. Scanning further would let a null / drifted `selectedDate`
+        // borrow a nearby valid date (`"minDate"`) as the as-of.
         let start = scalar_start(rest);
         let Some(cand) = rest.get(start..start + 10) else {
             candidates.push((None, form));
             continue;
         };
-        // The date must be the WHOLE scalar: its closing quote must follow
-        // (a datetime under this key is a changed schema — drift, not an
-        // as-of; the same full-scalar rule the ratios hold, round 6). The
-        // close must be an actual quote in the key's own form (round 8) — a bare
-        // backslash CONTINUES the scalar (a `\u0020`-style escape), and
-        // input ending at the date is truncation — so neither terminates
-        // (round 7).
+        // The date must be the whole scalar: its closing quote, in the key's
+        // own form, must follow (a datetime under this key is drift, not an
+        // as-of). A bare backslash continues the scalar and input ending at
+        // the date is truncation, so neither terminates.
         let terminated = rest
             .get(start + 10..)
             .is_some_and(|r| closes_string(r, form));
@@ -196,12 +170,9 @@ fn date_after_key(html: &str, key: &str) -> Option<(String, QuoteForm)> {
             && chrono::NaiveDate::parse_from_str(cand, "%Y-%m-%d").is_ok();
         candidates.push((valid.then(|| cand.to_string()), form));
     }
-    // The document must be UNANIMOUS about its as-of (round 10): every
-    // anchored key is a candidate — an unreadable scalar as `None` — and
-    // any disagreement on date or form (a second same-form `selectedDate`
-    // carrying another day) leaves no honest as-of to serve, so the whole
-    // read is `None` and the feed a typed gap. First-key-wins was retired
-    // with this: it silently preferred whichever candidate came first.
+    // The document must be unanimous about its as-of: every anchored key is a
+    // candidate (an unreadable scalar as `None`), and any disagreement on date
+    // or form leaves no honest as-of to serve, so the whole read is `None`.
     let (date, form) = candidates.first()?.clone();
     if !candidates.iter().all(|c| c.0 == date && c.1 == form) {
         return None;
@@ -211,8 +182,8 @@ fn date_after_key(html: &str, key: &str) -> Option<(String, QuoteForm)> {
 
 /// Whether the text ending at `at` — through only key / scalar punctuation —
 /// closes a properly quoted `name` key: the label at `at` must be the row's own
-/// `"name"` value, never an unrelated field's text (Codex round 5). The strip
-/// must consume at least the `":"` punctuation between key and value.
+/// `"name"` value, never an unrelated field's text. The strip must consume at
+/// least the `":"` punctuation between key and value.
 fn label_is_name_value(html: &str, at: usize) -> bool {
     let before = &html[..at];
     let trimmed = before.trim_end_matches(['"', '\\', ':', ' ', '\t', '\n', '\r']);
@@ -234,22 +205,16 @@ fn scalar_start(s: &str) -> usize {
 
 /// The payload's quote representation at one anchor site. The embedded rows
 /// arrive either as plain JSON or stringified inside the page's script
-/// (`\"name\":\"…\"`), and the SAME two bytes `\"` mean opposite things in
+/// (`\"name\":\"…\"`), and the same two bytes `\"` mean opposite things in
 /// the two forms — the string delimiter in the escaped payload, a literal
-/// quote INSIDE the current string in plain JSON (Codex round 8). Each
-/// anchor therefore classifies its own form from its opening quote and
-/// demands every quote it consumes — the label close, the value key, the
-/// scalar close — agree with that form; a mixed read degrades to a gap.
-/// The forms also agree RECORD-WIDE (round 9): the mandatory date key
-/// classifies the whole document, and every ratio must be served in that
-/// same representation — so a stringified row quoted inside a plain
-/// document, or a plain row beside the escaped payload, can never join the
-/// backdrop its date anchors. Same-form candidates are then cross-checked
-/// for UNANIMITY rather than located structurally (round 10) — the payload
-/// is chunk-split, so container binding cannot survive an arbitrary chunk
-/// boundary — leaving one deliberate residue: a same-form fake that is a
-/// label's ONLY candidate, or that agrees with the real row, still reads,
-/// because nothing local distinguishes it from a relocated payload.
+/// quote inside the current string in plain JSON. Each anchor classifies its
+/// form from its opening quote and demands every quote it consumes agree with
+/// it; the mandatory date key classifies the whole document, so every ratio
+/// must be served in that form. Same-form candidates are cross-checked for
+/// unanimity rather than located structurally — the payload is chunk-split,
+/// so container binding cannot survive a chunk boundary — leaving one residue:
+/// a same-form fake that is a label's only candidate, or agrees with the real
+/// row, still reads.
 #[derive(Clone, Copy, PartialEq)]
 enum QuoteForm {
     Plain,
@@ -275,13 +240,12 @@ fn quote_form_opening_at(s: &str) -> Option<QuoteForm> {
         .find(|f| opens_string(s, *f))
 }
 
-/// Whether `s` begins exactly where a string CLOSES in `form`. Plain: the
-/// bare quote alone — a `\"` here is a literal quote CONTINUING the string
-/// (round 8; the round-7 predicate accepted it in both forms at once).
+/// Whether `s` begins exactly where a string closes in `form`. Plain: the
+/// bare quote alone — a `\"` here is a literal quote continuing the string.
 /// Escaped: `\"` — a literal quote arrives as `\\\"`, which starts with a
 /// doubled backslash and never matches. A bare backslash is a close in
-/// NEITHER form (an escape continues the string, round 7), and empty input
-/// is truncation, never termination.
+/// neither form (an escape continues the string), and empty input is
+/// truncation, never termination.
 fn closes_string(s: &str, form: QuoteForm) -> bool {
     match form {
         QuoteForm::Plain => s.starts_with('"'),
@@ -290,32 +254,26 @@ fn closes_string(s: &str, form: QuoteForm) -> bool {
 }
 
 /// The ratio for `label` — each anchored row contributes the first finite
-/// number **after its own `value` key** (inside a short bounded window), and
-/// the served value is the UNANIMOUS candidate across every anchored row.
-/// The `value` anchor is load-bearing: the embedded rows read
-/// `"name":"<LABEL>","value":"0.80"`, and taking the first number after the
-/// label alone would let a drifted row ("…,\"rank\":1,\"value\":\"0.80\"")
-/// serve a plausible fabricated ratio (Codex 2026-08-20 round 2, finding 2).
+/// number after its own `value` key (inside a short bounded window), and the
+/// served value is the unanimous candidate across every anchored row. The
+/// `value` anchor is load-bearing: taking the first number after the label
+/// alone would let a drifted row ("…,\"rank\":1,\"value\":\"0.80\"") serve a
+/// plausible fabricated ratio.
 fn ratio_near_label(html: &str, label: &str, form: QuoteForm) -> Option<f64> {
     let mut candidates: Vec<Option<f64>> = Vec::new();
     let mut from = 0;
     while let Some(found) = html[from..].find(label) {
         let label_at = from + found;
         let start = label_at + label.len();
-        // The label must be the row's own `name` value — a label appearing as
-        // some unrelated field's text ("note":"TOTAL PUT/CALL RATIO") must not
-        // anchor a ratio read (Codex 2026-08-20 round 5).
+        // The label must be the row's own `name` value, never an unrelated
+        // field's text ("note":"TOTAL PUT/CALL RATIO").
         if !label_is_name_value(html, label_at) {
             from = start;
             continue;
         }
-        // The label must open in the DOCUMENT's form — the one the mandatory
-        // date key classified (round 9) — and every quote consumed below
-        // must agree with it (round 8): the same two bytes are the delimiter
-        // in one form and in-string content in the other, so an
-        // opposite-form row-shaped text (a stringified row quoted inside a
-        // plain document, or plain text beside the escaped payload) can
-        // never join the backdrop the date anchors.
+        // The label must open in the document's form (the one the date key
+        // classified), and every quote consumed below must agree with it, so
+        // an opposite-form row-shaped text can never join the backdrop.
         if !opens_string(&html[..label_at], form) {
             from = start;
             continue;
@@ -326,33 +284,29 @@ fn ratio_near_label(html: &str, label: &str, form: QuoteForm) -> Option<f64> {
             .get(start..html.len().min(start + 60))
             .or_else(|| html.get(start..))
             .unwrap_or("");
-        // The label must also END the name value — its closing quote, in the
-        // row's own form, must follow immediately: "TOTAL PUT/CALL RATIO
-        // 30-DAY" is a different product's label (Codex 2026-08-20 round 6),
-        // an escaped CONTINUATION is no close (a bare backslash starts an
-        // escape, round 7), and neither is a plain-form literal quote — the
-        // label keeps going past it (round 8).
+        // The label must also end the name value — its closing quote, in the
+        // document's form, must follow immediately: "TOTAL PUT/CALL RATIO
+        // 30-DAY" is a different product's label, an escape continues the
+        // label, and a plain-form literal quote is no close either.
         if !closes_string(window, form) {
             from = start;
             continue;
         }
-        // Anchor only in the window's BRACE-FREE head. The served rows carry
-        // `value` immediately after the name (`"name":"<LABEL>","value":"…"`),
-        // so a brace of ANY kind before the key — the row's own close, a
-        // nested object opening ("meta":{…}), or a brace inside a string
-        // value — means the row's own top-level value is not there to read.
-        // This replaced brace-depth counting (round 7): the counter mistook a
-        // `}` inside a string for a row close, letting a NESTED object's
-        // `value` read back at apparent top level; a region containing no
-        // braces at all cannot be fooled that way, and an in-string brace can
-        // only shrink it — a gap, never a fabricated read.
+        // Anchor only in the window's brace-free head. The served rows carry
+        // `value` immediately after the name, so a brace of any kind before
+        // the key — the row's own close, a nested object opening, or a brace
+        // inside a string value — means the row's own top-level value is not
+        // there to read. Brace-depth counting would mistake a `}` inside a
+        // string for a row close and let a nested object's `value` read at
+        // apparent top level; a brace-free region cannot be fooled that way,
+        // and an in-string brace can only shrink it — a gap, never a
+        // fabricated read.
         let head = window.find(['{', '}']).map_or(window, |i| &window[..i]);
-        // Every `value` key in the head, first one whose IMMEDIATE scalar is
-        // a whole number wins — the key string must close right after `value`
-        // and open right before it: `"value":null` degrades, and `valueType`
-        // / `value30` / `fallbackvalue` are different keys, never anchors
-        // (rounds 3–5). The scalar itself is read from the full window, so a
-        // bare number closed by the row's `}` still terminates.
+        // The first `value` key in the head whose immediate scalar is a whole
+        // number wins; the key string must close right after `value` and open
+        // right before it, so `valueType` / `value30` / `fallbackvalue` are
+        // different keys, never anchors. The scalar is read from the full
+        // window, so a bare number closed by the row's `}` still terminates.
         let mut row_value = None;
         let mut w = 0;
         while let Some(v_at) = head[w..].find("value") {
@@ -375,13 +329,10 @@ fn ratio_near_label(html: &str, label: &str, form: QuoteForm) -> Option<f64> {
         candidates.push(row_value);
         from = start;
     }
-    // The document must be UNANIMOUS about this label (round 10): every
-    // anchored same-form row is a candidate — a valueless one as `None` —
-    // and any disagreement (a decoy object's number beside the collection's
-    // own null, or two rows carrying different ratios) gives the scanner no
-    // structural way to tell which container is operative, so the label
-    // degrades to a gap. First-row-wins was retired with this: it silently
-    // preferred whichever candidate came first.
+    // The document must be unanimous about this label: every anchored
+    // same-form row is a candidate (a valueless one as `None`), and any
+    // disagreement gives the scanner no structural way to tell which
+    // container is operative, so the label degrades to a gap.
     let first = *candidates.first()?;
     if candidates.iter().all(|c| *c == first) {
         first
@@ -390,15 +341,14 @@ fn ratio_near_label(html: &str, label: &str, form: QuoteForm) -> Option<f64> {
     }
 }
 
-/// The number at the very START of `s` (`digits[.digits]`), parsed finite —
-/// `None` when `s` does not begin with a digit, **or when the digits do not
-/// make up the whole scalar**, so `"1e2"` and `"0.80oops"` are drift, never
-/// `1.0` / `0.80` (Codex 2026-08-20 round 6). What closes the scalar depends
-/// on its form (rounds 7–8): a `quoted` scalar must end at a closing
-/// quote — in-string whitespace ("0.80 percent") or an escape continues the
-/// string — while a bare JSON number ends at structural punctuation or
-/// whitespace. Either way the close must be PRESENT: the bounded window
-/// ending mid-number is a truncated scalar, never a value.
+/// The number at the very start of `s` (`digits[.digits]`), parsed finite —
+/// `None` when `s` does not begin with a digit, or when the digits do not make
+/// up the whole scalar, so `"1e2"` and `"0.80oops"` are drift, never `1.0` /
+/// `0.80`. A `quoted` scalar must end at a closing quote — in-string
+/// whitespace ("0.80 percent") or an escape continues the string — while a
+/// bare JSON number ends at structural punctuation or whitespace. Either way
+/// the close must be present: the bounded window ending mid-number is a
+/// truncated scalar, never a value.
 fn leading_number(s: &str, quoted: bool, form: QuoteForm) -> Option<f64> {
     let b = s.as_bytes();
     if !b.first().is_some_and(|c| c.is_ascii_digit()) {
@@ -429,8 +379,7 @@ mod tests {
     use crate::test_http::{Canned, MockHttp};
 
     /// A minimal fixture in the served shape: the ratios and date ride an
-    /// escaped JSON payload inside a script chunk (the live page's form,
-    /// captured 2026-08-20).
+    /// escaped JSON payload inside a script chunk.
     const DAILY_PAGE: &str = r#"<html><body><script>self.__next_f.push([1,"{\"pcRatios\":[{\"name\":\"TOTAL PUT/CALL RATIO\",\"value\":\"0.80\"},{\"name\":\"INDEX PUT/CALL RATIO\",\"value\":\"0.97\"},{\"name\":\"EQUITY PUT/CALL RATIO\",\"value\":\"0.52\"}],\"selectedDate\":\"2026-08-19\"}"])</script></body></html>"#;
 
     #[test]
@@ -451,9 +400,7 @@ mod tests {
 
     #[test]
     fn structure_drift_errors_rather_than_reading_empty() {
-        // No selectedDate key.
         assert!(parse_daily_stats(r#"{"name":"TOTAL PUT/CALL RATIO","value":"0.80"}"#).is_err());
-        // A date key without a date-shaped value.
         assert!(parse_daily_stats(r#"{"selectedDate":"soon"}"#).is_err());
         // A date-shaped but calendar-impossible value is drift, not an as-of.
         assert!(parse_daily_stats(
@@ -493,7 +440,7 @@ mod tests {
     #[test]
     fn extended_labels_nested_values_and_partial_numbers_never_serve_data() {
         // A longer product label ("… 30-DAY") is a different ratio — the
-        // label's own closing quote must follow immediately (Codex round 6).
+        // label's own closing quote must follow immediately.
         let extended = r#"{"selectedDate":"2026-08-19","pcRatios":[{"name":"TOTAL PUT/CALL RATIO 30-DAY","value":"0.99"},{"name":"EQUITY PUT/CALL RATIO","value":"0.52"}]}"#;
         let b = parse_daily_stats(extended).unwrap();
         assert_eq!(b.total, None, "{b:?}");
@@ -522,19 +469,17 @@ mod tests {
 
     #[test]
     fn braces_inside_strings_and_loose_closes_never_serve_data() {
-        // A `}` INSIDE a string value deflated the old synthetic brace
-        // depth, letting a nested object's `value` read back at apparent top
-        // level — 0.99 served while the row's own value is null (Codex round
-        // 7). Brace-free anchoring makes the nested read structurally
-        // unreachable: a gap, never a fabricated ratio.
+        // A `}` inside a string value must not let the nested object's `value`
+        // read at apparent top level: the row's own value is null, so a gap,
+        // never 0.99.
         let brace_in_string = r#"{"selectedDate":"2026-08-19","pcRatios":[{"name":"TOTAL PUT/CALL RATIO","meta":{"note":"}","value":"0.99"},"value":null},{"name":"EQUITY PUT/CALL RATIO","value":"0.52"}]}"#;
         let b = parse_daily_stats(brace_in_string).unwrap();
         assert_eq!(b.total, None, "{b:?}");
         assert_eq!(b.equity, Some(0.52));
-        // An escape CONTINUES the label — backslash-u0020 is a space inside
-        // the string, so this is the 30-DAY product again, never a close
-        // (round 7; the backslash is spelled \x5C so the escape reaches the
-        // fixture literally).
+        // An escape continues the label — backslash-u0020 is a space inside
+        // the string, so this is the 30-DAY product again, never a close (the
+        // backslash is spelled \x5C so the escape reaches the fixture
+        // literally).
         let bs = '\x5C';
         let escaped_label = format!(
             r#"{{"selectedDate":"2026-08-19","pcRatios":[{{"name":"TOTAL PUT/CALL RATIO{bs}u002030-DAY","value":"0.99"}},{{"name":"EQUITY PUT/CALL RATIO","value":"0.52"}}]}}"#
@@ -573,10 +518,9 @@ mod tests {
 
     #[test]
     fn plain_form_literal_quotes_are_content_never_boundaries() {
-        // In plain JSON a backslash-quote is a literal quote INSIDE the
-        // string (Codex round 8) — the escaped payload's delimiter, but this
-        // form's content. Three shapes that previously mis-read it as a
-        // boundary (the backslash is spelled \x5C so it reaches the fixtures
+        // In plain JSON a backslash-quote is a literal quote inside the string
+        // — the escaped payload's delimiter, but this form's content. Three
+        // shapes (the backslash is spelled \x5C so it reaches the fixtures
         // literally):
         let bs = '\x5C';
         // … a scalar continuing past a literal quote is drift, never 0.80 …
@@ -612,10 +556,10 @@ mod tests {
     #[test]
     fn the_backdrop_reads_one_representation_anchored_by_the_date() {
         let bs = '\x5C';
-        // An escaped row-shaped text quoted inside a PLAIN document is
-        // internally consistent, but it is the wrong form for the plain
-        // date that anchors the record (Codex round 9) — the real plain
-        // equity row parses, the stringified fake never joins.
+        // An escaped row-shaped text quoted inside a plain document is
+        // internally consistent, but it is the wrong form for the plain date
+        // that anchors the record — the real plain equity row parses, the
+        // stringified fake never joins.
         let escaped_fake_row = format!(
             r#"{{"selectedDate":"2026-08-19","note":"{bs}"name{bs}":{bs}"TOTAL PUT/CALL RATIO{bs}",{bs}"value{bs}":{bs}"0.99{bs}"","pcRatios":[{{"name":"EQUITY PUT/CALL RATIO","value":"0.52"}}]}}"#
         );
@@ -634,10 +578,10 @@ mod tests {
 
     #[test]
     fn conflicting_same_form_candidates_are_drift_never_first_match_wins() {
-        // A same-form decoy object beside the real collection (Codex round
-        // 10): the decoy's 0.99 and the real row's null disagree, and the
-        // chunk-split scanner has no structural way to tell which container
-        // is operative — so the label is a gap, never the decoy's number.
+        // A same-form decoy object beside the real collection: the decoy's
+        // 0.99 and the real row's null disagree, and the chunk-split scanner
+        // has no structural way to tell which container is operative — so the
+        // label is a gap, never the decoy's number.
         let decoy_row = r#"{"sample":{"name":"TOTAL PUT/CALL RATIO","value":"0.99"},"optionsData":{"selectedDate":"2026-08-19","ratios":[{"name":"TOTAL PUT/CALL RATIO","value":null},{"name":"EQUITY PUT/CALL RATIO","value":"0.52"}]}}"#;
         let b = parse_daily_stats(decoy_row).unwrap();
         assert_eq!(b.total, None, "{b:?}");
@@ -661,7 +605,7 @@ mod tests {
     #[test]
     fn prefix_extended_keys_and_unbound_labels_never_serve_data() {
         // A prefix-extended value key is a different key — `"value":null`
-        // must not fall through to `"fallbackvalue"` (Codex round 5).
+        // must not fall through to `"fallbackvalue"`.
         let prefixed = r#"{"selectedDate":"2026-08-19","pcRatios":[{"name":"TOTAL PUT/CALL RATIO","value":null,"fallbackvalue":"0.80"},{"name":"EQUITY PUT/CALL RATIO","value":"0.52"}]}"#;
         let b = parse_daily_stats(prefixed).unwrap();
         assert_eq!(b.total, None, "{b:?}");
@@ -679,10 +623,10 @@ mod tests {
 
     #[test]
     fn a_valueless_row_never_reads_the_next_rows_value_and_partial_keys_never_anchor() {
-        // COMPACT row boundary (no whitespace padding — the production shape):
+        // Compact row boundary (no whitespace padding — the production shape):
         // a valueless total row sits immediately before the equity row, whose
         // value lands inside the 60-byte window; the row-closing brace must
-        // stop the scan (Codex 2026-08-20 round 4).
+        // stop the scan.
         let compact = r#"{"selectedDate":"2026-08-19","pcRatios":[{"name":"TOTAL PUT/CALL RATIO"},{"name":"EQUITY PUT/CALL RATIO","value":"0.52"}]}"#;
         let b = parse_daily_stats(compact).unwrap();
         assert_eq!(b.total, None, "{b:?}");

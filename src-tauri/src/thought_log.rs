@@ -1,32 +1,10 @@
-//! Diagnostic thought-log capture (`docs/run-tracking.md §Thought-log capture`):
-//! a decorating [`ProgressReporter`] that appends every streamed *thinking*
-//! delta to per-stream text files under one per-run folder, so a run's
-//! reasoning survives the tracker's transient panes (the 2026-08-10 attempt-1
-//! failure analysis rested on screenshots of them). Thoughts only — the main
-//! agent's report body (`AgentToken`) persists as the report itself, and the
-//! non-thinking events are run structure, already owned by the stderr tee.
-//!
-//! The one structural addition is the **call fence**: every local-model call's
-//! boundary events (`ModelCallStarted` / `ModelCallFinished`) write a header
-//! and a trailer line into the owning step's file, so a holding's file reads
-//! as a call timeline — the stage, model, controls and start time above each
-//! call's thinking, its outcome, elapsed time and token counts below — instead
-//! of every call's reasoning run together. Fences carry labels and counts
-//! only, never prompt or body text. A streaming agent call's bounded retry
-//! (`StreamRestarted`) writes one more fence line into its stream's file, so the
-//! re-attempt's reasoning never runs on from the failed attempt's.
-//!
-//! Best-effort by contract: the sink may never fail or reorder the run it
-//! observes. Every message is forwarded to the inner reporter first; any
-//! capture I/O error disables capture for the rest of the run with one stderr
-//! line. Appends are **synchronous and unbuffered by design** — a mid-run
-//! failure leaves everything streamed so far on disk, and the crash case is
-//! exactly the one this exists for. The cost side of that choice is stated
-//! honestly: deltas are small coalesced chunks at local-model token rates, so
-//! healthy-disk appends are negligible, but a stalled disk would stall the
-//! stream loop — accepted for a debug-gated diagnostic whose value is
-//! crash-honesty (an async writer would lose the in-flight tail at exactly
-//! the crash that matters).
+//! Diagnostic thought-log capture (`docs/run-tracking.md §Thought-log
+//! capture`): a decorating [`ProgressReporter`] that appends streamed thinking
+//! deltas to per-stream files under one per-run folder, fenced per local-model
+//! call. Every message forwards first; the first capture error disables capture
+//! for the run. Appends are synchronous and unbuffered by design so a crash
+//! leaves everything streamed so far on disk; a stalled disk stalling the
+//! stream loop is accepted for a debug-gated diagnostic.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -37,30 +15,22 @@ use std::sync::{Arc, Mutex};
 
 use crate::progress::{elapsed_label, ProgressEvent, ProgressMessage, ProgressReporter};
 
-/// How many run folders survive pruning, newest first — bounded accumulation
-/// across dev runs (~kilobytes each, so this is history depth, not a cost
-/// question). Pruning runs only after a run's **first capture has landed on
-/// disk** (a call fence or a thinking delta), keeping [`THOUGHT_LOG_RETENTION`]
-/// − 1 prior folders beside this run's own; a run that captures nothing — or
-/// whose capture fails before the first write — prunes nothing, so an old log
-/// is never deleted without a replacement existing.
+/// How many run folders survive pruning, newest first. Pruning runs only after
+/// a run's first capture has landed on disk, keeping this many minus one prior
+/// folders beside the run's own, so an old log is never deleted without a
+/// replacement existing.
 pub const THOUGHT_LOG_RETENTION: usize = 10;
 
-/// The line a streaming agent call's bounded retry writes into its stream's
-/// file between the failed attempt's reasoning and the re-attempt's, on the
-/// call fences' `====` prefix.
+/// Written into a stream's file between a failed attempt's reasoning and the
+/// re-attempt's.
 const RESTART_FENCE: &str = "==== stream restarted: retrying once\n";
 
-/// A thinking-capture decorator around the live reporter. Constructed per run
-/// by `live_run_context` when the gate is on, and by the fixed-evidence live
-/// harness when asked to capture (`MARKET_SIGNAL_LOCAL_EVAL_THOUGHT_DIR`);
-/// everywhere else (tests, noop contexts) it simply never exists.
+/// A thinking-capture decorator around the live reporter; never exists in
+/// tests or noop contexts.
 pub struct ThoughtLogSink {
     inner: Arc<dyn ProgressReporter>,
-    /// This run's own folder. Created lazily on the first capture (a call
-    /// fence or a thinking delta), so a run that issues no local call and
-    /// streams no thinking (a quick check, an early cancel) leaves no empty
-    /// folder behind.
+    /// Created lazily on the first capture, so a run that captures nothing
+    /// leaves no empty folder behind.
     dir: PathBuf,
     /// Open appenders keyed by sanitized stream file name.
     files: Mutex<HashMap<String, Appender>>,
@@ -68,33 +38,26 @@ pub struct ThoughtLogSink {
     disabled: AtomicBool,
 }
 
-/// One stream file plus whether its last byte was a newline — the fence
-/// guard: a header or trailer always starts on its own line, even after a
-/// thinking delta that ended mid-sentence, while deltas append verbatim.
+/// `at_line_start` is the fence guard: a header or trailer always starts on
+/// its own line, even after a delta that ended mid-sentence.
 struct Appender {
     file: File,
     at_line_start: bool,
 }
 
-/// What one captured event appends: a thinking delta verbatim, or a fence
-/// line that must begin at a line start.
+/// A thinking delta appends verbatim; a fence line must begin at a line start.
 enum Capture {
     Delta(String),
     Line(String),
 }
 
 impl ThoughtLogSink {
-    /// Wrap `inner`, deriving the run folder name
-    /// `<UTC yyyymmdd-hhmmss>-<8 alphanumerics of run_id>` — a wall-clock name,
-    /// deliberately: this is a diagnostic file directory a human browses, not a
-    /// store an identity-or-lifecycle selection reads, so the insertion-order
-    /// rule does not bind and lexical order doubling as chronological order is
-    /// the whole point. The id half is normalized to exactly eight
-    /// alphanumerics so every folder this sink writes matches
-    /// [`looks_like_run_dir`]. Nothing is pruned here — pruning waits for the
-    /// first *successfully written* capture, so a run that streams no thinking
-    /// (a quick check, a blocked or skipped attempt) or whose capture fails
-    /// outright can never delete an old log without leaving a replacement.
+    /// The run folder is `<UTC yyyymmdd-hhmmss>-<8 alphanumerics of run_id>`:
+    /// a wall-clock name, deliberately, so lexical order doubles as
+    /// chronological order in a directory a human browses. The id half is
+    /// normalized to exactly eight alphanumerics so every folder this sink
+    /// writes matches [`looks_like_run_dir`]. Nothing is pruned here; pruning
+    /// waits for the first successfully written capture.
     pub fn attach(inner: Arc<dyn ProgressReporter>, base: &Path, run_id: &str) -> Self {
         let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
         let id8: String = run_id.chars().filter(char::is_ascii_alphanumeric).take(8).collect();
@@ -107,10 +70,8 @@ impl ThoughtLogSink {
         }
     }
 
-    /// The stream file a captured event appends to and what it appends;
     /// `None` for everything the sink deliberately ignores. A call boundary
-    /// lands in its stamped step's file — the same file that step's thinking
-    /// deltas use — or in `run.txt` when it fired with no step open.
+    /// lands in its stamped step's file, or in `run.txt` when no step was open.
     fn stream_file(event: &ProgressEvent) -> Option<(String, Capture)> {
         match event {
             ProgressEvent::AgentThinking { delta } => {
@@ -123,9 +84,8 @@ impl ThoughtLogSink {
             ProgressEvent::StepThinking { step, delta } => {
                 Some((format!("{}.txt", sanitize(step)), Capture::Delta(delta.clone())))
             }
-            // A streaming agent call's bounded retry: one fence line in the
-            // stream's own file, so the re-attempt's reasoning never runs on
-            // from the failed attempt's.
+            // One fence line, so the re-attempt's reasoning never runs on from
+            // the failed attempt's.
             ProgressEvent::StreamRestarted { posture } => {
                 let file = match posture {
                     Some(p) => format!("analyst-{}.txt", sanitize(p)),
@@ -153,8 +113,7 @@ impl ThoughtLogSink {
             return;
         }
         if let Err(e) = self.try_append(&file_name, &capture) {
-            // One line, once: capture is diagnostics and must cost the run
-            // nothing, so the first error retires it for the rest of the run.
+            // Capture must cost the run nothing: the first error retires it.
             self.disabled.store(true, Ordering::Relaxed);
             eprintln!(
                 "[thought-log] capture disabled for this run ({}): {e}",
@@ -196,13 +155,10 @@ impl ThoughtLogSink {
         appender.file.write_all(text.as_bytes())?;
         appender.at_line_start = text.ends_with('\n');
         if first_capture {
-            // Prune only now, with the first capture (a fence header or a
-            // delta) already on disk: a capture
-            // that failed anywhere above latched the disable without pruning,
-            // so a failed run can never delete an old log while producing no
-            // replacement. This run's own folder is exempt by name, so even a
-            // backwards clock step (which would make it sort oldest) cannot
-            // turn it into its own prune victim.
+            // Only now, with the first capture on disk, so a failed run never
+            // deletes an old log while producing no replacement. The run's own
+            // folder is exempt by name, so a backwards clock step (which would
+            // make it sort oldest) cannot make it its own prune victim.
             if let (Some(base), Some(own)) = (self.dir.parent(), self.dir.file_name()) {
                 prune_run_dirs(base, THOUGHT_LOG_RETENTION.saturating_sub(1), Some(own));
             }
@@ -221,11 +177,9 @@ impl ProgressReporter for ThoughtLogSink {
     }
 }
 
-/// The fence lines a call's boundary events write. The header opens the call
-/// with its number, stage, model, controls, prompt size and UTC start time;
-/// the trailer closes it with the outcome, elapsed time and the daemon's counts
-/// (or a failure's capped detail), then a blank line so the next call stands
-/// apart. `====` is the fixed prefix a reader splits on.
+/// `====` is the fixed prefix a reader splits on; the trailer ends with a blank
+/// line so the next call stands apart. Fences carry labels and counts only,
+/// never prompt or body text.
 fn render_fence(event: &ProgressEvent) -> String {
     match event {
         ProgressEvent::ModelCallStarted {
@@ -316,9 +270,9 @@ fn render_fence(event: &ProgressEvent) -> String {
     }
 }
 
-/// Replace every character outside `[A-Za-z0-9._-]` so a stream key can never
-/// escape its folder or fail to name a file — `holding-BRK/B` (slash-notation
-/// symbols are real Schwab identities) writes `holding-BRK_B.txt`.
+/// Replaces every character outside `[A-Za-z0-9._-]` so a stream key can never
+/// escape its folder: `holding-BRK/B` (a real Schwab identity) writes
+/// `holding-BRK_B.txt`.
 fn sanitize(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -337,16 +291,13 @@ fn sanitize(name: &str) -> String {
     }
 }
 
-/// Delete this sink's oldest run folders beyond `keep`, newest-by-name first,
-/// never touching `exempt` (the calling run's own folder). Only entries
-/// matching the sink's own exact `<yyyymmdd-hhmmss>-<8 alnum>` shape are
-/// counted or deleted — anything else in the directory (a user's notes, a
-/// stray file, a `20260810-120000-attempt-2-analysis` lookalike with the
-/// wrong suffix) is not this sink's to remove. Best-effort: a failed removal
-/// is skipped.
+/// Only entries matching the sink's own exact folder shape are counted or
+/// deleted; anything else in the directory is not this sink's to remove.
+/// `exempt` is the calling run's own folder. Best-effort: a failed removal is
+/// skipped.
 pub fn prune_run_dirs(base: &Path, keep: usize, exempt: Option<&std::ffi::OsStr>) {
     let Ok(entries) = fs::read_dir(base) else {
-        return; // No directory yet — nothing to prune.
+        return;
     };
     let mut runs: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
@@ -363,9 +314,9 @@ pub fn prune_run_dirs(base: &Path, keep: usize, exempt: Option<&std::ffi::OsStr>
     }
 }
 
-/// Exactly `<8 digits>-<6 digits>-<8 alphanumerics>` — the shape
-/// [`ThoughtLogSink::attach`] writes, and nothing looser: a length or suffix
-/// mismatch (a user's dated analysis folder) must never read as prunable.
+/// Exactly `<8 digits>-<6 digits>-<8 alphanumerics>`, the shape
+/// [`ThoughtLogSink::attach`] writes, and nothing looser: a user's dated
+/// analysis folder must never read as prunable.
 fn looks_like_run_dir(name: &str) -> bool {
     let bytes = name.as_bytes();
     bytes.len() == 24
@@ -381,7 +332,6 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
-    /// Counts forwarded messages, proving pass-through is unconditional.
     struct CountingReporter(AtomicUsize);
     impl ProgressReporter for CountingReporter {
         fn report(&self, _message: &ProgressMessage) {
@@ -414,7 +364,6 @@ mod tests {
             step: "holding-AAPL".into(),
             delta: "cored".into(),
         }));
-        // Slash-notation symbol: the file name sanitizes, never nests a dir.
         sink.report(&msg(ProgressEvent::StepThinking {
             step: "holding-BRK/B".into(),
             delta: "berkshire".into(),
@@ -619,8 +568,7 @@ mod tests {
     #[test]
     fn a_run_with_no_thinking_leaves_no_folder_and_prunes_nothing() {
         let tmp = tempfile::tempdir().unwrap();
-        // Ten prior runs at the retention cap: a thought-less run (a quick
-        // check, a blocked attempt) must not spend one of them.
+        // Ten prior runs at the retention cap.
         for i in 0..10 {
             fs::create_dir(tmp.path().join(format!("20260801-1200{i:02}-abcd{i:04}"))).unwrap();
         }
@@ -677,8 +625,8 @@ mod tests {
             fs::create_dir(tmp.path().join(format!("20260801-1200{i:02}-abcd{i:04}"))).unwrap();
         }
         fs::create_dir(tmp.path().join("analysis-notes")).unwrap();
-        // A dated user folder that MIMICS the prefix but not the exact shape —
-        // sorts before every run folder, so a loose guard would delete it.
+        // A lookalike with the wrong suffix sorts before every run folder, so a
+        // loose guard would delete it.
         fs::create_dir(tmp.path().join("20260101-000000-attempt-2-analysis")).unwrap();
         fs::write(tmp.path().join("loose.txt"), b"not a run dir").unwrap();
 
@@ -709,7 +657,6 @@ mod tests {
         assert!(!looks_like_run_dir("20260810-120000-abc"), "short suffix");
         assert!(!looks_like_run_dir("20260810-120000-"), "no suffix");
         assert!(!looks_like_run_dir("notes"));
-        // attach normalizes any run id to the exact 8-alphanumeric suffix.
         let tmp = tempfile::tempdir().unwrap();
         let inner = Arc::new(CountingReporter(AtomicUsize::new(0)));
         for run_id in ["9f3ab12c-4e5d-6789", "x", ""] {
@@ -727,8 +674,8 @@ mod tests {
             fs::create_dir(tmp.path().join(format!("20260801-1200{i:02}-abcd{i:04}"))).unwrap();
         }
         let (inner, sink) = sink_under(tmp.path());
-        // Occupy the stream file's path with a DIRECTORY so the open fails
-        // after `create_dir_all` succeeded — the capture dies mid-setup.
+        // A directory at the stream file's path makes the open fail after
+        // `create_dir_all` succeeded.
         fs::create_dir_all(sink.dir.join("main-agent.txt")).unwrap();
         sink.report(&msg(ProgressEvent::AgentThinking { delta: "lost".into() }));
         assert!(sink.disabled.load(Ordering::Relaxed));
@@ -744,8 +691,7 @@ mod tests {
     #[test]
     fn a_backdated_own_folder_is_never_its_own_prune_victim() {
         let tmp = tempfile::tempdir().unwrap();
-        // Ten priors named in the FUTURE: a backwards clock step makes this
-        // run's folder sort oldest, where an unexempted prune would eat it.
+        // Priors named in the future make this run's folder sort oldest.
         for i in 0..10 {
             fs::create_dir(tmp.path().join(format!("20991231-1200{i:02}-abcd{i:04}"))).unwrap();
         }

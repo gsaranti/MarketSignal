@@ -1,46 +1,31 @@
-//! The **soft forensic flags** (`docs/portfolio-analysis.md` §Starting parameters;
-//! `docs/portfolio-workflow.md` §Step 6b): four engine-computed reads that sit
-//! beside the hard-forensic filings state on the holding's audit — Altman Z
-//! below 1.8, Piotroski F at or below 3, TTM net income above 1.3× TTM operating
-//! cash flow, and receivables or inventory growing faster than revenue year over
-//! year on the latest quarter — computed from `financial-scores` and the
-//! statements. They move the model's read of conviction and risk and never the
-//! letter grade; they bind no action rule, so they carry no parameter stamp —
-//! the thresholds are drafted consts, like the hard-forensic lookback.
-//!
-//! Every flag is three-state — `fired`, `clear`, or `unevaluable` naming the
-//! missing input — and a missing input never reads clear (the technology-event
-//! pre-flag's rule: an unevaluable read records its typed reason, never a fired
-//! or clear flag).
+//! The soft forensic flags (`docs/portfolio-analysis.md` §Starting parameters;
+//! `docs/portfolio-workflow.md` §Step 6b): four engine-computed reads beside
+//! the hard-forensic filings state. They move the model's read of conviction
+//! and risk, never the letter grade, and bind no action rule, so they carry no
+//! parameter stamp. A missing input never reads clear.
 
 use serde::{Deserialize, Serialize};
 
 use crate::portfolio::engine::{self, CompanyFinancials};
 
-// ---- Calibration surface (drafted — `docs/portfolio-analysis.md` §Starting
-//      parameters) -----------------------------------------------------------------
+// ---- Calibration surface (`docs/portfolio-analysis.md` §Starting parameters) ----
 
 /// Altman Z fires strictly below this.
 pub const ALTMAN_Z_DISTRESS: f64 = 1.8;
 /// Piotroski F fires at or below this.
 pub const PIOTROSKI_WEAK: f64 = 3.0;
-/// Against positive TTM operating cash flow, TTM net income fires strictly above
-/// this multiple of it; against zero or negative cash flow the multiple inverts
-/// (1.3× a negative cash flow sits below it), so net income fires when it exceeds
-/// the cash flow at all — earnings better than cash, the flag's concern.
+/// TTM net income fires strictly above this multiple of positive TTM operating
+/// cash flow; against zero or negative cash flow the multiple would invert, so
+/// net income then fires when it exceeds the cash flow at all.
 pub const NET_INCOME_TO_OPERATING_CASH_FLOW: f64 = 1.3;
-/// Against positive revenue growth, a receivables or inventory line fires strictly
-/// above this multiple of it; against zero or negative revenue growth the multiple
-/// inverts, so a line fires on any growth at all — a build while sales fall.
+/// A receivables or inventory line fires strictly above this multiple of
+/// positive revenue growth; against zero or negative revenue growth it fires on
+/// any growth at all.
 pub const WORKING_CAPITAL_TO_REVENUE_GROWTH: f64 = 1.5;
 
-/// Boundary slack on the threshold tests (the overlay's rule): a value computed
-/// onto a documented boundary can land a few ULPs off it in f64, and the drafted
-/// rules say "below", "at or below" and "above" — so each test tolerates the
-/// rounding rather than letting it decide a calibration boundary. The slack is
-/// relative to the magnitudes compared, floored at one: a ratio or a score
-/// compares at the absolute slack, while statement sums in dollars — where a
-/// decimal-exact 1.3× boundary sits several ULPs wide — compare at the slack
+/// Slack on the threshold tests: a value computed onto a documented boundary
+/// can land a few ULPs off it in f64. The slack is relative to the magnitudes
+/// compared, floored at one, so statement sums in dollars compare at a slack
 /// scaled to their size.
 const BOUNDARY_EPS: f64 = 1e-9;
 
@@ -88,9 +73,8 @@ pub struct ScoreFlag {
     pub state: SoftFlagState,
 }
 
-/// Net income against operating cash flow, both on the TTM basis — four
-/// contiguous newest quarterly prints per statement, the two windows aligned on
-/// one newest period end (the overlay's cross-statement rule).
+/// Net income against operating cash flow, both TTM over four contiguous newest
+/// quarters, the two windows aligned on one newest period end.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NetIncomeVsOperatingCashFlow {
     pub ttm_net_income: Option<f64>,
@@ -104,22 +88,20 @@ pub struct NetIncomeVsOperatingCashFlow {
 pub enum LineLeg {
     /// The line's year-over-year growth, tested against the revenue growth.
     Evaluated { growth: f64, fired: bool },
-    /// The year-ago line is zero (or negative): no growth is defined, and an
-    /// issuer without the line — a no-inventory business — contributes no leg;
-    /// the flag reads on the other line.
+    /// The year-ago line is zero or negative, so no growth is defined; a
+    /// no-inventory business contributes no leg and the flag reads on the other.
     NotApplicable,
-    /// The line is absent from the feed on the latest quarter or its year-ago
-    /// comparator — a missing input, so the flag reads unevaluable.
+    /// The line is absent on the latest quarter or its year-ago comparator, so
+    /// the flag reads unevaluable.
     Missing,
-    /// The line was not tested because a shared input — the revenue growth or an
-    /// aligned five-quarter window — was missing; the flag's `missing` names it.
+    /// A shared input — the revenue growth or an aligned five-quarter window —
+    /// was missing; the flag's `missing` names it.
     NotTested,
 }
 
 /// Receivables / inventory growth against revenue growth, year over year on the
-/// latest quarter: the newest print against the same fiscal quarter one year
-/// back (index 4 of five contiguous rows), on the income and balance-sheet
-/// windows aligned on one newest period end.
+/// latest quarter (index 0 against index 4 of five contiguous rows), the income
+/// and balance-sheet windows aligned on one newest period end.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkingCapitalBuild {
     pub revenue_growth: Option<f64>,
@@ -140,10 +122,9 @@ pub struct SoftForensicFlags {
 
 // ---- Computation ------------------------------------------------------------------
 
-/// Compute the four flags over a stock's financials. The statement rows are read
-/// in canonical order (newest first, the latest filing winning a duplicated
-/// period — `engine::canonicalize_statements`) so a shuffled or duplicated feed
-/// response cannot shift the TTM or year-over-year windows.
+/// The statement rows are read in canonical order (`engine::canonicalize_statements`)
+/// so a shuffled or duplicated feed response cannot shift the TTM or
+/// year-over-year windows.
 pub fn compute(fin: &CompanyFinancials) -> SoftForensicFlags {
     let mut fin = fin.clone();
     engine::canonicalize_statements(&mut fin);
@@ -183,8 +164,8 @@ fn net_income_vs_operating_cash_flow(fin: &CompanyFinancials) -> NetIncomeVsOper
     let income4 = income.len() >= 4 && contiguous(income[..4].iter().map(|r| r.period_end.as_str()));
     let cash4 = cash.len() >= 4 && contiguous(cash[..4].iter().map(|r| r.period_end.as_str()));
 
-    // TTM sums over the four newest quarters — `None` unless all four carry the
-    // line (a partial sum would misstate the trailing year).
+    // `None` unless all four quarters carry the line: a partial sum would
+    // misstate the trailing year.
     let ttm_net_income: Option<f64> = income4
         .then(|| income[..4].iter().map(|r| r.net_income).sum::<Option<f64>>())
         .flatten();
@@ -202,8 +183,7 @@ fn net_income_vs_operating_cash_flow(fin: &CompanyFinancials) -> NetIncomeVsOper
                 .into(),
         );
     }
-    // The cross-statement ratio: both windows must cover the SAME trailing year
-    // — matching newest period ends on two contiguous windows aligns them whole.
+    // Both windows must cover the same trailing year.
     let aligned = income4 && cash4 && income[0].period_end == cash[0].period_end;
     if ttm_net_income.is_some() && ttm_operating_cash_flow.is_some() && !aligned {
         missing.push("income and cash-flow windows aligned on one newest period end".into());
@@ -236,8 +216,7 @@ fn working_capital_build(fin: &CompanyFinancials) -> WorkingCapitalBuild {
     let balance = &fin.quarterly_balance_sheet;
     let mut missing: Vec<String> = Vec::new();
 
-    // Year over year on the latest quarter: index 0 against index 4, an index
-    // arithmetic that is only a year apart when rows 0..=4 are contiguous.
+    // Index 0 against index 4 is only a year apart when rows 0..=4 are contiguous.
     let income5 = income.len() >= 5 && contiguous(income[..5].iter().map(|r| r.period_end.as_str()));
     let balance5 =
         balance.len() >= 5 && contiguous(balance[..5].iter().map(|r| r.period_end.as_str()));
@@ -421,8 +400,7 @@ mod tests {
         assert_eq!(p(Some(4.0)).state, SoftFlagState::Clear);
         assert!(unevaluable_names(&p(None).state, "Piotroski"));
 
-        // The whole scores call gapped: both score flags unevaluable, the
-        // statement flags untouched.
+        // The whole scores call gapped.
         let mut fin = clean();
         fin.financial_scores = None;
         let flags = compute(&fin);
@@ -452,10 +430,8 @@ mod tests {
 
     #[test]
     fn a_decimal_exact_boundary_in_dollars_never_fires_on_rounding() {
-        // Four quarters of operating cash flow 100,000,001.10 and net income
-        // 130,000,001.43 — exactly 1.3× in decimal — land a few ULPs over the
-        // product in f64; the magnitude-aware slack reads them as the boundary,
-        // and a whole dollar over it still fires.
+        // Net income 130,000,001.43 is exactly 1.3× cash flow 100,000,001.10 in
+        // decimal but lands a few ULPs over the product in f64.
         let with = |quarterly_net_income: f64| {
             let mut fin = clean();
             fin.quarterly_income = ENDS
@@ -496,21 +472,18 @@ mod tests {
 
     #[test]
     fn net_income_against_operating_cash_flow_is_unevaluable_on_a_gap_or_a_misaligned_window() {
-        // A net-income line missing inside the window.
         let mut fin = clean();
         fin.quarterly_income[2].net_income = None;
         let read = compute(&fin).net_income_vs_operating_cash_flow;
         assert_eq!(read.ttm_net_income, None);
         assert!(unevaluable_names(&read.state, "TTM net income"));
-        // A non-contiguous income window (a skipped quarter).
         let mut fin = clean();
         fin.quarterly_income.remove(1);
         assert!(unevaluable_names(
             &compute(&fin).net_income_vs_operating_cash_flow.state,
             "TTM net income"
         ));
-        // Cash flow served one quarter behind income: both sums exist, the
-        // windows do not cover the same year.
+        // Cash flow served one quarter behind income.
         let mut fin = clean();
         fin.quarterly_cash_flow.remove(0);
         fin.quarterly_cash_flow.push(cash("2025-03-31", 12.0));
@@ -561,8 +534,7 @@ mod tests {
 
     #[test]
     fn a_zero_year_ago_line_is_not_applicable_and_the_other_line_still_reads() {
-        // A no-inventory issuer: inventory zero on both quarters contributes no
-        // leg, and the flag reads on receivables alone.
+        // A no-inventory issuer.
         let mut fin = clean();
         for row in &mut fin.quarterly_balance_sheet {
             row.inventory = Some(0.0);
@@ -588,15 +560,12 @@ mod tests {
 
     #[test]
     fn a_missing_line_or_window_reads_unevaluable_never_clear() {
-        // The inventory line absent from the year-ago print: receivables still
-        // evaluate, the flag does not.
         let mut fin = clean();
         fin.quarterly_balance_sheet[4].inventory = None;
         let read = compute(&fin).working_capital_build;
         assert_eq!(read.inventory, LineLeg::Missing);
         assert!(matches!(read.receivables, LineLeg::Evaluated { .. }));
         assert!(unevaluable_names(&read.state, "inventory"));
-        // Only four balance sheets: no year-ago comparator.
         let mut fin = clean();
         fin.quarterly_balance_sheet.pop();
         let read = compute(&fin).working_capital_build;

@@ -1,36 +1,15 @@
-//! The market-data source contract: a structured baseline-scan boundary.
-//!
-//! Mirrors the `agent` module's spine — the application layer owns all I/O, the
-//! data source is a trait the orchestrator drives, and a deterministic stub
-//! stands in for the live provider in offline tests. Three real adapters implement
-//! this trait — `fmp` (equity indices, VIX, gold, sectors, and multi-horizon index
-//! performance from end-of-day history), `fred` (the Treasury
-//! yields, dollar index, and oil / natural-gas internals FMP's free tier omits, plus
-//! the `macro_levels` group — Fed-funds target range, inflation breakevens, consumer
-//! sentiment, PCE — and the economic-release `calendar`), and `bls` (the `labor_levels`
-//! group — CPI, unemployment, payrolls, wages) — and the `CompositeMarketDataSource`
-//! below runs them and merges them into one baseline.
-//!
-//! `BaselineMarketData` is the Step-3 baseline scan
-//! (`docs/report-workflow.md §Step 3`), gathered before agent reasoning.
-//! FMP fills indices, sectors, and the VIX + gold internals; FRED appends its
-//! commodity / yield series to the same `internals` group and fills the
-//! `macro_levels` group (Fed-funds target range, inflation breakevens, consumer
-//! sentiment, PCE) and the economic-release `calendar` (the recent + upcoming US
-//! reports, from FRED's free release-dates schedule, with FMP's paid economic calendar
-//! layering consensus, surprise and Fed / FOMC dates on where the key reaches it); BLS
-//! fills the `labor_levels` group (CPI, unemployment, payrolls, wages).
+//! The market-data source contract: the Step-3 baseline scan
+//! (`docs/report-workflow.md §Step 3`) as a trait the orchestrator drives, the
+//! `fmp` / `fred` / `bls` adapters that implement it, and the composite that runs
+//! them and merges their groups into one `BaselineMarketData`.
 
 use serde::{Deserialize, Serialize};
 
 use crate::cadence::ReportCadence;
 use crate::progress::RunContext;
 
-/// How a [`Quote`]'s [`Change`] value should be read — the change's own unit, carried
-/// alongside the figure so a reader (the serialized baseline the model sees, or any text
-/// formatter) never has to infer it from the series id. Replaces the earlier convention
-/// where a percent-vs-point-delta change was disambiguated only by a `(Δ pp)` marker
-/// appended to the display name.
+/// How a [`Quote`]'s [`Change`] value should be read: the change's own unit, carried
+/// alongside the figure so a reader never infers it from the series id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeKind {
@@ -48,10 +27,8 @@ pub enum ChangeKind {
     PointDelta,
 }
 
-/// A [`Quote`]'s change off its prior reading, paired with the [`ChangeKind`] that says how
-/// to read it. The two travel together so the figure and its unit can never desync — the
-/// structural fix for what was an overloaded `change_pct` field (a percent for most series
-/// but a point delta for rate-valued ones, disambiguated only by a name marker).
+/// A [`Quote`]'s change off its prior reading with the [`ChangeKind`] that says how to
+/// read it, so the figure and its unit never desync.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct Change {
     pub value: f64,
@@ -59,21 +36,18 @@ pub struct Change {
 }
 
 impl Change {
-    /// A percent change off the prior observation ([`ChangeKind::Percent`]).
     pub fn percent(value: f64) -> Self {
         Self {
             value,
             kind: ChangeKind::Percent,
         }
     }
-    /// A per-period change compounded to an annual rate ([`ChangeKind::Annualized`]).
     pub fn annualized(value: f64) -> Self {
         Self {
             value,
             kind: ChangeKind::Annualized,
         }
     }
-    /// A point change `latest − prior` ([`ChangeKind::PointDelta`]).
     pub fn point_delta(value: f64) -> Self {
         Self {
             value,
@@ -82,26 +56,16 @@ impl Change {
     }
 }
 
-/// One quoted instrument in the baseline scan: a market index or a market
-/// internal (VIX, the dollar index, a commodity). `change` carries the move off the prior
-/// reading **and** the [`ChangeKind`] that says how to read it — a percent for most series,
-/// but a **point delta** (level move) for rate-valued series — so the figure is
-/// self-describing wherever it is rendered.
-///
-/// `unit` annotates **`price`** — the unit the level is quoted in ("index points",
-/// "percent", "USD per barrel", "thousands of persons", …), supplied per series from
-/// each adapter's own table rather than the wire, so the model reading the serialized
-/// baseline can't misread an unlabeled level (a payroll count of thousands as ones, a
-/// yield level as a dollar figure). The change's unit lives on `change.kind` (combined with
-/// `unit` for a point delta), not here.
+/// One quoted instrument in the baseline scan (an index or a market internal). `unit`
+/// annotates `price` — the unit the level is quoted in ("index points", "percent", "USD
+/// per barrel", …), supplied per series from each adapter's own table rather than the
+/// wire, so the model never misreads an unlabeled level. The change's unit lives on
+/// `change.kind` (combined with `unit` for a point delta), not here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Quote {
     pub symbol: String,
     pub name: String,
     pub price: f64,
-    /// Forward-compatible: a snapshot serialized before the typed change (which carried a
-    /// `change_pct` field instead) decodes with a default `Change`. The per-report delta
-    /// view reads only `price`/`name`, so the defaulted change is inert there.
     #[serde(default)]
     pub change: Change,
     pub unit: String,
@@ -114,27 +78,21 @@ pub struct SectorPerformance {
     pub change_pct: f64,
 }
 
-/// One entry in the Step-3 economic-release calendar: a scheduled or just-released US
-/// economic report (`docs/report-workflow.md §Step 3` — the "CPI/PCE/jobs
-/// calendar" and "major economic reports from the recent window"), or a Fed / FOMC event.
-/// A `release` entry comes from FRED's free release-dates schedule, so it carries the
-/// release **name** and **date**; the report's figures reach the model through the
-/// `macro_levels` / `labor_levels` series quotes. On the paid FMP tier a release also
-/// carries `surprises` — one entry per tracked component print, the consensus estimate and
-/// the realized surprise against it (`econ_calendar`, `docs/data-sources.md §Report
-/// enrichment`); an unmapped release, a null estimate or an FMP outage leaves it empty. A
-/// `fed` entry is an FMP-only Fed / FOMC event whose date is the information; its
-/// `surprises` stay empty. `status` is `"released"` for a date in the recent window or
-/// `"upcoming"` for a scheduled future date.
+/// One entry in the Step-3 economic-release calendar (`docs/report-workflow.md §Step 3`).
+/// A `release` entry comes from FRED's release-dates schedule and carries the name and
+/// date only — the report's figures reach the model through the `macro_levels` /
+/// `labor_levels` quotes — plus, on the paid FMP tier, `surprises` per tracked component
+/// print (`econ_calendar`, `docs/data-sources.md §Report enrichment`), empty for an
+/// unmapped release, a null estimate or an FMP outage. A `fed` entry is an FMP-only
+/// Fed / FOMC event whose date is the information; its `surprises` stay empty. `status`
+/// is `"released"` for a date in the recent window or `"upcoming"` for a future one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EconomicRelease {
     pub release: String,
     pub date: String,
     pub status: String,
-    /// Defaults to `release`, so a snapshot persisted before Fed events existed decodes.
     #[serde(default)]
     pub class: CalendarEventClass,
-    /// Defaults to empty, so a snapshot persisted before the enrichment decodes.
     #[serde(default)]
     pub surprises: Vec<EconomicSurprise>,
 }
@@ -189,12 +147,9 @@ pub struct EconomicSurprise {
     pub beat_miss: Option<BeatMiss>,
 }
 
-/// One index's multi-horizon performance, derived from FMP's end-of-day history
-/// (`historical-price-eod`). Complements the daily `Quote` in `indices` with the
-/// longer-horizon returns the thesis needs: week-over-week, month-to-date, and
-/// year-to-date returns, plus where the latest close sits inside its trailing 52-week
-/// range. Every `*_pct` is a percent; `pct_from_52w_high` is ≤ 0 (distance below the
-/// high). `low_52w` / `high_52w` are price levels in the index's own units.
+/// One index's multi-horizon performance from FMP's end-of-day history. Every `*_pct`
+/// is a percent; `pct_from_52w_high` is ≤ 0 (distance below the high). `low_52w` /
+/// `high_52w` are price levels in the index's own units.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexPerformance {
     pub symbol: String,
@@ -216,13 +171,10 @@ pub enum MoverCategory {
     MostActive,
 }
 
-/// One row from FMP's free market-mover lists (biggest gainers / losers / most actives),
-/// tagged with the list it came from — a micro-breadth signal for which individual names
-/// moved most this run, surfacing rotation the index/sector reads can't. FMP's mover rows
-/// carry **no sector** (the model infers it from the ticker) and no volume, so the shape
-/// is the ticker, its latest `price` + `change_pct`, and the listing `exchange`. The
-/// application filters the raw lists (penny-stock price floor, major-exchange allowlist,
-/// top-N per category) before they reach the packet.
+/// One row from FMP's market-mover lists, tagged with the list it came from. FMP's rows
+/// carry no sector and no volume. The application filters the raw lists (penny-stock
+/// price floor, major-exchange allowlist, top-N per category) before they reach the
+/// packet.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StockMover {
     pub category: MoverCategory,
@@ -233,12 +185,10 @@ pub struct StockMover {
     pub exchange: String,
 }
 
-/// One company's earnings event in the Step-3 window — a recent or upcoming report from
-/// FMP's free earnings calendar, filtered to large-cap names by revenue estimate. A
-/// forward date carries estimates with null actuals; a past date in the window carries
-/// both, so the model can read beats / misses. Every figure is optional: FMP omits
-/// actuals for dates that haven't reported and can omit estimates for thinly-covered
-/// names. Revenue is the quarter's figure in USD; EPS is per share.
+/// One company's earnings event in the Step-3 window, filtered to large-cap names by
+/// revenue estimate. Every figure is optional: FMP omits actuals for dates that haven't
+/// reported and can omit estimates for thinly-covered names. Revenue is the quarter's
+/// figure in USD; EPS is per share.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EarningsEvent {
     pub symbol: String,
@@ -249,29 +199,21 @@ pub struct EarningsEvent {
     pub revenue_actual: Option<f64>,
 }
 
-/// One sector's aggregate price-to-earnings ratio from FMP's free sector-PE snapshot
-/// (`sector-pe-snapshot`) — a valuation complement to the `sectors` performance group, so
-/// the model can read which sectors are rich or cheap, not just which moved. FMP's snapshot
-/// is **exchange-specific**, so `exchange` is carried (not dropped): the baseline gathers
-/// both NASDAQ-listed (growth / tech-tilted) and NYSE-listed (broader, more value) reads, and
-/// `pe` is the aggregate for that one exchange's companies — not a whole-market multiple.
-/// `pe` is `None` when no meaningful aggregate is available — the sector's summed earnings are
-/// non-positive (FMP reports `0.0` there) or the multiple is implausibly inflated by a
-/// near-zero earnings base (band-bounded to `(0.0, SECTOR_PE_MAX]` in `sector_pe_from_value`,
-/// the same drop-to-`None` stance as [`IndustrySnapshot::pe`]); the (sector, exchange) row
-/// still rides so the model sees the sector was scanned. One row per (sector, exchange).
-/// On the paid FMP tier the row also carries the two trailing-year reads against the
-/// sector's own history on that exchange (`group_history`, `docs/data-sources.md §Report
-/// enrichment`); each is `None` when it was not derivable this run.
+/// One sector's aggregate P/E from FMP's exchange-specific `sector-pe-snapshot`, one row
+/// per (sector, exchange): `pe` is the aggregate for that one exchange's companies, not a
+/// whole-market multiple. `pe` is `None` when no meaningful aggregate is available — the
+/// summed earnings are non-positive (FMP reports `0.0` there) or the multiple falls
+/// outside `(0.0, SECTOR_PE_MAX]` in `sector_pe_from_value`; the row still rides so the
+/// model sees the sector was scanned. On the paid FMP tier the row also carries the two
+/// trailing-year reads (`group_history`, `docs/data-sources.md §Report enrichment`),
+/// each `None` when not derivable this run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SectorPe {
     pub sector: String,
     pub exchange: String,
     pub pe: Option<f64>,
-    /// Defaults to `None`, so a snapshot persisted before the enrichment decodes.
     #[serde(default)]
     pub pe_history: Option<PeHistory>,
-    /// Defaults to `None`, so a snapshot persisted before the enrichment decodes.
     #[serde(default)]
     pub trailing_return: Option<TrailingReturn>,
 }
@@ -304,35 +246,30 @@ pub struct TrailingReturn {
     pub to: String,
 }
 
-/// One industry's finer-rotation read, joining FMP's free `industry-performance-snapshot`
-/// (the day's average move) with `industry-pe-snapshot` (the aggregate P/E) by industry name
-/// within one exchange. A finer cut than the ~11 `sectors` — FMP reports ~130 industries per
-/// exchange, capped here to the strongest and weakest movers so the packet stays small while
-/// still surfacing the rotation the sector aggregate hides. Like [`SectorPe`] the snapshot is
-/// **exchange-specific**, so `exchange` is carried and the cap is applied per exchange (both
-/// NASDAQ and NYSE). `change_pct` is the average percent move; `pe` is `None` when no
-/// meaningful P/E is available — the PE snapshot didn't carry that industry, its aggregate
-/// earnings are non-positive (FMP reports 0.0 there), or its call failed. On the paid FMP
-/// tier the row also carries the two trailing-year reads, as [`SectorPe`] does.
+/// One industry's rotation read, joining FMP's exchange-specific
+/// `industry-performance-snapshot` with `industry-pe-snapshot` by industry name within
+/// one exchange, capped per exchange to the strongest and weakest movers so the packet
+/// stays small. `change_pct` is the average percent move; `pe` is `None` when no
+/// meaningful P/E is available — the PE snapshot didn't carry that industry, its
+/// aggregate earnings are non-positive (FMP reports 0.0 there), or its call failed. On
+/// the paid FMP tier the row also carries the two trailing-year reads, as [`SectorPe`]
+/// does.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndustrySnapshot {
     pub industry: String,
     pub exchange: String,
     pub change_pct: f64,
     pub pe: Option<f64>,
-    /// Defaults to `None`, so a snapshot persisted before the enrichment decodes.
     #[serde(default)]
     pub pe_history: Option<PeHistory>,
-    /// Defaults to `None`, so a snapshot persisted before the enrichment decodes.
     #[serde(default)]
     pub trailing_return: Option<TrailingReturn>,
 }
 
-/// The US equity-risk-premium from FMP's free `market-risk-premium` (Damodaran's
-/// per-country dataset, filtered to the United States) — a valuation anchor for the report.
-/// A near-static annual constant: `total_equity_risk_premium` is the expected excess return
-/// demanded over the risk-free rate, and `country_risk_premium` its country component
-/// (≈ 0 for the US). `country` is retained so the serialized value is self-labelling.
+/// The US equity-risk premium from FMP's `market-risk-premium` (Damodaran's per-country
+/// dataset): `total_equity_risk_premium` is the expected excess return over the
+/// risk-free rate, `country_risk_premium` its country component (≈ 0 for the US). A
+/// near-static annual constant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MarketRiskPremium {
     pub country: String,
@@ -342,13 +279,11 @@ pub struct MarketRiskPremium {
 
 /// One tracked futures contract's Commitments-of-Traders positioning, normalized across
 /// the CFTC report formats into a single speculator-net view (`docs/data-sources.md
-/// §CFTC`). The **speculator** line maps to leveraged money (financial futures) or managed
-/// money (commodities) — the fast-money / trend-following cohort whose crowding is the
-/// signal; `real_money_*` carries the asset-manager line for financial futures only (the
-/// long-horizon cohort it often diverges from). Net is `long − short` contracts (positive
-/// = net long). The `*_weekly_change` fields are the COT report's own
-/// Tuesday-over-Tuesday move — COT is weekly and lagged ~3 days — distinct from the
-/// report-over-report baseline delta engine, which this group is exempt from.
+/// §CFTC`). The speculator line is leveraged money (financial futures) or managed money
+/// (commodities); `real_money_*` is the asset-manager line, financial futures only. Net
+/// is `long − short` contracts. The `*_weekly_change` fields are the COT report's own
+/// Tuesday-over-Tuesday move, distinct from the report-over-report baseline delta
+/// engine, which this group is exempt from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CotPositioning {
     /// Display name, e.g. `"E-Mini S&P 500"`.
@@ -448,9 +383,8 @@ pub struct NotableDeal {
     pub date: String,
 }
 
-/// Which Step-3 baseline group a [`DataGap`] belongs to. Serializes to a stable kebab
-/// label so the model reading the manifest sees the same group names the data groups
-/// carry, and the coverage gate (`pipeline::enforce_coverage`) can match on it.
+/// Which Step-3 baseline group a [`DataGap`] belongs to; the kebab label is the one the
+/// serialized groups carry and the coverage gate (`pipeline::enforce_coverage`) matches on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GroupKind {
@@ -471,9 +405,8 @@ pub enum GroupKind {
 }
 
 impl GroupKind {
-    /// The stable kebab label, matching the serde rename. Used by the progress
-    /// stream (`progress::ProgressEvent::RequestFinished`) so a tracker row's group
-    /// reads the same name the serialized baseline carries.
+    /// The kebab label, matching the serde rename, so a tracker row's group reads the
+    /// same name the serialized baseline carries.
     pub fn as_str(self) -> &'static str {
         match self {
             GroupKind::Indices => "indices",
@@ -494,45 +427,36 @@ impl GroupKind {
     }
 }
 
-/// Why a requested series / release didn't land in the baseline this run. The
-/// distinction drives two things: the coverage gate counts only the *this-run* reasons
-/// against a group's coverage (`OutOfScope` is permanent and excluded, so a series a
-/// deployment never had doesn't drag the ratio down on every run), and the agent reads a
-/// transient outage differently from a permanent absence.
+/// Why a requested series / release didn't land in the baseline this run. The coverage
+/// gate counts only the this-run reasons against a group's coverage: `OutOfScope` is
+/// permanent and excluded, so a series a deployment never had doesn't drag the ratio
+/// down on every run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GapReason {
-    /// Permanently absent for this deployment — the provider explicitly signalled the
-    /// item isn't available (FMP 402 premium / 404, FRED "does not exist"). Not a
-    /// this-run failure; excluded from the coverage denominator. Reserved for explicit
-    /// provider signals only: a 2xx that simply carried no value (an empty array, an
-    /// all-gap window, an empty `data` block) is `Unavailable`, not this.
+    /// Permanently absent for this deployment: the provider explicitly signalled the item
+    /// isn't available (FMP 402 premium / 404, FRED "does not exist"). Reserved for
+    /// explicit provider signals only — a 2xx that simply carried no value (an empty
+    /// array, an all-gap window, an empty `data` block) is `Unavailable`, not this.
     OutOfScope,
-    /// Unavailable this run — a 429 / 5xx that survived the retry layer, a transport
-    /// error, or a successful response that carried no usable value for an expected
-    /// series (an empty array, an all-gap FRED window, a BLS empty-`data` series).
-    /// Counts against coverage.
+    /// A 429 / 5xx that survived the retry layer, a transport error, or a successful
+    /// response that carried no usable value for an expected series.
     Unavailable,
-    /// The provider rejected the request — a bad / expired key (401/403, FRED `api_key`)
-    /// or a quota / plan limit (FMP `Error Message`, BLS `REQUEST_NOT_PROCESSED`).
-    /// Counts against coverage.
+    /// A bad / expired key (401/403, FRED `api_key`) or a quota / plan limit (FMP
+    /// `Error Message`, BLS `REQUEST_NOT_PROCESSED`).
     Rejected,
-    /// The response didn't match the expected contract — an unparseable body, a wrong
-    /// shape, a non-numeric observation, or a truncated / omitted series. Counts against
-    /// coverage.
+    /// An unparseable body, a wrong shape, a non-numeric observation, or a truncated /
+    /// omitted series.
     Malformed,
 }
 
 impl GapReason {
-    /// Whether this gap counts against its group's coverage ratio. Every reason except
-    /// `OutOfScope` (a permanent, expected absence) is a this-run failure that lowers
-    /// coverage.
     pub fn counts_against_coverage(self) -> bool {
         !matches!(self, GapReason::OutOfScope)
     }
 
-    /// The stable kebab label, matching the serde rename — the status a tracker row
-    /// shows for a series that degraded to a gap (`progress::ProgressEvent`).
+    /// The kebab label, matching the serde rename: the status a tracker row shows for a
+    /// series that degraded to a gap.
     pub fn as_str(self) -> &'static str {
         match self {
             GapReason::OutOfScope => "out-of-scope",
@@ -544,10 +468,9 @@ impl GapReason {
 }
 
 /// One entry in the Step-3 missing-data manifest: a series / release a provider failed
-/// to resolve this run, tagged with its group and the reason it's absent. Carried on
-/// [`BaselineMarketData::gaps`], merged across providers by the composite, evaluated by
-/// the coverage gate, and serialized into the agent's prompt so the model reasons over
-/// what's known-absent rather than silently inferring it.
+/// to resolve this run. Merged across providers by the composite, read by the coverage
+/// gate, and serialized into the agent's prompt so the model reasons over what's
+/// known-absent rather than silently inferring it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DataGap {
     pub group: GroupKind,
@@ -557,8 +480,6 @@ pub struct DataGap {
 }
 
 impl DataGap {
-    /// Build a gap for `series_id` / `series_name` in `group`. The string-ish args take
-    /// `&str` (the adapters' series tables) or `String` alike.
     pub fn new(
         group: GroupKind,
         series_id: impl Into<String>,
@@ -574,24 +495,17 @@ impl DataGap {
     }
 }
 
-/// Schema version stamped on each persisted baseline snapshot (`storage::baseline_snapshots`).
-/// The struct evolves as enrichment groups are added, so a snapshot persisted by an older
-/// build may lack groups a newer build expects; every field carries `#[serde(default)]` so an
-/// older blob still deserializes (missing groups read as empty). This version is recorded
-/// alongside each snapshot for future migration tooling — the current decode path relies on
-/// the serde defaults, not on inspecting it. Bump it when a change can't be absorbed by a
-/// field default alone.
+/// Schema version stamped on each persisted baseline snapshot
+/// (`storage::baseline_snapshots`), recorded for migration tooling; the decode path
+/// relies on the fields' serde defaults, not on inspecting it. Bump it when a change
+/// can't be absorbed by a field default alone.
 pub const BASELINE_SCHEMA_VERSION: u32 = 1;
 
-/// The baseline market-data scan handed to the main agent as part of its input.
-/// Empty vectors are valid — a provider that fails to resolve a group degrades it to
-/// empty and records the reason in [`gaps`](Self::gaps) rather than failing the whole
-/// scan. The mandatory-coverage floor (`pipeline::enforce_coverage`), not the adapters,
-/// is the single place a too-thin baseline fails the run.
-///
-/// Every field carries `#[serde(default)]` so the struct round-trips through persistence
-/// forward-compatibly: a snapshot written before a group existed still deserializes, with
-/// the absent group defaulting to empty (see [`BASELINE_SCHEMA_VERSION`]).
+/// The baseline market-data scan handed to the main agent. Empty vectors are valid: a
+/// provider that fails to resolve a group degrades it to empty and records the reason in
+/// [`gaps`](Self::gaps) rather than failing the scan, and the mandatory-coverage floor
+/// (`pipeline::enforce_coverage`), not the adapters, is the single place a too-thin
+/// baseline fails the run.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BaselineMarketData {
     #[serde(default)]
@@ -600,109 +514,64 @@ pub struct BaselineMarketData {
     pub internals: Vec<Quote>,
     #[serde(default)]
     pub sectors: Vec<SectorPerformance>,
-    /// Step-3 macro levels (Fed-funds target range, inflation breakevens, consumer
-    /// sentiment, PCE, plus the headline activity reports — PPI, retail sales, JOLTS,
-    /// real GDP — that back the `calendar`'s recent entries) — point-in-time FRED
-    /// series, kept distinct from the market `internals`. Same `Quote` shape: `price` is
-    /// the latest level and `change` its move from the prior observation
-    /// (day-over-day, month-over-month, or quarter-over-quarter by series frequency),
-    /// carried with the `ChangeKind` that says how to read it.
+    /// Point-in-time FRED macro series, kept distinct from the market `internals`;
+    /// `change` is the move from the prior observation at the series' own frequency
+    /// (day, month or quarter).
     #[serde(default)]
     pub macro_levels: Vec<Quote>,
-    /// Step-3 labor levels (CPI, unemployment rate, nonfarm payrolls, average hourly
-    /// earnings) — point-in-time BLS series, kept distinct from the FRED `macro_levels`
-    /// by source and concern. Same `Quote` shape: `price` is the latest reported level
-    /// and `change` its month-over-month move from the prior reading.
+    /// Point-in-time BLS labor series; `change` is the month-over-month move.
     #[serde(default)]
     pub labor_levels: Vec<Quote>,
-    /// Step-3 economic-release calendar (`docs/report-workflow.md §Step 3`): the
-    /// recent and upcoming US economic reports (CPI, PCE, jobs, GDP, …) as a
-    /// release schedule from FRED's free release-dates endpoint, each release carrying
-    /// its tracked prints' consensus and surprise where FMP's paid calendar serves them,
-    /// plus the Fed / FOMC events. The actual readings reach the model via `macro_levels`
-    /// / `labor_levels`. Empty is valid (a quiet window, or the calendar soft-degraded); it
-    /// carries no completeness floor, unlike the series groups.
+    /// Empty is valid (a quiet window, or the calendar soft-degraded); it carries no
+    /// completeness floor, unlike the series groups.
     #[serde(default)]
     pub calendar: Vec<EconomicRelease>,
-    /// Step-3 multi-horizon index performance, derived from FMP's end-of-day history
-    /// (`historical-price-eod`): week-over-week / MTD / YTD returns and 52-week-range
-    /// position per index, enriching the daily `indices` quotes. Empty is valid — like
-    /// the `calendar` it carries no completeness floor and soft-degrades if the history
-    /// fetch fails, since the daily `indices` quotes already satisfy Step 3.
+    /// No completeness floor: soft-degrades if the history fetch fails, since the daily
+    /// `indices` quotes already satisfy Step 3.
     #[serde(default)]
     pub index_performance: Vec<IndexPerformance>,
-    /// Step-3 market movers: the filtered top gainers / losers / most-active US names this
-    /// run (FMP's free mover lists). A micro-breadth signal the index/sector groups can't
-    /// give — which individual names moved most. Empty is valid; like `calendar` /
-    /// `index_performance` it carries no completeness floor and soft-degrades, since the
-    /// breadth read is additive over the required index/internals grounding.
+    /// Additive and non-floor: empty is valid and soft-degrades rather than failing the run.
     #[serde(default)]
     pub movers: Vec<StockMover>,
-    /// Step-3 earnings calendar: large-cap US companies reporting in the recent +
-    /// upcoming window (FMP's free earnings calendar, filtered by revenue estimate). Recent
-    /// rows carry actual-vs-estimate; upcoming rows carry estimates only. Empty is valid —
-    /// additive and non-floor like `movers`, soft-degrading rather than failing the run.
+    /// Additive and non-floor: empty is valid and soft-degrades rather than failing the run.
     #[serde(default)]
     pub earnings: Vec<EarningsEvent>,
-    /// Step-3 sector valuation: each sector's aggregate P/E per exchange (FMP's free
-    /// exchange-specific sector-PE snapshot, gathered for both NASDAQ and NYSE), a valuation
-    /// complement to the `sectors` performance group. Empty is valid — additive and non-floor
-    /// like `movers` / `earnings`, soft-degrading rather than failing the run.
+    /// Additive and non-floor: empty is valid and soft-degrades rather than failing the run.
     #[serde(default)]
     pub sector_pe: Vec<SectorPe>,
-    /// Step-3 finer rotation + valuation: per exchange (NASDAQ + NYSE), the strongest and
-    /// weakest industries this run (FMP's free industry-performance snapshot), each joined
-    /// with its aggregate P/E where available — a finer cut than the ~11 `sectors`. Empty is
-    /// valid; additive and non-floor, soft-degrading rather than failing the run.
+    /// Additive and non-floor: empty is valid and soft-degrades rather than failing the run.
     #[serde(default)]
     pub industries: Vec<IndustrySnapshot>,
-    /// Step-3 valuation anchor: the US equity-risk-premium (FMP's free market-risk-premium,
-    /// filtered to the United States) — a near-static annual constant. Zero or one row.
-    /// Empty is valid; additive and non-floor, soft-degrading rather than failing the run.
+    /// Zero or one row. Additive and non-floor: empty is valid and soft-degrades.
     #[serde(default)]
     pub market_risk_premium: Vec<MarketRiskPremium>,
-    /// Step-3 positioning: Commitments-of-Traders speculator net (+ asset-manager line for
-    /// financial futures) on the curated bellwether contracts (CFTC's keyless public-reporting
-    /// API). The one signal the price / valuation / macro / credit groups can't give — how
-    /// crowded the speculative cohort is. Empty is valid; additive and non-floor like
-    /// `movers` / `earnings`, soft-degrading rather than failing the run.
+    /// Additive and non-floor: empty is valid and soft-degrades rather than failing the run.
     #[serde(default)]
     pub cot_positioning: Vec<CotPositioning>,
-    /// Step-3 primary-market pace: the IPO and registered-deal counts against the window
-    /// before, with the upcoming IPOs (FMP's paid `ipos-calendar` and
-    /// `mergers-acquisitions-latest`). `None` when neither feed was gathered — additive and
-    /// non-floor, soft-degrading rather than failing the run. Defaults to `None`, so a
-    /// snapshot persisted before the group decodes.
+    /// `None` when neither feed was gathered. Additive and non-floor: soft-degrades rather
+    /// than failing the run.
     #[serde(default)]
     pub primary_market: Option<PrimaryMarketActivity>,
-    /// Step-3 missing-data manifest: the series / releases a provider failed to resolve
-    /// this run (`DataGap`), each tagged with its group and reason. Populated by the
-    /// adapters as they degrade instead of failing, merged across providers by the
-    /// composite, read by the coverage gate (`pipeline::enforce_coverage`) to decide the
-    /// floor, and serialized into the agent's prompt so the model knows what's absent.
     /// Empty when a scan resolved everything.
     #[serde(default)]
     pub gaps: Vec<DataGap>,
 }
 
-/// Emit the `RequestFinished` row for one baseline request, derived from the adapter's
-/// existing gap/value bookkeeping so its (well-tested) branch logic stays untouched.
-/// Always emits exactly one row — pairing the `RequestStarted` the caller sent before
-/// the HTTP call. `gaps_before` is `gaps.len()` captured before the request; `produced`
-/// is whether it yielded a value. Produced wins (`ok`); otherwise a gap pushed this
-/// request carries its reason; otherwise `empty` (a 2xx that yielded nothing and
-/// recorded no gap — e.g. an additive enrichment skipped silently).
-/// Take at most `max` characters (never bytes — provider text carries
-/// multi-byte punctuation), reporting whether anything was cut. The one
-/// char-boundary-safe core under every capped surface string (tracker
-/// details, error-chain snippets, log lines); each caller keeps its own cut
-/// marker, several of which are message-pinned by tests.
+/// Take at most `max` characters (never bytes — provider text carries multi-byte
+/// punctuation), reporting whether anything was cut. The one char-boundary-safe core
+/// under every capped surface string; each caller keeps its own cut marker, several of
+/// which are message-pinned by tests.
 pub(crate) fn cap_chars(s: &str, max: usize) -> (String, bool) {
     let head: String = s.chars().take(max).collect();
     let cut = head.len() < s.len();
     (head, cut)
 }
 
+/// Emit the one `RequestFinished` row pairing the `RequestStarted` the caller sent
+/// before the HTTP call. `gaps_before` is `gaps.len()` captured before the request and
+/// `produced` whether it yielded a value: produced wins (`ok`); otherwise a gap pushed
+/// by this request carries its reason; otherwise `empty` (a 2xx that yielded nothing and
+/// recorded no gap).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_series_row(
     ctx: &RunContext,
@@ -722,27 +591,23 @@ pub(crate) fn emit_series_row(
     } else {
         "empty"
     };
-    // The cause rides only a non-produced row: a request that yielded a value
-    // has nothing to explain, and the detail names the fetch-level failure
-    // (transport chain, HTTP status + provider sentence) the status word
-    // compresses away.
+    // The detail rides only a non-produced row: a produced request has nothing to explain.
     let detail = if produced { None } else { detail };
     ctx.request_finished(provider, group.as_str(), series_id, name, status, detail);
 }
 
-/// The data-source stage. One method: gather the required baseline scan. Sync,
-/// like the `MainAgent` trait — the blocking HTTP call inside the real adapter is
-/// offloaded via `spawn_blocking` at the Tauri command seam.
+/// The data-source stage. Sync, like `MainAgent`: the real adapter's blocking HTTP call
+/// is offloaded via `spawn_blocking` at the Tauri command seam.
 pub trait MarketDataSource {
-    /// Gather the baseline scan, sizing any cadence-dependent lookback window (the
-    /// earnings / economic-release calendars) to `cadence` — the elapsed interval since
-    /// the previous report. Most implementors ignore it; only the FMP and FRED adapters
-    /// read it (so a monthly run's calendars cover the whole gap, not just the last week).
+    /// `cadence` — the elapsed interval since the previous report — sizes the
+    /// cadence-dependent lookback windows (the earnings / economic-release calendars) so
+    /// a monthly run's calendars cover the whole gap; only the FMP and FRED adapters read
+    /// it.
     fn baseline_scan(&self, cadence: ReportCadence) -> anyhow::Result<BaselineMarketData>;
 }
 
-/// Deterministic offline stand-in for the real data adapter. Returns a small,
-/// fixed baseline so the pipeline and its tests run without live keys.
+/// Deterministic offline stand-in: a small fixed baseline so the pipeline and its tests
+/// run without live keys.
 #[derive(Debug, Default)]
 pub struct StubMarketDataSource;
 
@@ -917,18 +782,11 @@ impl MarketDataSource for StubMarketDataSource {
     }
 }
 
-/// Compose two `MarketDataSource`s into one baseline scan: run the `primary`
-/// (e.g. FMP — indices, sectors, VIX, gold), then the `secondary`, and merge them
-/// across every group (`indices`, `internals`, `sectors`, `macro_levels`,
-/// `labor_levels`, `calendar`, `index_performance`) plus the `gaps` manifest. The
-/// adapters degrade to recorded gaps rather than failing for data reasons, so a
-/// provider that can't reach a group contributes empty data + gaps here instead of
-/// aborting the run; the mandatory-coverage floor (`pipeline::enforce_coverage`)
-/// downstream is the single place a too-thin merged baseline fails. A child returning
-/// `Err` is now reserved for a catastrophic (non-data) fault and still propagates.
-/// Order is primary-then-secondary, so the merged `internals` reads the primary's
-/// quotes first. Sources compose by nesting: the run path wraps FMP+FRED, then nests
-/// `bls` as the outer secondary to fold in the `labor_levels` group.
+/// Compose two `MarketDataSource`s into one baseline scan, primary then secondary, every
+/// group merged primary-first. The adapters degrade to recorded gaps rather than failing
+/// for data reasons, so a child `Err` is reserved for a catastrophic (non-data) fault and
+/// propagates. Sources compose by nesting: the run path wraps FMP+FRED, then nests `bls`
+/// as the outer secondary.
 pub struct CompositeMarketDataSource<P, S> {
     pub primary: P,
     pub secondary: S,
@@ -971,10 +829,7 @@ mod tests {
 
     #[test]
     fn quote_decodes_a_pre_typed_change_snapshot_with_a_default_change() {
-        // Forward-compat: a baseline snapshot serialized before the typed change carried a
-        // `change_pct` field and no `change`. `#[serde(default)]` on `change` lets the older
-        // blob still decode (serde ignores the now-unknown `change_pct`), so the per-report
-        // delta view — which reads only price/name — keeps working across the schema change.
+        // serde ignores the unknown `change_pct`; `#[serde(default)]` fills `change`.
         let old: Quote = serde_json::from_str(
             r#"{"symbol":"DGS10","name":"10-Year Treasury Yield","price":4.3,"change_pct":0.1,"unit":"percent"}"#,
         )
@@ -986,9 +841,6 @@ mod tests {
 
     #[test]
     fn a_pre_enrichment_calendar_snapshot_decodes_to_a_release_with_no_surprises() {
-        // A shipped report's snapshot carries the bare `{release, date, status}` entry; the
-        // defaults read it as a FRED release with no consensus, so the prior-snapshot decode
-        // never fails on the new fields.
         let old: BaselineMarketData = serde_json::from_str(
             r#"{"calendar":[{"release":"Consumer Price Index","date":"2026-06-10","status":"upcoming"}]}"#,
         )
@@ -1068,9 +920,6 @@ mod tests {
 
     #[test]
     fn a_pre_enrichment_valuation_snapshot_decodes_with_no_history_reads() {
-        // A shipped report's snapshot carries the bare sector-P/E and industry rows; the
-        // defaults read them as rows with no history reads, so the prior-snapshot decode
-        // never fails on the new fields.
         let old: BaselineMarketData = serde_json::from_str(
             r#"{"sector_pe":[{"sector":"Energy","exchange":"NYSE","pe":12.1}],
                 "industries":[{"industry":"Semiconductors","exchange":"NASDAQ","change_pct":2.4,"pe":41.2}]}"#,
@@ -1174,7 +1023,6 @@ mod tests {
         );
         let back: BaselineMarketData = serde_json::from_str(&json).unwrap();
         assert_eq!(back, baseline);
-        // A run that read neither feed carries the group as an explicit null too.
         let none = serde_json::to_string(&BaselineMarketData::default()).unwrap();
         assert!(none.contains(r#""primary_market":null"#), "{none}");
     }
@@ -1204,9 +1052,8 @@ mod tests {
         assert_eq!(second.primary_market, Some(sample_primary_market()));
     }
 
-    /// A stub shaped like the secondary sources (`fred` + `bls`) — it contributes the
-    /// `internals` / `macro_levels` (FRED) and `labor_levels` (BLS) groups the
-    /// secondaries own, so the composite merge can be exercised offline.
+    /// A stub shaped like the secondary sources (`fred` + `bls`), so the composite merge
+    /// runs offline.
     struct FredShapedStub {
         internals: Vec<Quote>,
         macro_levels: Vec<Quote>,
@@ -1228,7 +1075,6 @@ mod tests {
         }
     }
 
-    /// A stub whose scan always fails, to check that a secondary failure propagates.
     struct FailingStub;
 
     impl MarketDataSource for FailingStub {
@@ -1249,10 +1095,7 @@ mod tests {
 
     #[test]
     fn composite_merges_both_sources_into_one_baseline() {
-        // Primary (FMP-shaped) carries indices + a VIX internal + sectors + one macro
-        // level (DFEDTARU) + one labor level (LNS14000000); the secondary adds two more
-        // internals, a macro level, and a labor level. The merge keeps every group and
-        // orders each primary-first.
+        // Every group merges primary-first.
         let secondary = FredShapedStub {
             internals: vec![quote("DGS10"), quote("DTWEXBGS")],
             macro_levels: vec![quote("T10YIE")],
@@ -1264,8 +1107,6 @@ mod tests {
                 class: CalendarEventClass::Release,
                 surprises: Vec::new(),
             }],
-            // A FRED-side gap (an oil series that 5xx'd this run) must survive the merge
-            // into the unified manifest the gate and the agent read.
             gaps: vec![DataGap::new(
                 GroupKind::Internals,
                 "DCOILWTICO",
@@ -1278,26 +1119,19 @@ mod tests {
 
         assert!(!data.indices.is_empty(), "primary indices survive");
         assert!(!data.sectors.is_empty(), "primary sectors survive");
-        // VIX (from the stub) first, then the two FRED series.
         assert_eq!(data.internals.len(), 3);
         assert_eq!(data.internals[0].symbol, "^VIX");
         assert_eq!(data.internals[1].symbol, "DGS10");
         assert_eq!(data.internals[2].symbol, "DTWEXBGS");
-        // macro_levels merges primary-first too: the stub's DFEDTARU, then FRED's.
         assert_eq!(data.macro_levels.len(), 2);
         assert_eq!(data.macro_levels[0].symbol, "DFEDTARU");
         assert_eq!(data.macro_levels[1].symbol, "T10YIE");
-        // labor_levels merges primary-first too: the stub's LNS14000000, then the
-        // secondary's BLS series.
         assert_eq!(data.labor_levels.len(), 2);
         assert_eq!(data.labor_levels[0].symbol, "LNS14000000");
         assert_eq!(data.labor_levels[1].symbol, "CUUR0000SA0");
-        // calendar merges primary-first too: the stub's Employment Situation, then the
-        // secondary's CPI release.
         assert_eq!(data.calendar.len(), 2);
         assert_eq!(data.calendar[0].release, "Employment Situation");
         assert_eq!(data.calendar[1].release, "Consumer Price Index");
-        // The secondary's gap rides into the merged manifest (the primary stub has none).
         assert_eq!(data.gaps.len(), 1);
         assert_eq!(data.gaps[0].series_id, "DCOILWTICO");
         assert_eq!(data.gaps[0].reason, GapReason::Unavailable);
@@ -1305,8 +1139,6 @@ mod tests {
 
     #[test]
     fn composite_propagates_a_secondary_failure() {
-        // A FRED-side failure must fail the whole scan, since FRED sources
-        // non-optional baseline series.
         let composite = CompositeMarketDataSource::new(StubMarketDataSource, FailingStub);
         assert!(composite.baseline_scan(ReportCadence::default()).is_err());
     }
@@ -1326,8 +1158,6 @@ mod tests {
         assert!(!data.market_risk_premium.is_empty());
         assert!(!data.cot_positioning.is_empty());
 
-        // The whole packet — including the gaps manifest — serializes and parses back
-        // unchanged: the contract the agent input and the model prompt both lean on.
         let mut data = data;
         data.gaps.push(DataGap::new(
             GroupKind::LaborLevels,
@@ -1342,10 +1172,6 @@ mod tests {
 
     #[test]
     fn baseline_deserializes_an_older_snapshot_missing_groups() {
-        // Simulates a snapshot persisted by a build that predates several groups: the
-        // JSON carries only `indices` and omits everything else. `#[serde(default)]` on
-        // every field must let it decode, with the absent groups reading as empty — the
-        // forward-compatibility the persisted-history feature relies on.
         let older = r#"{
             "indices": [
                 {"symbol":"^GSPC","name":"S&P 500","price":5500.0,"change_pct":0.4,"unit":"index points"}
@@ -1354,7 +1180,6 @@ mod tests {
         let back: BaselineMarketData = serde_json::from_str(older).unwrap();
         assert_eq!(back.indices.len(), 1);
         assert_eq!(back.indices[0].symbol, "^GSPC");
-        // Groups absent from the older blob decode to empty, not an error.
         assert!(back.internals.is_empty());
         assert!(back.macro_levels.is_empty());
         assert!(back.sector_pe.is_empty());

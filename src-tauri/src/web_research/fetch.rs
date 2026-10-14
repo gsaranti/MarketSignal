@@ -1,25 +1,13 @@
 //! The web tool's page fetch and readability extraction
 //! (`docs/web-research.md §Fetch and extraction`, §Safety and provenance).
-//!
-//! Because the model chooses what to fetch, fetching is an untrusted
-//! operation. The guard here enforces the SSRF rules: `http`/`https` only,
-//! public hosts only (private, loopback, and link-local ranges are blocked —
-//! this matters specifically because the app's own Ollama and SearXNG run on
-//! loopback), redirects capped and re-validated against the same rules, and
-//! responses bounded by size and content type (HTML/text only). Resolved
-//! addresses are pinned into the client so the connection goes to the
-//! addresses that were validated, not a second DNS answer.
-//!
-//! SEC hosts use the declared identity shared with the EDGAR adapter; other
-//! hosts use a realistic, browser-like header set — cheap
-//! prevention so the common fetch isn't needlessly flagged as a bot; it won't
-//! fool TLS-fingerprint detectors, which is the deferred render tier's job,
-//! not the GET's. Extraction strips navigation, ads, and boilerplate down to
-//! the article body (`dom_smoothie`, a Readability.js-faithful pure-Rust
-//! extractor), and every fetch feeds the per-domain extraction telemetry that
-//! will gate the deferred rendered-retrieval tier. Pages that are paywalled or
-//! render client-side return thin text — a fetch-layer limit, not an extractor
-//! failure — and simply contribute less evidence rather than breaking the loop.
+//! The model chooses what to fetch, so fetching is untrusted: `http`/`https`
+//! only, public hosts only (the app's own Ollama and SearXNG run on loopback),
+//! redirects capped and re-validated per hop, responses bounded by size and
+//! content type, and resolved addresses pinned into the client so the
+//! connection goes to what was validated, not a second DNS answer. SEC hosts
+//! use the declared identity shared with the EDGAR adapter; other hosts use a
+//! browser-like header set. Paywalled or client-rendered pages return thin
+//! text and contribute less evidence rather than breaking the loop.
 
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
@@ -29,18 +17,18 @@ use reqwest::Url;
 
 use super::registry::{self, SourcePolicy};
 
-/// Why a live fetch failed, typed so the per-domain telemetry counts what the
-/// *source* did without parsing error text (`docs/web-research.md §Extraction
-/// telemetry`). `Policy` is the app's own guard — scheme, deny list, a
-/// non-public address — which never reaches the network and is never the
-/// source's record; `Http` is the source's own answer (401/403 read as
-/// denied). Content and redirect bounds are deterministic failures; unmarked
-/// transport errors retain their original typed source for retry classification.
-/// Read back through [`failure_of`].
+/// Typed so the per-domain telemetry counts what the *source* did without
+/// parsing error text (`docs/web-research.md §Extraction telemetry`). Read
+/// back through [`failure_of`]; transport errors carry no marker and keep
+/// their original typed source for retry classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchFailure {
+    /// The app's own guard (scheme, deny list, a non-public address): never
+    /// reaches the network and is never the source's record.
     Policy,
+    /// The source's own answer.
     Http(u16),
+    /// A content or redirect bound.
     Deterministic,
 }
 
@@ -154,37 +142,32 @@ fn policy_err(message: String) -> anyhow::Error {
     anyhow::Error::new(FetchFailure::Policy).context(message)
 }
 
-/// The normalized requested host remains the failed-attempt telemetry key.
-/// Redirect-destination provenance governs ephemeral backoff separately;
-/// it does not change this persisted attribution. `None` for an invalid URL.
+/// The failed-attempt telemetry key: the normalized requested host, never a
+/// redirect destination. `None` for an invalid URL.
 pub fn requested_host(url: &str) -> Option<String> {
     let parsed = Url::parse(url).ok()?;
     let host = parsed.host_str()?;
     Some(registry::normalize_host(host))
 }
 
-/// Per-fetch timeout. A research fetch is one page, not a bulk pull; anything
-/// slower is treated as unreachable and degrades fail-soft.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Redirect ceiling — each hop is re-validated against the SSRF rules.
+/// Each hop is re-validated against the SSRF rules.
 const REDIRECT_CAP: usize = 5;
 
-/// Response-body byte bound. Article pages sit well under this; anything
-/// larger is truncated at the bound rather than buffered unbounded.
+/// A larger body is truncated at the bound rather than buffered unbounded.
 const MAX_FETCH_BYTES: u64 = 2_000_000;
 
 /// Below this many extracted characters a page reads as a thin paywall / JS
 /// stub (Mozilla's internal readerable threshold is 500 chars). Drafted.
 const THIN_CHAR_THRESHOLD: usize = 500;
 
-/// Extracted-character count treated as a full article body for the 0–1
-/// `extraction_quality` read (quality = extracted / this, clamped). Drafted.
+/// A full article body for the 0–1 `extraction_quality` read
+/// (quality = extracted / this, clamped). Drafted.
 const FULL_BODY_CHARS: f64 = 2_500.0;
 
-/// The browser-like header set (`docs/web-research.md §Fetch and extraction`).
-/// A coherent macOS Safari-class set: UA plus the Accept / Accept-Language /
-/// Sec-Fetch-* headers a real navigation sends.
+/// A coherent macOS Safari-class set (`docs/web-research.md §Fetch and
+/// extraction`): UA plus the headers a real navigation sends.
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
                           AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15";
 const ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
@@ -201,12 +184,9 @@ fn user_agent_for(url: &Url) -> &'static str {
     }
 }
 
-/// One fetched, extracted page — the shape the research loop's evidence and
-/// the document cache consume. `retrieved_at` is the original
-/// retrieval instant (RFC 3339 UTC), the immutable evidence vintage.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FetchedPage {
-    /// The URL the content actually came from (after any redirects).
+    /// After any redirects.
     pub final_url: String,
     pub host: String,
     pub title: String,
@@ -214,9 +194,9 @@ pub struct FetchedPage {
     pub text: String,
     /// 0–1: extracted body vs a full article (see `FULL_BODY_CHARS`).
     pub extraction_quality: f64,
-    /// The paywall / JS-stub flag: too little body recovered to treat the
-    /// fetch as the page's content.
+    /// Too little body recovered to treat the fetch as the page's content.
     pub thin_stub: bool,
+    /// RFC 3339 UTC, the immutable evidence vintage.
     pub retrieved_at: String,
 }
 
@@ -227,8 +207,7 @@ pub struct SecDocument {
     pub body: String,
 }
 
-/// The injectable fetch seam: the research runner, tests, and demo mode each
-/// supply their own. The live implementation is [`HttpPageFetcher`].
+/// The injectable fetch seam; the live implementation is [`HttpPageFetcher`].
 pub trait PageFetcher: Send + Sync {
     fn fetch(&self, url: &str) -> Result<FetchedPage>;
 
@@ -243,8 +222,8 @@ pub trait PageFetcher: Send + Sync {
     }
 }
 
-/// Why an address is rejected — used in errors so a blocked fetch is legible
-/// in the tracker row rather than a bare "failed".
+/// The reason rides the error so a blocked fetch is legible in the tracker
+/// row rather than a bare "failed".
 fn non_public_reason(ip: IpAddr) -> Option<&'static str> {
     match ip {
         IpAddr::V4(v4) => {
@@ -310,10 +289,8 @@ fn non_public_reason(ip: IpAddr) -> Option<&'static str> {
     }
 }
 
-/// The URL's host as a literal address — IPv4 or bracketed IPv6 — read from
-/// the parser's typed host rather than `host_str()`'s text (whose bracketed
-/// IPv6 form is not a resolvable name). `None` for a domain name. The one
-/// literal-host read both guards share (ruled 2026-08-28).
+/// Read from the parser's typed host rather than `host_str()`'s text, whose
+/// bracketed IPv6 form is not a resolvable name. `None` for a domain name.
 fn literal_host(url: &Url) -> Option<IpAddr> {
     match url.host()? {
         url::Host::Ipv4(ip) => Some(IpAddr::V4(ip)),
@@ -322,12 +299,10 @@ fn literal_host(url: &Url) -> Option<IpAddr> {
     }
 }
 
-/// Resolve a URL's host and validate every address against the public-host
-/// rules, returning the validated socket addresses so the connection can be
-/// pinned to exactly what was checked (no second DNS answer). A literal
-/// address resolves as itself with no lookup, so a public literal fetches and
-/// a non-public one fails closed with its policy reason rather than a resolver
-/// error (`docs/web-research.md §Safety and provenance`).
+/// Returns the validated socket addresses so the connection can be pinned to
+/// exactly what was checked. A literal address resolves as itself with no
+/// lookup, so a non-public one fails closed with its policy reason rather
+/// than a resolver error (`docs/web-research.md §Safety and provenance`).
 fn resolve_public(url: &Url, allow_loopback: bool) -> Result<Vec<SocketAddr>> {
     let host = url
         .host_str()
@@ -359,8 +334,6 @@ fn resolve_public(url: &Url, allow_loopback: bool) -> Result<Vec<SocketAddr>> {
     Ok(addrs)
 }
 
-/// Validate a URL's scheme and host per the SSRF rules. Returns the pinned
-/// addresses on success.
 fn validate_url(url: &Url, allow_loopback: bool) -> Result<Vec<SocketAddr>> {
     match url.scheme() {
         "http" | "https" => {}
@@ -373,12 +346,11 @@ fn validate_url(url: &Url, allow_loopback: bool) -> Result<Vec<SocketAddr>> {
     resolve_public(url, allow_loopback)
 }
 
-/// The no-network URL-policy check a **cache read** must pass before a stored
-/// document may serve (`docs/web-research.md §Safety and provenance`): scheme,
-/// the deny list, and the literal-address rules. A cache hit makes no request,
-/// so DNS resolution is deliberately skipped — this guards against imported or
-/// legacy cache rows bypassing the *current* source policy, not against SSRF
-/// (no connection is opened on a hit).
+/// The no-network policy check a cache read must pass before a stored
+/// document may serve (`docs/web-research.md §Safety and provenance`). DNS
+/// is deliberately skipped: a hit opens no connection, so this guards against
+/// imported cache rows bypassing the *current* source policy, not against
+/// SSRF.
 pub fn check_url_policy(url_str: &str) -> Result<()> {
     let url = Url::parse(url_str).with_context(|| format!("unparseable URL {url_str:?}"))?;
     match url.scheme() {
@@ -401,8 +373,7 @@ pub fn check_url_policy(url_str: &str) -> Result<()> {
     Ok(())
 }
 
-/// Extract the readable article from an HTML body. Returns the title, the
-/// extracted text, and the readability gate's verdict.
+/// Returns the title, the extracted text, and the readability gate's verdict.
 fn extract_article(html: &str, url: &str) -> (String, String, bool) {
     let cfg = dom_smoothie::Config {
         text_mode: dom_smoothie::TextMode::Formatted,
@@ -423,10 +394,8 @@ fn extract_article(html: &str, url: &str) -> (String, String, bool) {
     }
 }
 
-/// The extraction-quality read and the thin-stub flag from an extraction
-/// (`docs/web-research.md §Extraction telemetry`): quality is extracted
-/// characters against a full-body yardstick; thin is the readability gate
-/// failing or the body landing under the stub threshold.
+/// The `(extraction_quality, thin_stub)` read
+/// (`docs/web-research.md §Extraction telemetry`).
 fn quality_of(extracted_chars: usize, probably_readable: bool) -> (f64, bool) {
     let quality = (extracted_chars as f64 / FULL_BODY_CHARS).clamp(0.0, 1.0);
     let thin = !probably_readable || extracted_chars < THIN_CHAR_THRESHOLD;
@@ -448,11 +417,9 @@ fn slice3_actual_sec_exhibits_extract_financial_text_without_ocr() {
     }
 }
 
-/// The live SSRF-guarded fetcher.
 pub struct HttpPageFetcher {
-    /// Test-only escape hatch for the loopback block, so the wire path can be
-    /// driven against a localhost mock. Compiled to `false` in production —
-    /// the field is set only by the `cfg(test)` constructor below.
+    /// Set only by the `cfg(test)` constructors, so production never allows
+    /// loopback.
     allow_loopback: bool,
     #[cfg(test)]
     test_address: Option<SocketAddr>,
@@ -467,8 +434,6 @@ impl HttpPageFetcher {
         }
     }
 
-    /// Allow loopback targets so tests can drive the full fetch path against
-    /// `test_http::MockHttp`. Test-only by construction.
     #[cfg(test)]
     pub fn allowing_loopback() -> Self {
         Self {
@@ -490,16 +455,15 @@ impl HttpPageFetcher {
     fn resolve_url(&self, url: &Url) -> Result<Vec<SocketAddr>> {
         #[cfg(test)]
         if let Some(address) = self.test_address {
-            // Only DNS/address validation is replaced. Keep URL policy and the
-            // caller's per-hop guard active even on this test transport.
+            // Only DNS/address validation is replaced; URL policy stays active.
             check_url_policy(url.as_str())?;
             return Ok(vec![address]);
         }
         validate_url(url, self.allow_loopback)
     }
 
-    /// One validated GET, redirects handled manually so every hop re-passes
-    /// the SSRF rules. Returns the final URL and the (bounded) body text.
+    /// Redirects are handled manually so every hop re-passes the SSRF rules.
+    /// Returns the final URL and the bounded body text.
     fn get_bounded(
         &self,
         start: &Url,
@@ -533,7 +497,7 @@ impl HttpPageFetcher {
                     .resolve_to_addrs(host, &addrs)
                     .user_agent(user_agent_for(&url));
                 // A test override must not route an SEC-named URL through an
-                // ambient proxy. Production retains its existing proxy behavior.
+                // ambient proxy.
                 #[cfg(test)]
                 let client = if self.test_address.is_some() {
                     client.no_proxy()
@@ -544,9 +508,8 @@ impl HttpPageFetcher {
                     .build()
                     .context("building the fetch client")?;
                 attempted = true;
-                // Sequential SEC retrieval stays below fair-access limits,
-                // including redirect hops. This is part of an in-flight GET;
-                // cancellation/budgets are checked before its admission.
+                // Keeps sequential SEC retrieval, redirect hops included, below
+                // EDGAR's fair-access rate.
                 if user_agent_for(&url) == crate::sec::SEC_USER_AGENT {
                     std::thread::sleep(Duration::from_millis(110));
                 }
@@ -854,8 +817,6 @@ mod tests {
             (IpAddr::V4(Ipv4Addr::new(169, 254, 0, 5)), "link-local"),
             (IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)), "carrier-grade"),
             (IpAddr::V4(Ipv4Addr::new(0, 1, 2, 3)), "non-routable"),
-            // The special-use ranges the first cut missed (Codex round 1):
-            // protocol assignments, benchmarking, TEST-NET, reserved space.
             (
                 IpAddr::V4(Ipv4Addr::new(192, 0, 0, 170)),
                 "protocol-assignment",
@@ -874,10 +835,8 @@ mod tests {
             let reason = non_public_reason(ip).unwrap_or_else(|| panic!("{ip} should be blocked"));
             assert!(reason.contains(needle), "{ip}: {reason}");
         }
-        // A deprecated v4-compatible v6 address embedding a private target is
-        // classified by its embedded v4.
+        // A v4-compatible v6 address is classified by its embedded v4.
         assert!(non_public_reason("::192.168.1.1".parse().unwrap()).is_some());
-        // Public addresses pass.
         assert_eq!(non_public_reason("93.184.216.34".parse().unwrap()), None);
         assert_eq!(
             non_public_reason("2606:2800:220:1::1".parse().unwrap()),
@@ -887,9 +846,6 @@ mod tests {
 
     #[test]
     fn cache_url_policy_precheck_blocks_denied_and_literal_addresses() {
-        // The no-network policy check a cache read must pass: scheme, deny
-        // list, literal-address classes — so an imported or legacy cache row
-        // can't serve under a policy the current rules would block.
         assert!(check_url_policy("https://reuters.com/a").is_ok());
         let err = check_url_policy("ftp://reuters.com/a")
             .unwrap_err()
@@ -911,11 +867,8 @@ mod tests {
 
     #[test]
     fn literal_hosts_validate_as_themselves_without_a_lookup() {
-        // A literal address resolves as itself — `host_str()`'s bracketed
-        // IPv6 form is not a resolvable name, and the first cut handed it to
-        // the resolver, so no IPv6-literal URL could ever fetch. A public
-        // literal pins to exactly itself; a non-public one fails closed with
-        // its policy reason, not a resolver error. No DNS is touched.
+        // A non-public literal fails closed with its policy reason, not a
+        // resolver error.
         let pinned = |u: &str| validate_url(&Url::parse(u).unwrap(), false);
         assert_eq!(
             pinned("http://[2606:2800:220:1::1]/x").unwrap(),
@@ -939,9 +892,6 @@ mod tests {
 
     #[test]
     fn production_guard_blocks_loopback_targets() {
-        // The production fetcher (no test allowance) refuses a loopback URL —
-        // the rule that protects the app's own Ollama / SearXNG — in both
-        // literal forms.
         let fetcher = HttpPageFetcher::new();
         for url in ["http://127.0.0.1:9/never", "http://[::1]:9/never"] {
             let err = fetcher.fetch(url).unwrap_err().to_string();
@@ -1020,7 +970,6 @@ mod tests {
 
     #[test]
     fn redirects_are_followed_and_revalidated_up_to_the_cap() {
-        // One redirect hop to a same-host path, then the article.
         let server = MockHttp::serve(vec![
             Canned::Reply {
                 status: 301,
@@ -1052,8 +1001,6 @@ mod tests {
         let err = fetcher
             .fetch(&format!("{}nope", server.base_url))
             .unwrap_err();
-        // The status rides the chain typed, so the per-domain telemetry can
-        // count a denied answer without parsing the message.
         assert_eq!(failure_of(&err), Some(FetchFailure::Http(403)), "{err:#}");
         let err = err.to_string();
         assert!(err.contains("HTTP 403"), "{err}");
@@ -1061,9 +1008,6 @@ mod tests {
 
     #[test]
     fn policy_refusals_are_typed_and_the_requested_host_keys_a_failure() {
-        // The app's own guard marks itself `Policy` so a refusal is never
-        // charged to the source's telemetry; the requested host is the key a
-        // failed attempt (no page, no post-redirect host) can still name.
         let err = check_url_policy("https://stockinvest.us/x").unwrap_err();
         assert_eq!(failure_of(&err), Some(FetchFailure::Policy), "{err:#}");
         let err = check_url_policy("http://192.168.1.10/admin").unwrap_err();
@@ -1217,11 +1161,9 @@ mod tests {
 
     #[test]
     fn quality_reads_are_deterministic() {
-        // Under the stub threshold: thin regardless of the readability gate.
         let (q, thin) = quality_of(120, true);
         assert!(thin);
         assert!(q < 0.05);
-        // A full body: not thin, quality clamps at 1.
         let (q, thin) = quality_of(10_000, true);
         assert!(!thin);
         assert_eq!(q, 1.0);

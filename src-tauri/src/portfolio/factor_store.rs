@@ -1,17 +1,9 @@
-//! The **factor-distribution store** — the shared engine's record of where
-//! previously analyzed names sat on each factor (`docs/storage.md §Local
-//! Analysis Suite Storage`; `docs/trade-opportunities.md` §Starting parameters:
-//! the factor-distribution store and market-cap bands rows). One current
-//! observation per issuer per factor, bucketed by profile sector × market-cap
-//! band, contributed by both jobs' engine passes. It is **diagnostic-only —
-//! never a score input**: a selected sample of what the app happened to analyze
-//! is no market percentile at any weight, so the composite's basis stays the
-//! sector bands and the name's own history, and the store's read is context the
-//! dossier carries beside it once a bucket clears the issuer floor.
-//!
-//! Free functions over `&rusqlite::Connection`, like the rest of the suite's
-//! stores; the table is created by [`init_schema`] (called from
-//! `storage::init_schema`).
+//! The factor-distribution store: one current observation per issuer per
+//! factor, bucketed by profile sector × market-cap band, contributed by both
+//! jobs' engine passes (`docs/storage.md §Local Analysis Suite Storage`;
+//! `docs/trade-opportunities.md` §Starting parameters). Diagnostic-only, never
+//! a score input: a selected sample of what the app happened to analyze is no
+//! market percentile at any weight.
 
 use anyhow::{Context, Result};
 use chrono::{Months, NaiveDate};
@@ -104,13 +96,12 @@ pub fn cap_band(market_cap: f64) -> Option<CapBand> {
 // Schema.
 // ---------------------------------------------------------------------------
 
-/// Create the store's table if absent. Idempotent, like the rest of
-/// `storage::init_schema`, which calls this.
+/// Create the store's table if absent. Idempotent.
 ///
-/// Exported by data portability (format v24): the `(issuer, factor)` primary key
-/// and the value / floored check are mirrored by import pre-checks in
-/// `portability::import_archive`. The sector compares case-insensitively, so a
-/// profile label served in another case reads the same bucket.
+/// The `(issuer, factor)` primary key and the value / floored check are
+/// mirrored by the import pre-checks in `portability::import_archive`. The
+/// sector compares case-insensitively, so a profile label served in another
+/// case reads the same bucket.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS factor_observations (

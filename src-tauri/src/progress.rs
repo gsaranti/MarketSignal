@@ -1,36 +1,17 @@
-//! Run-progress reporting + cooperative cancellation for a single report run.
-//!
-//! The pipeline (`pipeline`), the job lifecycle (`jobs`), and the data/agent
-//! adapters are all driven free of any Tauri runtime so they stay unit-testable
-//! against stubs. This module is the seam that lets a *live* run nonetheless
-//! stream its progress to an open window and be cancelled mid-flight, without
-//! pulling Tauri into the spine:
-//!
-//! - [`ProgressReporter`] is a trait the application layer implements. The live
-//!   Tauri command supplies an `emit`-backed reporter (defined in `lib.rs`, so
-//!   this module keeps no `tauri` dependency); tests use [`NoopReporter`].
-//! - [`RunContext`] bundles the run id, the reporter, a shared cancel flag, and a
-//!   monotonic sequence counter. It is threaded into `generate_report` and held
-//!   by the real adapters, so neither the `MarketDataSource` nor the `MainAgent`
-//!   trait signature has to change — the context rides on the concrete adapter.
-//! - Cancellation is cooperative: [`RunContext::is_cancelled`] is polled at step
-//!   and request boundaries. A `reqwest::blocking` call already in flight is not
-//!   interrupted; the cancel lands at the next checkpoint.
+//! Run-progress reporting and cooperative cancellation for a single run, kept
+//! free of any `tauri` dependency: the live `emit`-backed reporter lives in
+//! `lib.rs`, tests use [`NoopReporter`]. Cancellation is polled at step and
+//! request boundaries; a blocking call already in flight is not interrupted.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
-/// One progress event streamed to an open window over a run's lifetime. Serde
-/// tags the active variant as `kind` (kebab-case) and flattens its fields, so the
-/// frontend switches on `payload.kind`. Always carried inside a [`ProgressMessage`]
-/// that adds the run id and sequence.
-///
-/// The string-valued `status` fields carry a small fixed vocabulary rather than a
-/// Rust enum to keep this module free of a dependency on `data_sources`
-/// (`GapReason`) and `jobs` (`JobState`): the call sites map their typed outcomes
-/// to these labels. The vocabularies are documented per field.
+/// One progress event, always carried inside a [`ProgressMessage`]. The
+/// string-valued `status` fields carry a small fixed vocabulary rather than a
+/// Rust enum so this module keeps no dependency on `data_sources` (`GapReason`)
+/// or `jobs` (`JobState`); the vocabularies are documented per variant.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum ProgressEvent {
@@ -46,17 +27,12 @@ pub enum ProgressEvent {
         status: String,
         detail: Option<String>,
     },
-    /// A single baseline data request is being initiated — one HTTP call the app is
-    /// about to make (a series probe, a date probe, or a batched call). Emitted
-    /// *only* when a request is actually made (a short-circuited series sends none),
-    /// so tracker rows stay one-to-one with network calls, and the row shows in-flight
-    /// before its outcome lands. `series_id` keys the matching [`Self::RequestFinished`].
-    ///
-    /// `step` is the row's owning step — stamped by [`RunContext::emit`] from the
-    /// run's active step (the step most recently started and not yet finished),
-    /// never supplied by the caller. `None` means the request fired with no step
-    /// open; the tracker renders such rows unattributed rather than inventing a
-    /// step to hold them.
+    /// One HTTP call is about to be made. Emitted only when a request is
+    /// actually made, so tracker rows stay one-to-one with network calls.
+    /// `series_id` keys the matching [`Self::RequestFinished`]. `step` is
+    /// stamped by [`RunContext::emit`] from the run's active step, never
+    /// supplied by the caller; `None` means no step was open and the tracker
+    /// renders the row unattributed.
     RequestStarted {
         provider: String,
         group: String,
@@ -69,12 +45,11 @@ pub enum ProgressEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         target: Option<RequestTarget>,
     },
-    /// A single baseline data request resolved — paired with a prior `RequestStarted`
-    /// by `provider`/`group`/`series_id`. `status` is `ok` for a resolved value, the
-    /// `GapReason` kebab label (`unavailable` / `rejected` / `malformed` /
-    /// `out-of-scope`) when it degraded to a gap, or `empty` for a 2xx that carried no
-    /// usable data and recorded no gap (e.g. an additive enrichment skipped silently).
-    /// `step` carries the same emit-stamped ownership as [`Self::RequestStarted`].
+    /// A request resolved — paired with its `RequestStarted` by
+    /// `provider`/`group`/`series_id`. `status` is `ok`, the `GapReason` kebab
+    /// label (`unavailable` / `rejected` / `malformed` / `out-of-scope`) when it
+    /// degraded to a gap, or `empty` for a 2xx that carried no usable data and
+    /// recorded no gap. `step` is stamped as on [`Self::RequestStarted`].
     RequestFinished {
         provider: String,
         group: String,
@@ -89,42 +64,34 @@ pub enum ProgressEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         target: Option<RequestTarget>,
     },
-    /// A coalesced chunk of the main agent's streamed output (decoded report
-    /// text), appended to the tracker's live console as the model writes.
+    /// A coalesced chunk of the main agent's streamed report text.
     AgentToken { delta: String },
-    /// A coalesced chunk of the main agent's streamed reasoning (extended-thinking
-    /// summary), shown as a quieter, subordinate stream above its report text. Emitted
-    /// only by models that surface thinking (the Anthropic arm); a non-thinking model
-    /// simply never sends it, so the tracker shows no reasoning rather than an error.
+    /// A coalesced chunk of the main agent's streamed reasoning. A model that
+    /// surfaces no thinking never sends it, so the tracker shows no reasoning
+    /// rather than an error.
     AgentThinking { delta: String },
-    /// A coalesced chunk of one analyst's streamed reasoning, tagged by `posture`
-    /// (`bull` / `bear` / `balanced`) so the tracker routes each of the three
-    /// concurrently-running analysts to its own reasoning pane. The analyst stage
-    /// streams **thoughts only** — the structured review body never streams — and, like
-    /// [`Self::AgentThinking`], a non-thinking analyst model simply never sends it.
+    /// A coalesced chunk of one analyst's streamed reasoning, `posture` ∈
+    /// {`bull`, `bear`, `balanced`}. The analyst stage streams thoughts only;
+    /// the structured review body never streams.
     AnalystThinking { posture: String, delta: String },
     /// A streaming agent call is about to re-attempt under its bounded retry
     /// (`docs/agents.md §Bounded Retry on the Streaming Calls`), so the tracker
-    /// clears that call's live panes before the re-attempt streams: the main
-    /// agent's report text and reasoning when `posture` is absent, otherwise the
-    /// named analyst's reasoning pane.
+    /// clears that call's live panes first: the main agent's when `posture` is
+    /// absent, otherwise the named analyst's.
     StreamRestarted {
         #[serde(skip_serializing_if = "Option::is_none")]
         posture: Option<String>,
     },
-    /// A coalesced chunk of streamed reasoning scoped to one tracker step, tagged by
-    /// the step `key` it belongs to. The portfolio job's interpretation stages stream
-    /// their thinking here so each per-holding step shows live reasoning while it
-    /// runs — unlike [`Self::AgentThinking`] / [`Self::AnalystThinking`], which route
-    /// to the report workflow's fixed agent / analysts steps.
+    /// A coalesced chunk of streamed reasoning scoped to the tracker step
+    /// `step`, unlike [`Self::AgentThinking`] / [`Self::AnalystThinking`],
+    /// which route to the report workflow's fixed steps.
     StepThinking { step: String, delta: String },
-    /// A local-model chat call is being issued — the diagnostic call boundary
-    /// the thought-log sink and the stderr tee consume; the tracker does not
-    /// render it (`docs/run-tracking.md §Thought-log capture`). `call` is the
-    /// run's per-call counter (1-based, monotonic), `stage` the caller's label
-    /// (`interpret AAPL`, `holding-AAPL research <topic> gathering turn 2`),
-    /// and the rest are the request's own controls — never prompt text. `step`
-    /// carries the same emit-stamped ownership as [`Self::RequestStarted`].
+    /// A local-model chat call is being issued — a diagnostic boundary the
+    /// thought-log sink and the stderr tee consume; the tracker does not render
+    /// it (`docs/run-tracking.md §Thought-log capture`). `call` is the run's
+    /// per-call counter (1-based, monotonic); the rest are the request's own
+    /// controls, never prompt text. `step` is stamped as on
+    /// [`Self::RequestStarted`].
     ModelCallStarted {
         call: u64,
         stage: String,
@@ -145,10 +112,7 @@ pub enum ProgressEvent {
         step: Option<String>,
     },
     /// The local-model call `call` resolved. `status` ∈ {`ok`, `failed`};
-    /// `detail` is a failed call's capped top-level message. The counts are
-    /// Ollama's reported `prompt_eval_count` / `eval_count` and its
-    /// `done_reason`, absent when the daemon omitted them or the call failed
-    /// before a reply landed; `usage` carries app measurements and raw counters.
+    /// `detail` is a failed call's capped top-level message.
     ModelCallFinished {
         call: u64,
         stage: String,
@@ -168,23 +132,19 @@ pub enum ProgressEvent {
     },
 }
 
-/// What a research request asked for — the search query or the page address —
-/// carried on its tracker row so the tracker can name it beside the topic the
-/// request served (`docs/run-tracking.md §What the Tracker Shows`). `kind` is
-/// `search` or `fetch`. Only the research loop's two emitters set it; the
-/// series id stays the started/finished pairing key, and the tracker never
-/// parses a subject out of it (it falls back to the series id only as a
-/// row's name when no name was sent).
+/// What a research request asked for — the search query or the page address
+/// (`docs/run-tracking.md §What the Tracker Shows`). `kind` is `search` or
+/// `fetch`. The series id stays the pairing key; the tracker never parses a
+/// subject out of it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RequestTarget {
     pub kind: String,
     pub text: String,
 }
 
-/// The wire payload actually handed to a [`ProgressReporter`]: a [`ProgressEvent`]
-/// stamped with its run id and a per-run monotonic sequence. `seq` lets the
-/// frontend order or dedupe events even though Tauri already delivers them in
-/// emit order, and `run_id` lets it discard a straggler from a prior run.
+/// The wire payload handed to a [`ProgressReporter`]. `seq` lets the frontend
+/// order or dedupe events; `run_id` lets it discard a straggler from a prior
+/// run.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProgressMessage {
     pub run_id: String,
@@ -193,9 +153,8 @@ pub struct ProgressMessage {
     pub event: ProgressEvent,
 }
 
-/// What a local-model call boundary reports about the request it wraps: the
-/// caller's stage label and the request's controls — never its prompt text.
-/// Built by the local-model client at issue for [`RunContext::model_call_started`].
+/// What a local-model call boundary reports about its request: the caller's
+/// stage label and the request's controls, never its prompt text.
 #[derive(Debug, Clone)]
 pub struct ModelCallInfo {
     pub stage: String,
@@ -209,9 +168,8 @@ pub struct ModelCallInfo {
     pub prompt_chars: u64,
 }
 
-/// How a local-model call resolved, for [`RunContext::model_call_finished`].
-/// `ok` carries the daemon's counts when reported; a failure carries its capped
-/// top-level message and no counts.
+/// How a local-model call resolved; a failure carries its capped top-level
+/// message in `detail`.
 #[derive(Debug, Clone)]
 pub struct ModelCallOutcome {
     pub ok: bool,
@@ -219,22 +177,15 @@ pub struct ModelCallOutcome {
     pub usage: crate::local_model::PromptUsage,
 }
 
-/// Sink for [`ProgressMessage`]s. Implemented by the Tauri layer (an `emit`-backed
-/// reporter in `lib.rs`) for a live run, and by [`NoopReporter`] everywhere else.
-/// `Send + Sync` so a `RunContext` can be shared across the `spawn_blocking`
-/// boundary and held by the adapters.
+/// Sink for [`ProgressMessage`]s. `Send + Sync` so a `RunContext` can cross the
+/// `spawn_blocking` boundary and be held by the adapters.
 pub trait ProgressReporter: Send + Sync {
     fn report(&self, message: &ProgressMessage);
 }
 
-/// One stderr line per run / step / request event — the durable diagnostic trace
-/// a failed run leaves even when nothing persists. The tracker's rows are
-/// render-only (the Tauri reporter emits to a window that may not be listening,
-/// and nothing is stored), so before this tee a 2h46m failed run left a 17-line
-/// app log with no adapter trace and the failure analysis rested on screenshots
-/// (`docs/verification/2026-08-10-big-run-attempt-1.md` §Residue). Token and
-/// thinking deltas are deliberately skipped — high-frequency stream chatter, not
-/// run structure.
+/// One stderr line per run / step / request / model-call event — the durable
+/// trace a failed run leaves even when nothing persists and no window is
+/// listening. Token and thinking deltas are deliberately skipped.
 fn tee_to_stderr(run_id: &str, event: &ProgressEvent) {
     match event {
         ProgressEvent::RunStarted { label } => {
@@ -299,9 +250,8 @@ fn tee_to_stderr(run_id: &str, event: &ProgressEvent) {
     }
 }
 
-/// A human elapsed-time label for a call boundary — `900ms`, `12s`, `7m41s`,
-/// `1h02m05s` — shared by the stderr tee and the thought-log fences so the two
-/// renderings of one call never disagree.
+/// A human elapsed-time label — `900ms`, `12s`, `7m41s`, `1h02m05s` — shared
+/// by the stderr tee and the thought-log fences so the two never disagree.
 pub fn elapsed_label(ms: u64) -> String {
     if ms < 1_000 {
         return format!("{ms}ms");
@@ -317,44 +267,35 @@ pub fn elapsed_label(ms: u64) -> String {
     }
 }
 
-/// Drops every event. The default reporter for tests and offline smokes.
+/// The default reporter for tests and offline smokes.
 pub struct NoopReporter;
 
 impl ProgressReporter for NoopReporter {
     fn report(&self, _message: &ProgressMessage) {}
 }
 
-/// The per-run context threaded through the application layer: who to report to,
-/// whether a cancel has been requested, and the run's identity. Constructed once
-/// per run in the Tauri command (or as [`RunContext::noop`] in tests), shared by
-/// `Arc` with the adapters, and borrowed by `generate_report`.
+/// The per-run context: who to report to, whether a cancel has been requested,
+/// and the run's identity. Shared by `Arc` with the adapters.
 pub struct RunContext {
     run_id: String,
     reporter: Arc<dyn ProgressReporter>,
-    /// Shared with the Tauri layer's managed cancel flag, so the `cancel_run`
-    /// command flips the same bool this run polls. A relaxed load is enough — it
-    /// is a cooperative checkpoint, not a synchronization point.
+    /// Shared with the Tauri layer's managed cancel flag, so `cancel_run` flips
+    /// the same bool this run polls. A relaxed load is enough — a cooperative
+    /// checkpoint, not a synchronization point.
     cancel: Arc<AtomicBool>,
     seq: AtomicU64,
-    /// The run's active step — the step most recently started and not yet
-    /// finished. [`Self::emit`] stamps every request event with it, so row
-    /// ownership is something the run *states* rather than the tracker infers
-    /// from event ordering. A single cell, not a stack: a step bracket delimits
-    /// the run's exclusive request-emitting phase, and the pipeline's only
-    /// concurrency (the analyst trio) lives *inside* one step. A stage wanting
-    /// two concurrently-open request-owning steps must extend this seam
-    /// explicitly; until then an unowned request degrades to a visible
-    /// unattributed row, never a misattributed one.
+    /// The step most recently started and not yet finished; [`Self::emit`]
+    /// stamps every request event with it. A single cell, not a stack: the
+    /// pipeline's only concurrency (the analyst trio) lives inside one step. A
+    /// stage wanting two concurrently-open request-owning steps must extend
+    /// this seam; until then an unowned request degrades to an unattributed
+    /// row, never a misattributed one.
     active_step: Mutex<Option<String>>,
-    /// The run's local-model call counter — the `call` number both boundary
-    /// events of one call share, so a sink can pair them and a reader can
-    /// count calls per holding. Handed out by [`Self::model_call_started`].
+    /// The `call` number both boundary events of one local-model call share.
     calls: AtomicU64,
 }
 
 impl RunContext {
-    /// Build a context for a live run. Returns an `Arc` because both the adapters
-    /// (which keep a clone) and `generate_report` (which borrows it) share it.
     pub fn new(
         run_id: impl Into<String>,
         reporter: Arc<dyn ProgressReporter>,
@@ -370,9 +311,7 @@ impl RunContext {
         })
     }
 
-    /// A context that reports nowhere and is never cancelled — the default the
-    /// real adapters fall back to and what tests / offline smokes pass to
-    /// `generate_report`.
+    /// A context that reports nowhere and is never cancelled.
     pub fn noop() -> Arc<Self> {
         Self::new(
             "noop",
@@ -385,25 +324,23 @@ impl RunContext {
         &self.run_id
     }
 
-    /// Whether a cancel has been requested. Polled at step and request
-    /// boundaries; an in-flight HTTP call is not interrupted.
+    /// Polled at step and request boundaries; an in-flight HTTP call is not
+    /// interrupted.
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
     }
 
-    /// Clear the cancel flag for the start of a run. Called once the run owns the
-    /// concurrency slot (not when the context is built), so a competing attempt that
-    /// is then skipped can't reset an already-active run's cancellation.
+    /// Called once the run owns the concurrency slot (not when the context is
+    /// built), so a competing attempt that is then skipped can't reset an
+    /// already-active run's cancellation.
     pub fn reset_cancel(&self) {
         self.cancel.store(false, Ordering::Relaxed);
     }
 
-    /// Stamp an event with the run id and the next sequence, then hand it to the
-    /// reporter. The single choke point every helper below routes through — and
-    /// the stderr tee's one home, so every job's run structure leaves a durable
-    /// trace regardless of which reporter is attached. Request events are
-    /// stamped here with the run's active step (see [`Self::active_step`]), so
-    /// the adapters emitting them never need to know which step is running.
+    /// The single choke point every helper routes through, and the stderr
+    /// tee's one home. Request and model-call events are stamped here with the
+    /// run's active step, so the adapters emitting them never need to know
+    /// which step is running.
     fn emit(&self, mut event: ProgressEvent) {
         if let ProgressEvent::RequestStarted { step, .. }
         | ProgressEvent::RequestFinished { step, .. }
@@ -427,9 +364,8 @@ impl RunContext {
         });
     }
 
-    /// Declare a step started. Also makes it the run's active step, so every
-    /// request emitted until the matching [`Self::step_finished`] is stamped as
-    /// owned by it.
+    /// Also makes the step the run's active step until the matching
+    /// [`Self::step_finished`].
     pub fn step_started(&self, step: impl Into<String>, label: impl Into<String>) {
         let step = step.into();
         *self.active_step.lock().unwrap() = Some(step.clone());
@@ -439,9 +375,9 @@ impl RunContext {
         });
     }
 
-    /// Declare a step finished. Clears the active step only when the key
-    /// matches the step currently owning it, so a stray or out-of-order close
-    /// can't steal ownership from a step that already superseded it.
+    /// Clears the active step only when the key matches the step currently
+    /// owning it, so a stray or out-of-order close can't steal ownership from
+    /// a step that already superseded it.
     pub fn step_finished(
         &self,
         step: impl Into<String>,
@@ -480,8 +416,7 @@ impl RunContext {
         });
     }
 
-    /// [`Self::request_started`] for a research request, naming what it asked
-    /// for so the tracker row can show the query or page address.
+    /// [`Self::request_started`] for a research request, naming what it asked for.
     pub fn request_started_with_target(
         &self,
         provider: impl Into<String>,
@@ -567,7 +502,6 @@ impl RunContext {
         });
     }
 
-    /// Restart a streaming agent call's live panes ahead of its re-attempt —
     /// `None` for the main agent, the posture for an analyst.
     pub fn stream_restarted(&self, posture: Option<&str>) {
         self.emit(ProgressEvent::StreamRestarted {
@@ -582,9 +516,8 @@ impl RunContext {
         });
     }
 
-    /// Announce a local-model call about to be issued and return its call
-    /// number, which the matching [`Self::model_call_finished`] must carry.
-    /// Stamped with the active step like a request row.
+    /// Returns the call number the matching [`Self::model_call_finished`] must
+    /// carry.
     pub fn model_call_started(&self, info: ModelCallInfo) -> u64 {
         let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
         self.emit(ProgressEvent::ModelCallStarted {
@@ -604,8 +537,6 @@ impl RunContext {
         call
     }
 
-    /// Close the local-model call `call` (from [`Self::model_call_started`])
-    /// with how it resolved.
     pub fn model_call_finished(&self, call: u64, stage: impl Into<String>, outcome: ModelCallOutcome) {
         self.emit(ProgressEvent::ModelCallFinished {
             call,
@@ -632,17 +563,13 @@ impl RunContext {
     }
 }
 
-/// A reporter that records every message, for tests that assert on the emitted
-/// stream — this module's unit tests and other modules' (e.g. the live research
-/// smoke in `pipeline`, which checks request-row group attribution). Test builds
-/// only.
+/// Records every message, for tests that assert on the emitted stream.
 #[cfg(test)]
 #[derive(Default)]
 pub struct RecordingReporter(std::sync::Mutex<Vec<ProgressMessage>>);
 
 #[cfg(test)]
 impl RecordingReporter {
-    /// Snapshot of every message reported so far.
     pub fn messages(&self) -> Vec<ProgressMessage> {
         self.0.lock().unwrap().clone()
     }
@@ -701,8 +628,7 @@ mod tests {
         assert_eq!(v["name"], "10-Year Treasury");
         assert_eq!(v["status"], "ok");
         assert_eq!(v["step"], "baseline");
-        // An untargeted row carries no `target` key at all — the frontend's
-        // "has a subject" check is a plain absent-field test.
+        // Absent, not null: the frontend's "has a subject" check is an absent-field test.
         assert!(v.get("target").is_none());
     }
 
@@ -732,7 +658,6 @@ mod tests {
             let v = serde_json::to_value(m).unwrap();
             assert_eq!(v["target"]["kind"], "search");
             assert_eq!(v["target"]["text"], "widget co earnings");
-            // The pairing key is untouched by the target.
             assert_eq!(v["series_id"], "search: widget co earnings");
             assert_eq!(v["name"], "competitive-position");
         }
@@ -740,8 +665,7 @@ mod tests {
 
     #[test]
     fn an_unowned_request_serializes_with_no_step_field_at_all() {
-        // `step: None` is skipped, not serialized as null, so the frontend's
-        // "no step" check is a plain absent-field test.
+        // Absent, not null: the frontend's "no step" check is an absent-field test.
         let msg = ProgressMessage {
             run_id: "r".into(),
             seq: 0,
@@ -763,13 +687,11 @@ mod tests {
         let rec = Arc::new(RecordingReporter::default());
         let ctx = RunContext::new("run-5", rec.clone(), Arc::new(AtomicBool::new(false)));
 
-        // Before any step: unowned.
         ctx.request_started("FMP", "indices", "SPX", "S&P 500");
         ctx.step_started("baseline", "Baseline scan");
         ctx.request_started("FRED", "macro-levels", "DGS10", "10-Year Treasury");
         ctx.request_finished("FRED", "macro-levels", "DGS10", "10-Year Treasury", "ok", None);
         ctx.step_finished("baseline", "ok", None);
-        // After the close: unowned again.
         ctx.request_finished("FMP", "indices", "SPX", "S&P 500", "ok", None);
 
         let steps: Vec<Option<String>> = rec
@@ -799,7 +721,6 @@ mod tests {
 
         ctx.step_started("rates", "Load rate anchors");
         ctx.step_started("holding-AAPL", "Analyze AAPL");
-        // A stray close of the superseded step must not clear the active one.
         ctx.step_finished("rates", "ok", None);
         ctx.request_started("FMP", "company-quote", "AAPL", "AAPL quote");
 
@@ -814,8 +735,7 @@ mod tests {
 
     #[test]
     fn concurrent_requests_inside_one_step_all_carry_its_stamp() {
-        // The analyst-trio shape: scoped threads sharing one context, all
-        // emitting inside a single open step.
+        // The analyst-trio shape: scoped threads sharing one context.
         let rec = Arc::new(RecordingReporter::default());
         let ctx = RunContext::new("run-7", rec.clone(), Arc::new(AtomicBool::new(false)));
 
@@ -848,8 +768,6 @@ mod tests {
 
     #[test]
     fn agent_thinking_serializes_as_a_kebab_kind_with_a_delta() {
-        // The reasoning channel rides the same envelope as AgentToken, tagged
-        // `agent-thinking` so the frontend routes it to the thinking pane.
         let rec = Arc::new(RecordingReporter::default());
         let ctx = RunContext::new("run-2", rec.clone(), Arc::new(AtomicBool::new(false)));
         ctx.agent_thinking("Weighing the bull case");
@@ -864,9 +782,6 @@ mod tests {
 
     #[test]
     fn analyst_thinking_serializes_with_a_posture_tag() {
-        // The analyst reasoning channel carries a `posture` so the frontend routes the
-        // three concurrent analysts to distinct panes; otherwise the same envelope as
-        // `agent-thinking`.
         let rec = Arc::new(RecordingReporter::default());
         let ctx = RunContext::new("run-3", rec.clone(), Arc::new(AtomicBool::new(false)));
         ctx.analyst_thinking("bear", "The curve is lying about the cycle");
@@ -882,8 +797,6 @@ mod tests {
 
     #[test]
     fn stream_restarted_names_an_analyst_posture_and_omits_it_for_the_main_agent() {
-        // The restart rides the same envelope as the stream it clears: the main
-        // agent's carries no posture, an analyst's names its pane.
         let rec = Arc::new(RecordingReporter::default());
         let ctx = RunContext::new("run-5", rec.clone(), Arc::new(AtomicBool::new(false)));
         ctx.stream_restarted(None);
@@ -901,9 +814,6 @@ mod tests {
 
     #[test]
     fn step_thinking_serializes_with_its_step_key() {
-        // The step-scoped reasoning channel carries the owning step's key so the
-        // frontend folds the delta into that step's reasoning pane (the portfolio
-        // per-holding steps); otherwise the same envelope as `agent-thinking`.
         let rec = Arc::new(RecordingReporter::default());
         let ctx = RunContext::new("run-4", rec.clone(), Arc::new(AtomicBool::new(false)));
         ctx.step_thinking("holding-AAPL", "Weighing the trim against the tilt");
@@ -936,7 +846,6 @@ mod tests {
         let rec = Arc::new(RecordingReporter::default());
         let ctx = RunContext::new("run-8", rec.clone(), Arc::new(AtomicBool::new(false)));
 
-        // Before any step: unowned, numbered 1.
         let first = ctx.model_call_started(call_info("probe"));
         ctx.step_started("holding-AAPL", "Analyze AAPL");
         let second = ctx.model_call_started(call_info("interpret AAPL"));

@@ -1,27 +1,9 @@
-//! The per-holding **evidence surface** of the FMP endpoint table
-//! (`docs/data-sources.md` §Portfolio Analysis — endpoint surface) — the rows
+//! The per-holding evidence surface of the FMP endpoint table
+//! (`docs/data-sources.md` §Portfolio Analysis — endpoint surface): the rows
 //! FETCHED VALUES renders as the providers return them and the engine never
-//! reads (`docs/portfolio-workflow.md` §Step 6c): the eight TTM ratio lines,
-//! owner earnings, enterprise value, the street price-target consensus with
-//! its trend, the analyst grades consensus with the rating actions, FMP's
-//! ratings snapshot, the insider and congressional trades, the float, the
-//! revenue segments, the splits feed and the earnings-surprise history. The
-//! adapter fills one record per graded stock
-//! ([`crate::fmp::FmpDataSource::fetch_company_evidence`]), every leg
-//! fail-soft to a tagged gap on the record; the dossier carries it
-//! (`HoldingDossier::evidence`) and the gaps join the financials' gap
-//! manifest at the gather, so they reach the audit and data health the way
-//! the SEC and deep-history gaps do. [`CompanyFinancials`] stays the engine's
-//! input struct; nothing here feeds a sub-score, a band or a rung.
-//!
-//! The counts and windows are the plan-time drafts (ruled 2026-10-08): rating
-//! actions the latest ten within twelve months; insider trades the latest ten
-//! within six months plus the statistics line; congressional trades the
-//! latest ten, Senate and House merged, within twelve months; the surprise
-//! history eight quarters; the segments the latest two fiscal years, every
-//! segment; the M&A feed the trailing twelve months under a ten-page walk.
-//!
-//! [`CompanyFinancials`]: crate::portfolio::engine::CompanyFinancials
+//! reads (`docs/portfolio-workflow.md` §Step 6c). The adapter fills one record
+//! per graded stock ([`crate::fmp::FmpDataSource::fetch_company_evidence`]),
+//! every leg fail-soft to a tagged gap on the record.
 
 use serde::{Deserialize, Serialize};
 
@@ -49,16 +31,13 @@ pub const DIVIDENDS_SHOWN: usize = 4;
 pub const FUND_COUNTRY_WEIGHTS_SHOWN: usize = 10;
 /// The M&A feed window, in months before the session date.
 pub const MA_WINDOW_MONTHS: u32 = 12;
-/// The M&A feed's page walk cap (pages of [`MA_PAGE_LIMIT`] rows, newest
-/// first) — the report-froth item's drafted budget.
+/// The M&A feed's page walk cap (pages of [`MA_PAGE_LIMIT`] rows, newest first).
 pub const MA_PAGE_CAP: usize = 10;
 /// Rows per M&A feed page — a page served short of it ends the walk.
 pub const MA_PAGE_LIMIT: usize = 100;
 
-/// The eight TTM ratio lines (ruled 2026-10-08): P/E and P/B off `ratios-ttm`,
-/// EV/EBITDA, EV/sales, FCF yield, ROIC, ROE and net debt/EBITDA off
-/// `key-metrics-ttm`. Each `None` where its pull gapped or the field was
-/// absent; the pulls' gaps ride the record.
+/// The eight TTM ratio lines: P/E and P/B off `ratios-ttm`, the rest off
+/// `key-metrics-ttm`. Each `None` where its pull gapped or the field was absent.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RatioLines {
     pub pe: Option<f64>,
@@ -187,7 +166,6 @@ pub struct InsiderStatistics {
     pub total_disposed: Option<f64>,
 }
 
-/// Which chamber a congressional trade was disclosed from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Chamber {
     Senate,
@@ -249,8 +227,7 @@ pub struct SplitRow {
     pub denominator: f64,
 }
 
-/// One dividend payment off the `dividends` feed — the ex-date and the amount
-/// as the feed reports them, with the payment date where served.
+/// One row off the `dividends` feed.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DividendRow {
     /// The ex-dividend date, ISO.
@@ -274,11 +251,11 @@ pub struct MaDeal {
     pub link: Option<String>,
 }
 
-/// One walk of the M&A feed (`FmpDataSource::walk_mergers`) — the one page walk Portfolio's
-/// run-level feed and the report's primary-market read share: every row read on the walked
-/// pages, newest first (the boundary page's rows before the walk's start included), the
-/// rows those pages served beside them that no reader could read, and how the walk ended.
-/// A page with no readable row ends the walk as a failed page ([`MaWalkEnd::Failed`]).
+/// One walk of the M&A feed (`FmpDataSource::walk_mergers`), shared by
+/// Portfolio's run-level feed and the report's primary-market read: every row
+/// read on the walked pages, newest first (the boundary page's rows before the
+/// walk's start included), the count of rows no reader could read, and how the
+/// walk ended.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaWalk {
     pub deals: Vec<MaDeal>,
@@ -286,7 +263,6 @@ pub struct MaWalk {
     pub end: MaWalkEnd,
 }
 
-/// How a walk of the M&A feed ended ([`MaWalk`]).
 #[derive(Debug, Clone, PartialEq)]
 pub enum MaWalkEnd {
     /// A row dated before the walk's start: every row since it was seen.
@@ -307,7 +283,6 @@ pub enum MaWalkEnd {
     Cancelled,
 }
 
-/// Which side of a deal the holding is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaRole {
     Acquirer,
@@ -354,14 +329,14 @@ pub struct CompanyEvidence {
     /// [`SURPRISE_QUARTERS`], plus the next announcement where the feed carries
     /// it ([`Self::next_earnings`]).
     pub earnings: Vec<crate::fmp::SymbolEarningsRow>,
-    /// Tagged legs that gapped — joined onto the financials' gap manifest at the
+    /// Tagged legs that gapped, joined onto the financials' gap manifest at the
     /// gather.
     pub gaps: Vec<String>,
 }
 
 impl CompanyEvidence {
-    /// An unfilled record for `symbol` — the offline default (no gap: a stub
-    /// that never wired the leg is not a degraded live input).
+    /// The offline default, with no gap: a stub that never wired the leg is not
+    /// a degraded live input.
     pub fn empty(symbol: &str) -> Self {
         Self {
             symbol: symbol.to_string(),
@@ -374,9 +349,8 @@ impl CompanyEvidence {
         self.earnings.iter().filter(|r| r.eps_actual.is_some())
     }
 
-    /// The next announcement the feed carries — the nearest row with no actual
-    /// dated on or after `session` (ISO), so the announcement day's own row
-    /// is "next" until its actual lands (Codex, 2026-10-08) — if any.
+    /// The nearest row with no actual dated on or after `session` (ISO), so the
+    /// announcement day's own row is "next" until its actual lands.
     pub fn next_earnings(&self, session: &str) -> Option<&crate::fmp::SymbolEarningsRow> {
         self.earnings
             .iter()

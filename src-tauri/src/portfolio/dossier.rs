@@ -1,15 +1,8 @@
 //! Deterministic dossier assembly (`docs/portfolio-analysis.md` §The per-holding
-//! pipeline, step 1; `docs/local-models.md §Context-memory discipline` — "Deterministic
-//! packet assembly"). The application layer builds a holding's evidence packet so the
-//! model reasons over bounded, structured context rather than gathering it itself.
-//!
-//! Two seams keep this honest: the **financials merge** unifies the FMP per-company
-//! pull with keyless SEC EDGAR facts and *derives* valuation multiples from market cap
-//! plus statement lines (compute, don't guess); and the **house view** loads the
-//! Market Signal Report deterministically — the latest report's Thesis / Investment
-//! Strategy / Forward Outlook sections plus the recent report summaries — never by
-//! vector-searching the report's memory partition. The prior run's verdict for this
-//! holding rides in for the continuity check.
+//! pipeline, step 1; `docs/local-models.md §Context-memory discipline`): the
+//! financials merge (FMP plus SEC EDGAR, multiples derived from market cap and
+//! statement lines), the house view loaded from the latest report's sections and
+//! recent summaries, and the prior run's carry-over for the continuity check.
 
 use std::path::Path;
 
@@ -24,16 +17,13 @@ use crate::schwab::{OptionChain, Position};
 use crate::sec::CompanyFacts;
 use crate::storage;
 
-/// The audit's source line for the Market Signal house view. Appended by the
-/// interpretation paths in `pipeline`, never by dossier assembly — see the note at the
-/// end of [`assemble`].
+/// The audit's source label for the house view. Appended by the interpretation
+/// paths in `pipeline`, never by [`assemble`] (see the note at its end).
 pub const HOUSE_VIEW_SOURCE: &str = "Market Signal Report (house view)";
 
-/// The Market Signal house view loaded as a read-only shared input
-/// (`docs/portfolio-analysis.md`). It enters deterministically — recent report
-/// summaries plus the latest report's relevant prose sections — never via the
-/// report's vector memory, which no local job reads (`docs/storage.md §Local Vector
-/// Memory`).
+/// The Market Signal house view, loaded deterministically
+/// (`docs/portfolio-analysis.md`) — never via the report's vector memory
+/// (`docs/storage.md §Local Vector Memory`).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct HouseView {
     pub recent_summaries: Vec<ReportSummary>,
@@ -42,15 +32,12 @@ pub struct HouseView {
     pub latest_sections: Option<String>,
 }
 
-/// How many days each run-level commodity window covers (drafted): wide enough
-/// for ~13 monthly IMF prints and a ~1-year daily trend base, one date-ranged
-/// request per series.
+/// Days each run-level commodity window covers: wide enough for ~13 monthly IMF
+/// prints and a ~1-year daily trend base in one date-ranged request per series.
 pub const COMMODITY_WINDOW_DAYS: i64 = 400;
 
-/// Which commodity sleeve a print belongs to — the deterministic key the
-/// per-holding selection reads (`docs/data-sources.md §Portfolio Analysis —
-/// endpoint surface`: oil / gas series for energy-linked holdings, the IMF metals
-/// plus gold for materials-linked ones, and uranium on its own industry override).
+/// Which commodity sleeve a print belongs to (`docs/data-sources.md §Portfolio
+/// Analysis — endpoint surface`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CommodityGroup {
     Energy,
@@ -59,11 +46,9 @@ pub enum CommodityGroup {
     Gold,
 }
 
-/// One run-level commodity price read: the latest print on the series' own
-/// published level basis (never the rate normalization), plus the window's
-/// earliest print as a trend base. Each carries its observation date so the
-/// model reads it as-of — a monthly IMF series lags by design, and data honesty
-/// shows the lag rather than presenting the print as current.
+/// One run-level commodity price read on the series' own published level basis
+/// (never the rate normalization). The observation dates ride along because a
+/// monthly IMF series lags by design and the model must read the print as-of.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommodityPrint {
     /// Display label ("WTI Crude Oil").
@@ -77,23 +62,19 @@ pub struct CommodityPrint {
     pub trailing: Option<crate::portfolio::engine::DatedValue>,
 }
 
-/// The run-level commodity context (`docs/portfolio-workflow.md` §Step 5):
-/// fetched **once per run and shared across every holding** — FRED daily energy
-/// plus the suite-shared monthly IMF metals, and gold via FMP `quote` `GCUSD` —
-/// each series fail-soft to a typed gap. Empty prints + empty gaps = the leg
-/// never ran (an offline stub).
+/// The run-level commodity context, fetched once per run and shared across every
+/// holding (`docs/portfolio-workflow.md` §Step 5). Empty prints and empty gaps
+/// together mean the leg never ran.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CommodityContext {
     pub prints: Vec<CommodityPrint>,
     pub gaps: Vec<String>,
 }
 
-/// Select the prints that ride one holding's dossier, by the holding's FMP
-/// profile identity. Industry overrides the broad sector where the sector is
-/// misleading: uranium receives the uranium sleeve, while coal receives no
-/// oil / gas proxy. Otherwise Energy receives oil / gas and Basic Materials
-/// receives metals; **gold is industry-only** (gold / precious metals), never
-/// the whole Basic Materials sector. Any other identity — or none — carries no
+/// Select the prints that ride one holding's dossier by its FMP profile identity.
+/// Industry overrides the broad sector where the sector misleads: uranium takes
+/// its own sleeve, coal takes no oil / gas proxy, and gold is industry-only,
+/// never the whole Basic Materials sector. Any other identity carries no
 /// commodity block; the context is linked evidence, not a universal macro feed.
 pub fn commodity_prints_for_holding(
     ctx: &CommodityContext,
@@ -163,17 +144,14 @@ pub struct OverlayLeg {
     pub kind: Option<crate::schwab::OptionKind>,
     pub strike: Option<f64>,
     pub expiry: Option<String>,
-    /// The contract's delta off the targeted chain fetch — `None` is the typed
-    /// gap (a failed fetch or the sentinel). A standalone option never becomes
-    /// a leg at all (ruled 2026-08-21 — absence, not a recorded gap).
+    /// The contract's delta off the targeted chain fetch; `None` is the typed
+    /// gap (a failed fetch or the sentinel).
     pub delta: Option<f64>,
 }
 
-/// The typed same-underlying option overlay (`docs/portfolio-workflow.md`
-/// §Step 6a): the holding's option legs off the Step-2 pull, linked by the
-/// deterministic OCC symbol decode, classified, with the coverage ratio and
-/// the net share-equivalent delta. Evidence for the verdict and the action
-/// call — the overlay changes what the right action is — never a grade input.
+/// The holding's typed same-underlying option overlay
+/// (`docs/portfolio-workflow.md` §Step 6a): evidence for the verdict and the
+/// action call, never a grade input.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OptionOverlay {
     pub legs: Vec<OverlayLeg>,
@@ -192,10 +170,8 @@ pub struct OptionOverlay {
     pub gaps: Vec<String>,
 }
 
-/// Build the typed overlay from the holding's same-underlying option rows.
 /// `shares` is the holding's netted quantity; `delta_for` resolves a decoded
-/// contract to its chain delta (the job's targeted-fetch lookup). `None` when
-/// no option rows exist — the common case, no overlay to carry.
+/// contract to its chain delta. `None` when no option rows exist.
 pub fn assemble_option_overlay(
     shares: f64,
     option_rows: &[&Position],
@@ -208,8 +184,7 @@ pub fn assemble_option_overlay(
     // Recognized contract totals by (side, kind), in contracts.
     let (mut short_calls, mut long_calls, mut short_puts, mut long_puts) = (0.0, 0.0, 0.0, 0.0);
     for row in option_rows {
-        // A zero-net row is no economic exposure — no leg (defensive; the job's
-        // collector already excludes them).
+        // Defensive: the job's collector already excludes zero-net rows.
         if row.quantity == 0.0 {
             continue;
         }
@@ -265,10 +240,9 @@ pub fn assemble_option_overlay(
         return None;
     }
 
-    // Classification (drafted rules): single-strategy shapes only; anything
-    // else — an unrecognized leg, a non-long underlying, a naked short call, or
-    // extra legs — is `other`. A short call is covered only up to the held
-    // shares; any excess is naked and must never read as covered.
+    // Single-strategy shapes only; anything else is `other`. A short call is
+    // covered only up to the held shares; any excess is naked and must never
+    // read as covered.
     let covered = |contracts: f64| contracts * 100.0 <= shares + 1e-9;
     let naked_short_call = short_calls > 0.0 && (shares <= 0.0 || !covered(short_calls));
     if naked_short_call {
@@ -318,259 +292,199 @@ pub fn assemble_option_overlay(
     })
 }
 
-/// One sector benchmark's dated closes (FMP dated EOD — the identity table in
-/// `docs/data-sources.md §Financial Modeling Prep`), fetched run-level and
-/// memoized per symbol; the input delta's technology-event pre-flag reads it.
+/// One sector benchmark's dated closes (`docs/data-sources.md §Financial
+/// Modeling Prep`), fetched run-level and memoized per symbol.
 #[derive(Debug, Clone)]
 pub struct BenchmarkSeries {
     pub symbol: String,
     pub closes: Vec<crate::portfolio::engine::DatedValue>,
 }
 
-/// A holding's complete evidence packet, assembled deterministically. The pipeline's
-/// model stages read only this (plus the engine's computed numbers), so interpretation
-/// reasons over evidence, not over a gathering transcript.
+/// A holding's complete evidence packet; the model stages read only this plus
+/// the engine's computed numbers.
 #[derive(Debug, Clone)]
 pub struct HoldingDossier {
     pub position: Position,
     /// Transient SEC recovery identity. Never serialized or rendered in prompts.
     pub earnings_issuer: Option<crate::sec::earnings::Issuer>,
-    /// The issuer name off the same one-per-stock FMP `/profile` lookup the listing
-    /// guard reads — kept because Schwab's `description` is often blank, which renders
-    /// the prompt header as `HOLDING: PSX ()` and leaves the model guessing at the
-    /// issuer (`docs/verification/2026-08-10-big-run-attempt-1.md` §Finding 4).
-    /// `None` for a fund (its one profile read is the fund-structure leg —
-    /// `isFund` + description for closed-end detection, never an identity
-    /// lookup) or an unresolved / unverified lookup.
+    /// The issuer name off the one-per-stock FMP `/profile` lookup, kept because
+    /// Schwab's `description` is often blank. `None` for a fund (its one profile
+    /// read is the fund-structure leg, never an identity lookup) or an
+    /// unresolved / unverified lookup.
     pub company_name: Option<String>,
-    /// How this position changed since the prior run (the Step-4 holdings diff), so the
-    /// verdict reasons over what the user did with it (`docs/portfolio-analysis.md`
-    /// §Holdings change tracking).
+    /// How this position changed since the prior run
+    /// (`docs/portfolio-analysis.md` §Holdings change tracking).
     pub position_delta: PositionDelta,
     pub financials: CompanyFinancials,
     pub options_signal: OptionsSignal,
     pub profile: InvestorProfile,
     pub house_view: HouseView,
-    /// The fund half (metadata + the sector-P/E surface) for an ETF / mutual-fund
-    /// holding — the reduced path's input (`docs/portfolio-analysis.md` §Asset
-    /// eligibility); `None` for a stock.
+    /// The fund half for an ETF / mutual-fund holding
+    /// (`docs/portfolio-analysis.md` §Asset eligibility); `None` for a stock.
     pub fund: Option<crate::portfolio::fund::FundContext>,
-    /// The prior run's verdict for this holding (continuity input), or `None` on a
-    /// holding the job has not seen before ("new holding").
+    /// The prior run's verdict for this holding; `None` on a debut.
     pub prior_verdict: Option<HoldingVerdict>,
-    /// The prior verdict's **effective analysis vintage** — its `analyzed_at`,
-    /// else its run's `created_at` — the retrospective block's "since" anchor and
-    /// the anchor-close bridge's session key (`docs/portfolio-analysis.md` §The
-    /// holding verdict, the two-arm contract). A selective carry keeps the
-    /// original authoring vintage, so this date and `prior_spot` stay paired
-    /// (Codex round 2, finding 2). `None` on a debut.
+    /// The prior verdict's effective analysis vintage — its `analyzed_at`, else
+    /// its run's `created_at` — the retrospective's "since" anchor and the
+    /// anchor-close bridge's session key (`docs/portfolio-analysis.md` §The
+    /// holding verdict). A selective carry keeps the original authoring vintage,
+    /// so this date and `prior_spot` stay paired. `None` on a debut.
     pub prior_vintage: Option<String>,
-    /// The prior read's authoring-time spot, **on the prior read's price basis** —
-    /// the anchor-close bridge's authoring leg for re-basing the prior authored
-    /// targets. `None` on a debut or a prior audit without a quick-check basis.
+    /// The prior read's authoring-time spot, on the prior read's price basis —
+    /// the anchor-close bridge's authoring leg. `None` on a debut or a prior
+    /// audit without a quick-check basis.
     pub prior_spot: Option<f64>,
-    /// The prior read's raw fiscal-period consensus EPS rows (the same
-    /// quick-check basis) — the narrative-vs-reality read's constant-period
-    /// revision comparator ([`crate::portfolio::engine::narrative_vs_reality`]).
-    /// Empty on a debut or a basis that carried none.
+    /// The prior read's raw fiscal-period consensus EPS rows — the
+    /// narrative-vs-reality read's constant-period comparator
+    /// ([`crate::portfolio::engine::narrative_vs_reality`]). Empty on a debut or
+    /// a basis that carried none.
     pub prior_consensus_eps_periods: Vec<crate::portfolio::engine::ConsensusEpsPeriod>,
-    /// The prior run's stored engine metrics (from the audit row) — the
-    /// metric-level input delta's prior side ([`crate::portfolio::engine::metric_delta`]).
-    /// `None` on a debut or a prior run without an audit row.
+    /// The prior run's stored engine metrics — the metric-level input delta's
+    /// prior side ([`crate::portfolio::engine::metric_delta`]). `None` on a
+    /// debut or a prior run without an audit row.
     pub prior_metrics: Option<crate::portfolio::engine::ComputedMetrics>,
-    /// The grade-parameter version the prior verdict's letter and sub-scores were
-    /// computed under (from the prior run's audit row; `None` when the run carries
-    /// no audit row for the symbol). Meaningful only beside a priced `prior_verdict` — the
-    /// input delta and the interpretation prompt read the boundary it sits across
-    /// on the holding's branch ([`crate::portfolio::engine::grade_parameter_change`])
-    /// so an engine-driven letter or sub-score move is attributed to that boundary,
-    /// not to evidence.
+    /// The grade-parameter version the prior letter and sub-scores were computed
+    /// under; `None` without an audit row. Read beside a priced `prior_verdict`
+    /// so an engine-driven letter or sub-score move is attributed to the boundary
+    /// ([`crate::portfolio::engine::grade_parameter_change`]), not to evidence.
     pub prior_grade_parameter_version: Option<String>,
-    /// The scenario-target parameter version the prior verdict's targets were
-    /// priced under (from the prior audit row's `target_meta`; `None` when the
-    /// run carries no audit row for the symbol or the audit carries no target
-    /// record — a never-priced prior). Meaningful only beside a priced
-    /// `prior_verdict` — the input delta and the interpretation prompt read the
-    /// horizons its boundary can have moved on the holding's branch
-    /// ([`crate::portfolio::engine::target_parameter_change`]) so an
-    /// engine-driven target move is attributed to that boundary, not to evidence
-    /// or a self-correction (the 2026-08-24 review's Codex I11).
+    /// The scenario-target parameter version the prior targets were priced under
+    /// (the prior audit's `target_meta`); `None` without an audit row or a target
+    /// record (a never-priced prior). Read beside a priced `prior_verdict` so an
+    /// engine-driven target move is attributed to the boundary
+    /// ([`crate::portfolio::engine::target_parameter_change`]), not to evidence.
     pub prior_target_parameter_version: Option<String>,
-    /// The prior audit's split-bridge anchor bar — the exact re-basis factor's
-    /// stored leg ([`crate::portfolio::HoldingAudit::authoring_close`]). `None`
-    /// on a debut or a prior row from a no-price exit.
+    /// The prior audit's split-bridge anchor bar
+    /// ([`crate::portfolio::HoldingAudit::authoring_close`]). `None` on a debut
+    /// or a prior row from a no-price exit.
     pub prior_authoring_close: Option<crate::portfolio::engine::DatedValue>,
-    /// The prior run's **analysis** record (from the audit row) — the holding's
-    /// whole research memory, rendered verbatim as PRIOR ANALYSIS on every
-    /// gathering brief and the analysis message under its own date and with
-    /// the split-context line its own anchor bar yields, whatever its age
-    /// (`docs/portfolio-analysis.md` §Starting parameters). `None` on a debut or
-    /// a prior row carrying none.
+    /// The prior run's analysis record — the holding's research memory, rendered
+    /// verbatim as PRIOR ANALYSIS whatever its age (`docs/portfolio-analysis.md`
+    /// §Starting parameters). `None` on a debut or a prior row carrying none.
     pub prior_analysis: Option<crate::portfolio::AnalysisRecord>,
-    /// The prior row's accuracy read-through mark (its audit's
-    /// `accuracy_read_through`) — the highest episode-store check id the
-    /// review behind the prior thesis document read. The self-review reads a
-    /// score as read at or below it and lists the checks above it as new
-    /// (`docs/portfolio-analysis.md` §Outcome learning). `None` on a debut and
-    /// on a prior that read none.
+    /// The prior row's accuracy read-through mark — the highest episode-store
+    /// check id the prior review read; the self-review lists the checks above it
+    /// as new (`docs/portfolio-analysis.md` §Outcome learning). `None` on a
+    /// debut and on a prior that read none.
     pub prior_accuracy_read_through: Option<i64>,
-    /// The prior row's fund exposure basis (its audit's `fund_exposure`) — the
-    /// then side of a `role_risk_only` holding's realized block: the NAV, the
-    /// expense ratio and the exposure reads (`docs/portfolio-workflow.md`
-    /// §Step 6e). `None` on a debut and on a prior that carried none.
+    /// The prior row's fund exposure basis — the then side of a `role_risk_only`
+    /// holding's realized block (`docs/portfolio-workflow.md` §Step 6e). `None`
+    /// on a debut and on a prior that carried none.
     pub prior_fund_exposure: Option<crate::portfolio::fund::FundExposureBasis>,
-    /// This holding's accuracy record as the run's accuracy pass left it
-    /// ([`crate::portfolio::outcome::SubjectAccuracy`]) — set after assembly by
-    /// the job, read by the self-review alone. `None` where the episode store
-    /// could not be read this run, or where no pass ran (an offline stub).
+    /// This holding's accuracy record as the run's accuracy pass left it — set
+    /// after assembly by the job, read by the self-review alone. `None` where
+    /// the episode store could not be read or no pass ran.
     pub accuracy: Option<crate::portfolio::outcome::SubjectAccuracy>,
-    /// The loop-time listing-resolution guard's outcome for a stock
-    /// (`docs/portfolio-analysis.md` §Asset eligibility) — computed at gather time,
-    /// routed by `analyze_holding` beside the eligibility gates. `None` on a fund
-    /// (the guard is stocks-only); a stock always carries `Some` — offline stubs
-    /// ride the trait default's `Unverified`, which proceeds with a recorded
-    /// degraded input, never a terminal outcome.
+    /// The listing-resolution guard's outcome for a stock
+    /// (`docs/portfolio-analysis.md` §Asset eligibility). `None` on a fund; a
+    /// stock always carries `Some` — offline stubs ride the trait default's
+    /// `Unverified`, which proceeds with a recorded degraded input.
     pub listing: Option<crate::portfolio::listing::ListingResolution>,
-    /// The item-classified 8-K filings sweep's outcome — the hard-forensic
-    /// filing kinds' producer state (`docs/portfolio-analysis.md` §Starting
-    /// parameters). `None` when the leg never ran (a fund, a skipped retrieval,
-    /// or a stub without the source wired); a live stock gather always carries
-    /// `Some` — `Unknown` where the sweep couldn't run, never a fabricated clear.
+    /// The item-classified 8-K sweep's outcome (`docs/portfolio-analysis.md`
+    /// §Starting parameters). `None` when the leg never ran; a live stock gather
+    /// always carries `Some` — `Unknown` where the sweep couldn't run, never a
+    /// fabricated clear.
     pub filing_events: Option<crate::portfolio::ForensicFilingState>,
     /// The run-level commodity prints matched to this holding's sector
-    /// ([`commodity_prints_for_holding`]) — empty for a non-commodity-linked
-    /// holding, a fund, or a run whose commodity leg never ran.
+    /// ([`commodity_prints_for_holding`]); empty where none match or the leg
+    /// never ran.
     pub commodity_context: Vec<CommodityPrint>,
-    /// This holding's FINRA short-interest row, looked up off the once-per-run
-    /// consolidated file (`docs/data-sources.md §FINRA`) — risk /
-    /// squeeze-context **positioning evidence**, held out of every sub-score.
-    /// `None` on a fund, a symbol absent from the file (a market fact, not a
-    /// gap), or a run whose file fetch gapped (that gap rides data health).
+    /// This holding's FINRA short-interest row (`docs/data-sources.md §FINRA`) —
+    /// positioning evidence, held out of every sub-score. `None` on a fund, a
+    /// symbol absent from the file (a market fact, not a gap), or a gapped
+    /// file fetch.
     pub short_interest: Option<crate::finra::ShortInterestRead>,
-    /// The typed same-underlying option overlay ([`OptionOverlay`]) — the
-    /// holding's option legs off the Step-2 pull, classified, with delta and
-    /// coverage. `None` on the common no-option-legs case, funds, and skipped
-    /// retrievals. The verdict and the action call both see it — the overlay
-    /// changes what the right action is.
+    /// `None` on the common no-option-legs case, funds, and skipped retrievals.
     pub option_overlay: Option<OptionOverlay>,
-    /// The run-level CBOE venue-level put/call backdrop — the same value on
-    /// every dossier (broad-market sentiment context, never a per-name signal);
-    /// `None` when the leg failed or never ran (its gap rides data health).
+    /// The run-level CBOE put/call backdrop — the same value on every dossier,
+    /// broad-market context and never a per-name signal; `None` when the leg
+    /// failed or never ran.
     pub put_call_backdrop: Option<crate::cboe::PutCallBackdrop>,
-    /// This holding's sector benchmark series ([`BenchmarkSeries`]) — present
-    /// on a stock whose sector resolved to a SPDR benchmark and whose run
-    /// fetched it; the technology-event pre-flag's read-against leg.
+    /// Present on a stock whose sector resolved to a SPDR benchmark and whose
+    /// run fetched it; the technology-event pre-flag's read-against leg.
     pub sector_benchmark: Option<BenchmarkSeries>,
-    /// The symbol-scoped `news/stock` headlines fetched at dossier assembly as
-    /// the research loop's **news leads** — leads, never evidence (`docs/web-research.md`
-    /// §The research loop and context management). Empty on a fund, a failed
-    /// or skipped fetch (fail-soft), and every offline stub.
+    /// Symbol-scoped `news/stock` headlines — the research loop's leads, never
+    /// evidence (`docs/web-research.md` §The research loop and context
+    /// management). Empty on a fund, a failed or skipped fetch, and every
+    /// offline stub.
     pub news_leads: Vec<crate::portfolio::research::NewsLead>,
-    /// The run's session date (`YYYY-MM-DD`) — the "Date:" line of the shared
-    /// holding header, so every model-facing packet anchors its period labels
-    /// to the analysis date rather than the model's training horizon
-    /// (attempt-6 Finding 7; fix list 5.1, ruled 2026-09-17 for the header).
+    /// The run's session date (`YYYY-MM-DD`) — the shared holding header's
+    /// "Date:" line, so every packet anchors its period labels to the analysis
+    /// date rather than the model's training horizon.
     pub analysis_date: String,
     /// The data sources that contributed, for the run's audit record.
     pub sources: Vec<String>,
-    /// The profile lookup's exchange, sector and industry — the FETCHED
-    /// VALUES profile line beside `company_name`. `None` on a fund, a skipped
-    /// retrieval and an unresolved or unverified lookup.
+    /// The profile lookup's exchange, sector and industry. `None` on a fund, a
+    /// skipped retrieval and an unresolved or unverified lookup.
     pub issuer: Option<IssuerProfile>,
-    /// The per-holding evidence surface (`crate::portfolio::evidence`) — the
-    /// endpoint table's rows FETCHED VALUES renders and the engine never
-    /// reads. `None` on a fund, a skipped retrieval and every offline stub
+    /// The per-holding evidence surface FETCHED VALUES renders and the engine
+    /// never reads. `None` on a fund, a skipped retrieval and every offline stub
     /// whose source is not wired.
     pub evidence: Option<crate::portfolio::evidence::CompanyEvidence>,
-    /// The 8-K and 8-K/A rows of the forensic lookback off the same
-    /// submissions read as `filing_events`, newest first — the FETCHED VALUES
-    /// filings list (`docs/portfolio-workflow.md` §Step 6c). Empty on a fund,
-    /// a skipped retrieval, an `Unknown` sweep and every offline stub.
+    /// The lookback's 8-K and 8-K/A rows off the same submissions read as
+    /// `filing_events`, newest first (`docs/portfolio-workflow.md` §Step 6c).
+    /// Empty on a fund, a skipped retrieval, an `Unknown` sweep and every
+    /// offline stub.
     pub filings_8k: Vec<crate::sec::RecentFiling>,
-    /// The holding's matches against the run-level M&A feed, as acquirer or
-    /// target ([`ma_matches_for_holding`]). Empty where the feed named it on
-    /// neither side, on a fund, and where the feed never loaded.
+    /// The holding's matches against the run-level M&A feed
+    /// ([`ma_matches_for_holding`]). Empty where the feed named it on neither
+    /// side or never loaded.
     pub ma_matches: Vec<crate::portfolio::evidence::MaMatch>,
 }
 
-/// The prior run's carry-over for one holding, read off the latest persisted run:
-/// the verdict (continuity input) plus the audit-row legs the next pass consumes.
+/// The prior run's carry-over for one holding, read off the latest persisted run.
 #[derive(Debug, Clone)]
 pub struct PriorHolding {
     pub verdict: HoldingVerdict,
-    /// The grade-parameter version the prior letter and sub-scores were computed
-    /// under (`None` when the run carries no audit row for the symbol).
+    /// `None` when the run carries no audit row for the symbol.
     pub grade_parameter_version: Option<String>,
-    /// The scenario-target parameter version the prior targets were priced under
-    /// (`None` when the run carries no audit row for the symbol or the audit
-    /// carries no target record).
+    /// `None` when the run carries no audit row for the symbol or the audit
+    /// carries no target record.
     pub target_parameter_version: Option<String>,
-    /// The verdict's **effective analysis vintage** (`analyzed_at`, else the
-    /// prior run's `created_at`) — the retrospective's "since" anchor. A
-    /// selective carry keeps the original vintage, so this date stays paired
-    /// with the carried audit's authoring spot (Codex round 2, finding 2).
+    /// The verdict's effective analysis vintage (`analyzed_at`, else the prior
+    /// run's `created_at`). A selective carry keeps the original vintage, so
+    /// this date stays paired with the carried audit's authoring spot.
     pub vintage: String,
-    /// The prior run's authoring-time spot (its audit's quick-check basis print) —
-    /// the base the retrospective's realized price move computes against. `None`
-    /// where the prior audit carried no basis.
+    /// The prior run's authoring-time spot (its audit's quick-check basis
+    /// print). `None` where the prior audit carried no basis.
     pub spot: Option<f64>,
-    /// The prior run's raw fiscal-period consensus EPS rows (the same stored
-    /// basis) — the narrative-vs-reality read's constant-period comparator.
+    /// The prior run's raw fiscal-period consensus EPS rows off the same stored
+    /// basis.
     pub consensus_eps_periods: Vec<crate::portfolio::engine::ConsensusEpsPeriod>,
-    /// The prior run's stored engine metrics (its audit row's `metrics`) — the
-    /// metric-level input delta's prior side. `None` without an audit row.
+    /// `None` without an audit row.
     pub metrics: Option<crate::portfolio::engine::ComputedMetrics>,
     /// The prior audit's split-bridge anchor bar
-    /// ([`crate::portfolio::HoldingAudit::authoring_close`]) — re-read from this
-    /// run's fresh series it yields the exact re-basis factor since the prior
-    /// pass. `None` on a no-price exit's row (those comparisons run as stored).
+    /// ([`crate::portfolio::HoldingAudit::authoring_close`]). `None` on a
+    /// no-price exit's row.
     pub authoring_close: Option<crate::portfolio::engine::DatedValue>,
-    /// The prior run's analysis record (its audit row's `analysis`) — the
-    /// research memory the continuity brief and the analysis call read, with
-    /// its own date and anchor bar. `None` without an audit row or on a row
-    /// carrying none.
+    /// `None` without an audit row or on a row carrying none.
     pub analysis: Option<crate::portfolio::AnalysisRecord>,
-    /// The prior row's accuracy read-through mark (its audit's
-    /// `accuracy_read_through`). `None` without an audit row or on a row that
-    /// read none.
+    /// `None` without an audit row or on a row that read none.
     pub accuracy_read_through: Option<i64>,
-    /// The prior row's fund exposure basis (its audit's `fund_exposure`).
     /// `None` without an audit row or on a stock's row.
     pub fund_exposure: Option<crate::portfolio::fund::FundExposureBasis>,
 }
 
 
-/// Adopt the **TTM statement basis** where the quarterly income prints support it
-/// (`docs/portfolio-analysis.md` §Starting parameters — the grade-band slice's F5
-/// closure): the four newest quarters sum to TTM revenue / net income / gross
-/// profit, and quarters five through eight to the prior-TTM revenue the growth read
-/// compares against. **One statement basis per holding**: a ratio's numerator and
-/// denominator must share a period basis, and `revenue` denominates several, so the
-/// margin / growth / multiple family either adopts TTM wholesale or stays on the
-/// SEC annual fill — never a mix (an annual gross profit over a TTM revenue would
-/// fabricate a margin). Adoption requires revenue and net income on all four newest
-/// quarters — the lines the margins and multiples cannot do without; gross profit
-/// sums where every quarter carries it (or derives per-quarter from cost of
-/// revenue), else stays an honest gap even when SEC has an annual print. Returns
-/// whether the basis was adopted, so the SEC merge confines itself to fallback.
+/// Adopt the TTM statement basis where the quarterly income prints support it
+/// (`docs/portfolio-analysis.md` §Starting parameters): the four newest quarters
+/// sum to TTM revenue / net income / gross profit, quarters five through eight to
+/// the prior-TTM revenue. One statement basis per holding: a ratio's numerator
+/// and denominator must share a period basis, so the margin / growth / multiple
+/// family adopts TTM wholesale or stays on the SEC annual fill, never a mix.
+/// Adoption requires revenue and net income on all four newest quarters; gross
+/// profit sums where every quarter carries or derives it, else stays a gap even
+/// when SEC has an annual print. Returns whether the basis was adopted, so the
+/// SEC merge confines itself to fallback.
 pub fn apply_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
     let adopted = adopt_ttm_statement_basis(fin);
-    // Stamp WHICH basis the values now stand on, at the shared choke point every
-    // statement-consuming path already passes through, so no producer can set the
-    // levels without recording their basis. The prompt's statement-basis line and
-    // the audit's sources line read it; it alters no value.
-    //
-    // No quarterly rows at all means FMP alone supports no statement basis, which is
-    // distinct from a resolved fallback: `Annual` asserts a same-concept annual window
-    // is what the levels came from.
-    //
-    // This is what FMP's own pull supports. Where a SEC merge follows
-    // ([`merge_financials`]) it **refines** this: a zero-row quarterly response whose
-    // levels are then filled from SEC annual facts is on the annual basis, and saying
-    // `None` there would present annual levels as standing on no basis. The
-    // refinement lives at the merge
-    // because only the merge knows what finally supplied the levels; a caller with no
-    // merge (the quick check's `statements_refresh`) is correctly described here.
+    // Stamp which basis the values stand on at this shared choke point, so no
+    // producer can set the levels without recording their basis. No quarterly
+    // rows means FMP alone supports no basis (`None`), distinct from a resolved
+    // `Annual` fallback. A SEC merge that follows ([`merge_financials`]) refines
+    // the stamp, since only the merge knows what finally supplied the levels; a
+    // caller with no merge (the quick check's `statements_refresh`) is correctly
+    // described here.
     fin.statement_basis = if adopted {
         Some(crate::portfolio::StatementBasis::Ttm)
     } else if fin.quarterly_income.is_empty() {
@@ -584,13 +498,10 @@ pub fn apply_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
 /// The adoption decision itself — `true` when the four newest quarters are a usable
 /// TTM window, `false` onto the annual-fallback path.
 fn adopt_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
-    // Canonicalize the statement rows **in place** first — newest-first with the
-    // latest filing winning a duplicated period (`engine::canonicalize_statements`,
-    // the shared policy): a restatement served twice must resolve to the restated
-    // print, never to wire order, or the TTM basis (and with it the letter) would
-    // depend on response ordering. Every statement-consuming path passes here
-    // before any engine read, so the driver ladder's trailing prints and the
-    // anchor windows inherit the same canonical order.
+    // Canonicalize in place first (newest-first, the latest filing winning a
+    // duplicated period) so the TTM basis — and with it the letter — never
+    // depends on response ordering; every statement-consuming path passes here
+    // before any engine read and inherits the same order.
     crate::portfolio::engine::canonicalize_statements(fin);
     let rows = &fin.quarterly_income;
 
@@ -603,10 +514,8 @@ fn adopt_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
         }
         rows[..4].iter().map(get).sum()
     }
-    // The four newest rows are a TTM only when they are consecutive quarters —
-    // a feed gap (missed quarter, fiscal transition) would silently sum a
-    // >12-month span into every level-vs-market-cap multiple. Non-contiguous
-    // reads fail adoption onto the existing annual-fallback path.
+    // The four newest rows are a TTM only when consecutive — a feed gap would
+    // silently sum a >12-month span into every level-vs-market-cap multiple.
     if !crate::portfolio::engine::quarters_contiguous(
         rows.iter().take(4).map(|r| r.period_end.as_str()),
     ) {
@@ -617,18 +526,16 @@ fn adopt_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
     let (Some(_), Some(_)) = (ttm_revenue, ttm_net_income) else {
         return false;
     };
-    // Per-quarter: each quarter contributes its reported gross line, or derives
-    // its own from revenue − cost of revenue — mixing reported and derived
-    // quarters is fine (same economic line per quarter), a quarter with neither
-    // gaps the whole sum.
+    // Each quarter contributes its reported gross line or derives its own from
+    // revenue − cost of revenue (mixing is fine, same economic line); a quarter
+    // with neither gaps the whole sum.
     let ttm_gross_profit = sum4(rows, |r| {
         r.gross_profit
             .or_else(|| Some(r.revenue? - r.cost_of_revenue?))
     });
-    // The prior-year window needs the full eight-row run contiguous — a gap
-    // anywhere across it shifts the YoY comparison by a quarter, so growth
-    // gaps (`None`) rather than reading a misaligned window. The TTM basis
-    // itself stands: its own four rows were verified above.
+    // The prior-year window needs all eight rows contiguous — a gap anywhere
+    // shifts the YoY comparison by a quarter — so growth gaps rather than
+    // reading a misaligned window; the TTM basis itself stands.
     let prior = if rows.len() >= 8
         && crate::portfolio::engine::quarters_contiguous(
             rows.iter().take(8).map(|r| r.period_end.as_str()),
@@ -646,28 +553,20 @@ fn adopt_ttm_statement_basis(fin: &mut CompanyFinancials) -> bool {
     true
 }
 
-/// Merge the keyless SEC EDGAR facts into the FMP per-company financials and derive
-/// the valuation multiples from market cap plus statement lines. On the annual
-/// fallback basis SEC fills the statement fields FMP left empty (revenue and its
-/// prior-year print, gross profit, net income) — a missing field stays a gap rather
-/// than a fabricated level; when the TTM basis was adopted
-/// ([`apply_ttm_statement_basis`]) those fills are skipped wholesale so the two
-/// period bases never mix inside one ratio. Equity fills either way (a
-/// balance-sheet instant, not a flow line — the FMP quarterly balance sheet is
-/// preferred upstream, SEC the fallback), and the multiples are computed only when
-/// both market cap and the denominator are present.
+/// Merge the keyless SEC EDGAR facts into the FMP financials and derive the
+/// valuation multiples from market cap plus statement lines. On the annual
+/// fallback basis SEC fills the flow lines FMP left empty; when the TTM basis
+/// was adopted ([`apply_ttm_statement_basis`]) those fills are skipped so two
+/// period bases never mix inside one ratio. Equity fills either way: a
+/// balance-sheet instant, not a flow line.
 pub fn merge_financials(
     mut fmp: CompanyFinancials,
     sec: &CompanyFacts,
     ttm_statement_basis: bool,
 ) -> CompanyFinancials {
-    // Each fill reports whether it wrote. The stamp below reads only the FLOW
-    // fills — the annual basis is a flow-window basis, so `Annual` asserts that
-    // SEC's full-year flow lines are what the flows stand on; the equity fill is
-    // a balance-sheet instant outside the flow-basis rule and stamps nothing
-    // (Codex round 2: an equity-only SEC fill had still
-    // stamped `Annual`, so the prompt called flows that never reached the engine
-    // "SEC annual").
+    // Each fill reports whether it wrote. The basis stamp below reads only the
+    // flow fills; the equity fill is a balance-sheet instant outside the
+    // flow-basis rule and stamps nothing.
     let fill = |dst: &mut Option<f64>, src: Option<i64>| -> bool {
         if dst.is_none() {
             if let Some(v) = src {
@@ -684,12 +583,10 @@ pub fn merge_financials(
         sec_filled_a_flow |= fill(&mut fmp.gross_profit, sec.gross_profit);
         sec_filled_a_flow |= fill(&mut fmp.net_income, sec.net_income);
     }
-    // The equity fill stamps its own SOURCE — the balance-sheet instants' second
-    // continuity marker (`CompanyFinancials::equity_source`, the 2026-08-24
-    // review's Codex I13): FMP's quarterly balance sheet where the FMP leg supplied
-    // equity, SEC's annual print where it fell back, `None` where neither did.
-    // This is the one seam that knows what finally filled it, so no producer can
-    // set the level without recording its source; the stamp alters no value.
+    // The equity fill stamps its own source (`CompanyFinancials::equity_source`):
+    // FMP's quarterly balance sheet where the FMP leg supplied equity, SEC's
+    // annual print where it fell back, `None` where neither did. This is the one
+    // seam that knows what finally filled it.
     let fmp_supplied_equity = fmp.total_equity.is_some();
     let sec_filled_equity = fill(&mut fmp.total_equity, sec.stockholders_equity);
     fmp.equity_source = if fmp_supplied_equity {
@@ -700,37 +597,26 @@ pub fn merge_financials(
         None
     };
 
-    // Refine the basis stamp now that the fills have run — see
-    // [`apply_ttm_statement_basis`]. An adopted TTM window stands; otherwise the basis
-    // is `Annual` exactly when SEC filled a flow line — the annual-derived flows the
-    // basis-continuity gate must cover (stamping them `None` would slip them past
-    // it) — and `None` when no flow came from SEC: a fund, a holding whose statement
-    // surface resolved to nothing, or a balance-sheet instant standing alone (FMP's
-    // own beside thin quarters, or an equity-only SEC fill). Those instant-only
-    // shapes used to stamp `Annual` ("however it arrived"), which the audit's
-    // sources line and the prompt's basis label then read as an SEC annual flow
-    // basis for flows that never reached the engine (Codex rounds 1–2).
-    // Equity-SOURCE continuity — a D/E or P/B step when the
-    // equity leg moves between FMP's quarterly instant and SEC's annual one — is
-    // not this stamp's (an FMP balance-sheet gap flips the source under an
-    // unchanged TTM basis); it rides `equity_source` above, the instants' own.
+    // Refine the basis stamp now that the fills have run (see
+    // [`apply_ttm_statement_basis`]): an adopted TTM window stands; otherwise
+    // `Annual` exactly when SEC filled a flow line (the basis-continuity gate
+    // must cover those flows) and `None` when no flow came from SEC — a
+    // balance-sheet instant standing alone must not read as an SEC annual flow
+    // basis. Equity-source continuity rides `equity_source` above, not this
+    // stamp: an FMP balance-sheet gap flips the source under an unchanged basis.
     if !ttm_statement_basis {
         fmp.statement_basis = sec_filled_a_flow.then_some(crate::portfolio::StatementBasis::Annual);
     }
 
-    // Derive multiples from market cap + fundamentals when FMP didn't supply them.
     let derive = |num: Option<f64>, den: Option<f64>| match (num, den) {
         (Some(n), Some(d)) if d > 0.0 => Some(n / d),
         _ => None,
     };
     // The P/E derive is SIGNED (denominator ≠ 0, not > 0): a loss-maker must
-    // produce a negative P/E so the engine's fixed "a loss-maker is never
-    // cheap" valuation guard is reachable — a `None` here silently excused
-    // every loss-maker from the penalty (the grade-v2.1 boundary; the
-    // band-recalibration NOTE attributes the letter shifts). P/S and P/B keep
-    // the positive-denominator derive: negative revenue does not occur, and a
-    // negative-equity P/B has no engine read (risk carries the negative-D/E
-    // guard instead).
+    // produce a negative P/E so the engine's "a loss-maker is never cheap"
+    // valuation guard is reachable; `None` would silently excuse every
+    // loss-maker. P/S and P/B keep the positive-denominator derive: negative
+    // revenue does not occur, and a negative-equity P/B has no engine read.
     if fmp.pe_ratio.is_none() {
         fmp.pe_ratio = match (fmp.market_cap, fmp.net_income) {
             (Some(n), Some(d)) if d != 0.0 => Some(n / d),
@@ -747,19 +633,16 @@ pub fn merge_financials(
 }
 
 /// One retrieval leg's outcome as the job hands it to assembly, so the audit's
-/// source list can tell a leg that was **consulted** (a request was made — the
-/// contract at `docs/storage.md` §Local Analysis Suite Storage: "the source labels
-/// name every adapter the holding consulted") from one the job never ran. The SEC
-/// company-facts leg and the Schwab option-chain leg share this vocabulary.
+/// source list can tell a consulted leg from one the job never ran
+/// (`docs/storage.md` §Local Analysis Suite Storage).
 #[derive(Debug)]
 pub enum LegOutcome<'a, T> {
-    /// The job never ran this leg (a fund, a guard-terminal stock, a class the
-    /// pipeline never grades, a ticker with no CIK mapping). No source label.
+    /// The job never ran this leg (a fund, a guard-terminal stock, a ticker with
+    /// no CIK mapping). No source label.
     NotRun,
-    /// The leg ran and returned nothing (or failed — the failure's gap lands in the
-    /// manifest separately). Labeled as consulted, with the empty note.
+    /// The leg ran and returned nothing, or failed (the failure's gap lands in
+    /// the manifest separately). Labeled as consulted, with the empty note.
     Empty,
-    /// The leg ran and returned this.
     Got(&'a T),
 }
 
@@ -774,7 +657,6 @@ impl<T> Clone for LegOutcome<'_, T> {
 impl<T> Copy for LegOutcome<'_, T> {}
 
 impl<'a, T> LegOutcome<'a, T> {
-    /// The value the leg returned, if any.
     pub fn value(self) -> Option<&'a T> {
         match self {
             LegOutcome::Got(v) => Some(v),
@@ -783,9 +665,8 @@ impl<'a, T> LegOutcome<'a, T> {
     }
 }
 
-/// The profile lookup's identity fields beyond the name — the FETCHED VALUES
-/// profile line (`docs/portfolio-workflow.md` §Step 6c). `None` on a fund, a
-/// skipped retrieval and an unresolved or unverified lookup.
+/// The profile lookup's identity fields beyond the name
+/// (`docs/portfolio-workflow.md` §Step 6c).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct IssuerProfile {
     pub exchange: Option<String>,
@@ -793,11 +674,8 @@ pub struct IssuerProfile {
     pub industry: Option<String>,
 }
 
-/// The stock-only evidence legs the gather hands [`assemble`]: the issuer
-/// line, the per-holding evidence record, the lookback's 8-K rows off the
-/// filings read, and the holding's matches against the run-level M&A feed.
-/// Every field is its default on a fund, a guard-terminal stock and an
-/// offline stub.
+/// The stock-only evidence legs the gather hands [`assemble`]. Every field is
+/// its default on a fund, a guard-terminal stock and an offline stub.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StockEvidenceLegs {
     pub issuer: Option<IssuerProfile>,
@@ -806,9 +684,8 @@ pub struct StockEvidenceLegs {
     pub ma_matches: Vec<crate::portfolio::evidence::MaMatch>,
 }
 
-/// A holding's matches against the run-level M&A feed — every deal naming the
-/// symbol as acquirer or target (case-insensitive on the served symbol), in
-/// feed order (newest first). A local lookup, never a request.
+/// Every feed deal naming the symbol as acquirer or target (case-insensitive),
+/// in feed order (newest first). A local lookup, never a request.
 pub fn ma_matches_for_holding(
     symbol: &str,
     deals: &[crate::portfolio::evidence::MaDeal],
@@ -851,16 +728,8 @@ pub fn ma_matches_for_holding(
         .collect()
 }
 
-/// Assemble the dossier from already-fetched pieces. Pure: the network fetches (FMP,
-/// SEC, the Schwab chain) happen in the job, which hands the results here so this
-/// assembly stays deterministic and testable. The options signal is computed from the
-/// chain when present; absent, it is empty (and the grade is unaffected, since the
-/// signal never feeds it).
-///
-/// `sec_facts` and `chain` each carry their leg's [`LegOutcome`]: `Got` / `Empty`
-/// whenever the job **consulted** the leg (a request was made — the SEC facts
-/// endpoint queried, the Schwab chain requested), `NotRun` when it never did, so the
-/// audit's source list can tell consulted-but-empty from not consulted. A `Got` SEC
+/// Assemble the dossier from already-fetched pieces. Pure: the network fetches
+/// happen in the job, so assembly stays deterministic and testable. A `Got` SEC
 /// leg whose facts are all-`None` labels as empty too.
 #[allow(clippy::too_many_arguments)]
 pub fn assemble(
@@ -944,11 +813,8 @@ pub fn assemble(
         });
 
     // A holding whose retrieval the loop skipped never consulted the statement
-    // surface — its audit must not claim it (`docs/portfolio-analysis.md` §Asset
-    // eligibility). Two reasons skip it, and the audit names the right one: a
-    // guard-terminal stock, whose profile identity read is the evidence that actually
-    // drove the verdict; and a class the equity pipeline never grades, where the
-    // eligibility routing decided the verdict before any request.
+    // surface, so its audit must not claim it (`docs/portfolio-analysis.md`
+    // §Asset eligibility); the audit names which reason skipped it.
     let guard_terminal = matches!(
         &listing,
         Some(
@@ -958,15 +824,9 @@ pub fn assemble(
                 | crate::portfolio::listing::ListingResolution::UnsupportedUnits { .. }
         )
     );
-    //
-    // Every holding's position values — eligibility, side, P/L, the action call's
-    // sizing evidence — come from the Schwab holdings snapshot, so every branch names
-    // it: the not-gradeable branch in its own wording (there the snapshot's asset
-    // class is the evidence that decided the verdict), the guard-terminal branch
-    // beside the profile read that decided it, and the gradeable branch beside the
-    // FMP pull that actually ran — the stock statements / consensus surface, or the
-    // fund's quote + EOD + dividend surface (`FmpDataSource::fetch_fund_financials`),
-    // which never touches the statement endpoints.
+    // Every holding's position values come from the Schwab holdings snapshot, so
+    // every branch names it. A fund's FMP pull (`FmpDataSource::fetch_fund_financials`)
+    // never touches the statement endpoints, so its label says so.
     let is_fund = matches!(
         position.asset_class,
         crate::portfolio::AssetClass::Etf | crate::portfolio::AssetClass::MutualFund
@@ -992,17 +852,14 @@ pub fn assemble(
             "FMP company financials".to_string(),
         ]
     };
-    // The one-per-stock profile lookup runs whenever a listing resolution is
-    // present, and on the common (resolved / unverified) route it still supplied the
-    // listing identity, the issuer name, and the outcome sector — so it is a
-    // consulted source there too, not only when it was guard-terminal.
+    // The profile lookup runs whenever a listing resolution is present, so it is
+    // a consulted source on the resolved / unverified route too.
     if listing.is_some() && !guard_terminal {
         sources.push("FMP company profile (listing identity, issuer name, sector)".to_string());
     }
-    // The adopted statement basis, on either basis — read off the MERGED
-    // financials, since the SEC merge is what settles an annual fallback
-    // (`merge_financials`); `None` (no adopted flow basis) records nothing
-    // (`docs/portfolio-analysis.md` §Starting parameters).
+    // Read off the MERGED financials, since the SEC merge is what settles an
+    // annual fallback; `None` records nothing (`docs/portfolio-analysis.md`
+    // §Starting parameters).
     match financials.statement_basis {
         Some(crate::portfolio::StatementBasis::Ttm) => {
             sources.push("FMP TTM statement basis (four-quarter sums)".to_string())
@@ -1012,10 +869,8 @@ pub fn assemble(
         }
         None => {}
     }
-    // SEC is labeled whenever the leg was consulted — a fetch that returned nothing
-    // (or failed, with its gap in the manifest) still leaves its trace, distinct from
-    // a leg the job never ran (a fund, a skipped retrieval, or a ticker with no CIK
-    // mapping — where the facts endpoint was never queried and the gap says so).
+    // SEC is labeled whenever the leg was consulted, so a consulted-but-empty
+    // fetch stays distinct from a leg the job never ran.
     match sec_facts {
         LegOutcome::Got(facts) if !facts.is_empty() => {
             sources.push("SEC EDGAR company facts".to_string());
@@ -1025,18 +880,15 @@ pub fn assemble(
         }
         LegOutcome::NotRun => {}
     }
-    // The chain likewise: every eligible stock requests it, so a request that came
-    // back with no chain (or failed, its gap in the manifest) is still a consulted
-    // adapter, distinct from a leg the retrieval gate skipped.
+    // The chain likewise: a request that came back with no chain is still a
+    // consulted adapter.
     match chain {
         LegOutcome::Got(_) => sources.push("Schwab option chain".to_string()),
         LegOutcome::Empty => sources.push("Schwab option chain (none returned)".to_string()),
         LegOutcome::NotRun => {}
     }
-    // The filings sweep labels only where its endpoint was actually queried: a
-    // classified or clean sweep, or a queried-but-failed one ("unavailable").
-    // An unqueried `Unknown` (no CIK mapping) and a leg that never ran leave no
-    // label — the gap manifest carries the reason.
+    // The filings sweep labels only where its endpoint was actually queried; an
+    // unqueried `Unknown` (no CIK mapping) leaves no label.
     match &filing_events {
         Some(
             crate::portfolio::ForensicFilingState::Events { .. }
@@ -1047,9 +899,8 @@ pub fn assemble(
         }
         Some(crate::portfolio::ForensicFilingState::Unknown { queried: false, .. }) | None => {}
     }
-    // The same-underlying option overlay: its positions ride the already-labeled
-    // Schwab snapshot, and the targeted delta fetch labels only where it actually
-    // served or failed (the stub default never makes a request).
+    // The targeted delta fetch labels only where it actually served or failed
+    // (the stub default never makes a request).
     if let Some(o) = &option_overlay {
         sources.push("Schwab option positions (same-underlying overlay)".to_string());
         if o.delta_source_consulted {
@@ -1057,20 +908,16 @@ pub fn assemble(
         }
     }
     // The run-level commodity context deliberately does NOT label here: like
-    // the house view, whether a verdict actually consulted it is unknowable at
-    // assembly (the early exits never render a prompt), so the interpretation
-    // paths — the only readers — add the label themselves in `pipeline`.
+    // the house view (see below), the interpretation paths add it in `pipeline`.
     if fund.is_some() {
         sources.push(
             "FMP fund metadata (etf/info + profile structure read + weightings + sector P/E)"
                 .to_string(),
         );
     }
-    // The evidence surface labels wherever its pulls were issued — a record
-    // present on the dossier means the gather requested the legs, whatever
-    // each returned (its gaps ride the manifest). The M&A match is a local
-    // lookup over the run-level feed, labeled by the interpretation paths
-    // where it renders, like the FINRA read.
+    // The evidence surface labels wherever its pulls were issued, whatever each
+    // returned. The M&A match is a local lookup, labeled by the interpretation
+    // paths where it renders, like the FINRA read.
     if legs.evidence.is_some() {
         sources.push(
             "FMP company evidence (ratios, owner earnings, enterprise value, street targets \
@@ -1079,18 +926,12 @@ pub fn assemble(
                 .to_string(),
         );
     }
-    // The house view is deliberately **not** listed here, even though it is loaded once
-    // per run and rides every dossier: whether a holding's verdict actually consulted
-    // it is not knowable at assembly. Many routes through
-    // `pipeline::analyze_holding` return before either 6f prompt — the eligibility
-    // gate, the listing guard, a net-short or fully-offset position, and every
-    // evidence-floor abstention — and listing it here made all of their audits claim a
-    // source the verdict never read.
-    //
-    // Enumerating those exits in the dossier is the shape that keeps going wrong: it
-    // has to be re-derived whenever a new exit lands. So the default is the honest one
-    // — absent — and the interpretation paths, which are the only ones that read it,
-    // add it themselves ([`HOUSE_VIEW_SOURCE`], appended in `pipeline`).
+    // The house view is deliberately NOT listed here, even though it rides every
+    // dossier: whether a verdict actually consulted it is unknowable at assembly
+    // (many routes through `pipeline::analyze_holding` return before any prompt),
+    // and enumerating those exits here would have to be re-derived whenever a
+    // new one lands. The interpretation paths, the only readers, append
+    // [`HOUSE_VIEW_SOURCE`] themselves in `pipeline`.
 
     HoldingDossier {
         position,
@@ -1131,19 +972,15 @@ pub fn assemble(
     }
 }
 
-/// The house-view freshness window, in days — the pinned default of
-/// `docs/portfolio-workflow.md` §Step 5: a latest report older than this is
-/// omitted whole and recorded as a gap rather than fed as current (a month-old
-/// thesis is not today's; a stale input is absent, not current).
+/// The house-view freshness window, in days (`docs/portfolio-workflow.md`
+/// §Step 5): a latest report older than this is omitted whole and recorded as a
+/// gap rather than fed as current.
 pub const HOUSE_VIEW_MAX_AGE_DAYS: i64 = 7;
 
-/// Load the Market Signal house view deterministically: the most recent
-/// [`HOUSE_VIEW_RECENT_REPORTS`] report summaries and the latest report's relevant
-/// prose sections. Fail-soft — an unreadable DB or missing Markdown degrades to a
-/// thinner house view, never an error (the holding still grades on its fundamentals).
-/// Freshness-gated: a latest report older than [`HOUSE_VIEW_MAX_AGE_DAYS`] drops
-/// the whole view — summaries included — and the second return reports the
-/// omission so the run's data health records the gap.
+/// Fail-soft: an unreadable DB or missing Markdown degrades to a thinner house
+/// view, never an error. A latest report older than [`HOUSE_VIEW_MAX_AGE_DAYS`]
+/// drops the whole view, summaries included; the second return reports the
+/// omission for the run's data health.
 pub fn load_house_view(
     conn: &Connection,
     reports_dir: &Path,
@@ -1152,15 +989,11 @@ pub fn load_house_view(
     let with_paths = storage::list_recent_reports_with_paths(conn, HOUSE_VIEW_RECENT_REPORTS)
         .unwrap_or_default();
 
-    // The freshness gate dates the newest report's `created_at` to its **ET
-    // session**, pairing with the ET `today` the caller passes. Both legs must
-    // convert together: a report's stored `created_at` is a UTC instant, so an
-    // afternoon-ET report keeps its own ET date under a prefix read while an
-    // evening-ET run's `today` has already rolled — the two events straddle the
-    // ~8 PM ET boundary and the gap reads one day long, retiring a 7-ET-day-old
-    // view at the age limit. Converting only `today` would invert the error for
-    // reports written after the boundary. An unparseable stamp (never
-    // app-produced) fails soft to feeding the view.
+    // Both legs of the freshness gate are ET session dates: `created_at` is a
+    // UTC instant, so reading it as a UTC prefix beside an ET `today` would
+    // miscount the gap by a day across the ~8 PM ET boundary, and converting
+    // only `today` would invert the error for reports written after it. An
+    // unparseable stamp (never app-produced) fails soft to feeding the view.
     let stale = with_paths.first().is_some_and(|(s, _)| {
         crate::market_clock::et_date_of(&s.created_at)
             .map(|d| (today - d).num_days() > HOUSE_VIEW_MAX_AGE_DAYS)
@@ -1179,8 +1012,6 @@ pub fn load_house_view(
     let recent_summaries: Vec<ReportSummary> =
         with_paths.iter().map(|(s, _)| s.clone()).collect();
 
-    // The latest report's body — the first (newest) entry's Markdown — read from disk
-    // and reduced to the sections a holding's house view leans on.
     let latest_sections = with_paths
         .first()
         .and_then(|(_, path)| resolve_report_path(reports_dir, path))
@@ -1198,8 +1029,7 @@ pub fn load_house_view(
     )
 }
 
-/// Resolve a stored Markdown path, tolerating a relative stored path by joining it
-/// under `reports_dir`. An absolute stored path is used as-is.
+/// A relative stored path joins under `reports_dir`; an absolute one is used as-is.
 fn resolve_report_path(reports_dir: &Path, stored: &str) -> Option<std::path::PathBuf> {
     let p = std::path::Path::new(stored);
     if p.is_absolute() {
@@ -1216,16 +1046,15 @@ const HOUSE_VIEW_SECTION_TITLES: &[&str] = &["thesis", "investment strategy", "f
 /// Cap on the extracted house-view prose, so a long report can't dominate the prompt.
 const HOUSE_VIEW_CHAR_CAP: usize = 6_000;
 
-/// Pull the Thesis / Investment Strategy / Forward Outlook sections out of the report
-/// Markdown by header, concatenating each matched section's body. A section runs from
-/// its header to the next header of the same-or-higher level. Bounded by
-/// [`HOUSE_VIEW_CHAR_CAP`] so the house view stays a context input, not the whole report.
+/// Pull the [`HOUSE_VIEW_SECTION_TITLES`] sections out of the report Markdown by
+/// header. A section runs from its header to the next header of the
+/// same-or-higher level; bounded by [`HOUSE_VIEW_CHAR_CAP`].
 pub fn extract_house_view_sections(markdown: &str) -> String {
     let mut out = String::new();
-    // The level the currently-kept section's header sits at; `None` = not
-    // capturing. A deeper header inside a kept section belongs to the section;
-    // only a same-or-higher header re-decides — including a level-1 `#`, which
-    // can never itself start a kept section but must end one.
+    // The kept section's header level; `None` = not capturing. A deeper header
+    // belongs to the section; only a same-or-higher header re-decides —
+    // including a level-1 `#`, which can never start a kept section but must
+    // end one.
     let mut capturing_level: Option<usize> = None;
     for line in markdown.lines() {
         let trimmed = line.trim_start();
@@ -1260,9 +1089,9 @@ pub fn extract_house_view_sections(markdown: &str) -> String {
             }
         }
     }
-    // Whole-line pushes overshoot the cap, so the final cut must respect char
-    // boundaries: `String::truncate` panics mid-character, and report prose is
-    // full of multi-byte punctuation (em-dashes, curly quotes).
+    // Whole-line pushes overshoot the cap; the final cut must respect char
+    // boundaries because `String::truncate` panics mid-character and report
+    // prose is full of multi-byte punctuation.
     if out.len() > HOUSE_VIEW_CHAR_CAP {
         let mut cut = HOUSE_VIEW_CHAR_CAP;
         while !out.is_char_boundary(cut) {
@@ -1273,13 +1102,8 @@ pub fn extract_house_view_sections(markdown: &str) -> String {
     out.trim().to_string()
 }
 
-/// Look up the prior run's carry-over for one holding (the continuity input): the
-/// verdict plus the audit-row legs — the grade-parameter version its letter and
-/// sub-scores were computed under (`None` when the run carries no audit row), the
-/// prior analysis and the accuracy read-through mark. Reads the
-/// job's **already-loaded** prior run — the job loads `store::latest_run` once
-/// per run and threads it here, rather than this lookup re-reading (and
-/// re-parsing) the store once per holding — and finds the matching symbol;
+/// Reads the job's already-loaded prior run (loaded once per run via
+/// `store::latest_run`) rather than re-reading the store once per holding.
 /// `None` on a first run or a newly-added holding.
 pub fn prior_verdict_for(
     prior_run: Option<&crate::portfolio::PortfolioRun>,
@@ -1292,9 +1116,8 @@ pub fn prior_verdict_for(
         .find(|v| v.symbol.eq_ignore_ascii_case(symbol))?
         .clone();
     // The verdict's effective vintage, not the container run's `created_at`: a
-    // selective carry re-persists an old verdict (and its audit's authoring-spot
-    // basis) into a newer run, so dating the retrospective off the container
-    // would pair run A's spot with run B's date (Codex round 2, finding 2).
+    // selective carry re-persists an old verdict into a newer run, so dating off
+    // the container would pair run A's spot with run B's date.
     let vintage = crate::portfolio::effective_vintage(&verdict, &run.created_at).to_string();
     let audit_row = run
         .audit
@@ -1320,19 +1143,12 @@ pub fn prior_verdict_for(
                 .unwrap_or_default();
             (
                 Some(a.grade_parameter_version.clone()),
-                // The target stamp rides the typed target record, so a prior with
-                // no target record (never priced) carries none — silent downstream.
                 a.target_meta.as_ref().map(|t| t.parameter_version.clone()),
                 spot,
                 periods,
                 Some(a.metrics.clone()),
                 a.authoring_close.clone(),
-                // The analysis by identity: the row's own, or the prior one an
-                // abstention carried forward — a selective carry re-persists
-                // the audit whole, so a carried row reads the same.
                 a.analysis.clone(),
-                // The read-through mark travels with the thesis document the
-                // same way: a fresh pass's own, an abstention's carried one.
                 a.accuracy_read_through,
                 a.fund_exposure.clone(),
             )
@@ -1506,11 +1322,8 @@ mod tests {
                 .map(|p| p.label)
                 .collect()
         };
-        // Energy → the energy sleeve alone.
         assert_eq!(labels(Some("Energy"), None), vec!["WTI Crude Oil".to_string()]);
-        // The industry is more specific than FMP's broad sector: a uranium
-        // producer gets uranium, never WTI / gas; coal gets no fabricated
-        // commodity proxy because the run-level catalog carries no coal print.
+        // Coal gets no fabricated proxy because the catalog carries no coal print.
         assert_eq!(
             labels(Some("Energy"), Some("Uranium")),
             vec!["Uranium (IMF, monthly)".to_string()]
@@ -1521,9 +1334,7 @@ mod tests {
         );
         assert!(labels(Some("Energy"), Some("Thermal Coal")).is_empty());
         assert!(labels(Some("Energy"), Some("Coking Coal")).is_empty());
-        // Basic Materials → the metals sleeve; gold only on a gold-linked
-        // industry — a steel or chemicals holding carries no gold evidence
-        // (Codex 2026-08-20, finding 4).
+        // Gold only on a gold-linked industry: a steel holding carries no gold evidence.
         assert_eq!(
             labels(Some("Basic Materials"), Some("Steel")),
             vec!["Copper (IMF, monthly)".to_string()]
@@ -1536,7 +1347,6 @@ mod tests {
             labels(Some("Basic Materials"), Some("Other Precious Metals & Mining")),
             vec!["Copper (IMF, monthly)".to_string(), "Gold".to_string()]
         );
-        // Any other sector — or none — carries no commodity block.
         assert!(labels(Some("Technology"), None).is_empty());
         assert!(labels(None, None).is_empty());
     }
@@ -1546,11 +1356,9 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         storage::init_schema(&conn).unwrap();
         insert_house_view_report(&conn, "r-old", "2026-07-20T14:00:00Z");
-        // 8 ET days later — past the pinned window; the whole view drops (summaries
-        // included), and the omission is reported for the data-health gap record.
-        // The stamp is mid-session (10 AM ET) so the report's ET date is
-        // unambiguously its own UTC date — a midnight-UTC stamp would belong to
-        // the PRIOR ET session and test a different interval than it reads.
+        // 8 ET days later. The stamp is mid-session (10 AM ET) so the report's ET
+        // date is unambiguously its own UTC date — a midnight-UTC stamp would
+        // belong to the PRIOR ET session.
         let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 28).unwrap();
         let (view, omitted) = load_house_view(&conn, Path::new("/nonexistent"), today);
         assert!(omitted);
@@ -1578,10 +1386,8 @@ mod tests {
         // Written 3 PM ET on 2026-07-21 — still 2026-07-21 in UTC, so the prefix read
         // and the ET read agree on the report's side.
         insert_house_view_report(&conn, "r-week", "2026-07-21T19:00:00Z");
-        // The run is 9 PM ET on 2026-07-28: seven ET days later, but its UTC instant
-        // has already rolled to the 29th. Under the old UTC-prefix gate the two events
-        // straddled the ~8 PM ET boundary and the gap read eight days, dropping the
-        // whole view — summaries included — on every evening run at the age limit.
+        // The run is 9 PM ET on 2026-07-28: seven ET days later, but its UTC
+        // instant has already rolled to the 29th.
         let evening = chrono::DateTime::parse_from_rfc3339("2026-07-29T01:00:00Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
@@ -1596,10 +1402,9 @@ mod tests {
     fn a_report_written_after_the_et_rollover_ages_from_its_own_session() {
         let conn = Connection::open_in_memory().unwrap();
         storage::init_schema(&conn).unwrap();
-        // 9 PM ET on 2026-07-21 — the UTC stamp says the 22nd, the ET session the 21st.
-        // Converting only the run's `today` would have inverted the error here, reading
-        // this report a day YOUNGER than it is; both legs convert, so it ages from the
-        // 21st and is exactly 8 ET days stale.
+        // 9 PM ET on 2026-07-21: the UTC stamp says the 22nd, the ET session the
+        // 21st. Converting only the run's `today` would read this report a day
+        // younger than it is; it ages from the 21st and is exactly 8 ET days stale.
         insert_house_view_report(&conn, "r-late", "2026-07-22T01:00:00Z");
         let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 29).unwrap();
         let (_, omitted) = load_house_view(&conn, Path::new("/nonexistent"), today);
@@ -1639,7 +1444,6 @@ mod tests {
             stockholders_equity: Some(60_000_000_000),
         };
         let merged = merge_financials(fmp_only(), &sec, false);
-        // SEC filled the empty statement lines (annual basis — no TTM adoption).
         assert_eq!(merged.revenue, Some(400_000_000_000.0));
         assert_eq!(merged.revenue_prior, Some(360_000_000_000.0));
         assert_eq!(merged.net_income, Some(100_000_000_000.0));
@@ -1650,9 +1454,6 @@ mod tests {
         assert!((merged.pb_ratio.unwrap() - 50.0).abs() < 1e-6);
     }
 
-    /// Codex I13: the merge stamps which balance sheet supplied the equity — the
-    /// instants' own continuity marker — on either flow basis, and `None` where
-    /// no leg did.
     #[test]
     fn merge_stamps_which_balance_sheet_supplied_the_equity() {
         use crate::portfolio::EquitySource;
@@ -1660,14 +1461,12 @@ mod tests {
             stockholders_equity: Some(60_000_000_000),
             ..Default::default()
         };
-        // FMP's quarterly balance sheet supplied equity: FMP's, SEC's print unread.
         let mut fmp = fmp_only();
         fmp.total_equity = Some(50_000_000_000.0);
         let merged = merge_financials(fmp, &sec, true);
         assert_eq!(merged.total_equity, Some(50_000_000_000.0));
         assert_eq!(merged.equity_source, Some(EquitySource::FmpQuarterly));
-        // The FMP leg gapped: SEC's annual print fills and the stamp says so — on
-        // either flow basis, since the instant sits outside the flow-basis rule.
+        // SEC fills on either flow basis: the instant sits outside the flow-basis rule.
         for ttm in [true, false] {
             let merged = merge_financials(fmp_only(), &sec, ttm);
             assert_eq!(merged.total_equity, Some(60_000_000_000.0));
@@ -1677,7 +1476,6 @@ mod tests {
                 "ttm={ttm}"
             );
         }
-        // Neither leg: no equity, no source.
         let merged = merge_financials(fmp_only(), &CompanyFacts::default(), false);
         assert_eq!(merged.total_equity, None);
         assert_eq!(merged.equity_source, None);
@@ -1686,11 +1484,10 @@ mod tests {
     #[test]
     fn merge_keeps_fmp_supplied_multiples_and_leaves_missing_inputs_as_gaps() {
         let mut fmp = fmp_only();
-        fmp.pe_ratio = Some(28.0); // FMP already supplied a P/E
-        let sec = CompanyFacts::default(); // SEC contributed nothing
+        fmp.pe_ratio = Some(28.0);
+        let sec = CompanyFacts::default();
         let merged = merge_financials(fmp, &sec, false);
         assert_eq!(merged.pe_ratio, Some(28.0), "FMP value not overwritten");
-        // No revenue anywhere -> P/S stays a gap rather than fabricated.
         assert!(merged.ps_ratio.is_none());
         assert!(merged.revenue.is_none());
     }
@@ -1728,17 +1525,10 @@ mod tests {
     #[test]
     fn a_zero_row_quarterly_response_with_a_sec_fallback_stamps_the_annual_basis() {
         use crate::portfolio::StatementBasis;
-        // The hole an earlier shape of this stamp left open. FMP returns an EMPTY
-        // quarterly set (the same empty-200 pattern the sector-P/E snapshot serves),
-        // so no TTM window can be adopted and the SEC same-concept annual facts fill
-        // the levels instead. Stamped `None` — "no statement basis applies" — those
-        // annual levels read as standing on no basis, so the prompt and the
-        // sources line named none for levels SEC's annual facts supplied.
-        //
-        // The multiples are the reachable half: they key their observation on the
-        // marks' trading day, not on a statement print, so they resolve normally even
-        // with zero quarterly rows (the filing-cadence series go unevaluable for want
-        // of a period end to key on).
+        // An EMPTY quarterly set adopts no TTM window, so SEC's annual facts fill
+        // the levels and those levels must stamp `Annual`, not `None`. The
+        // multiples key their observation on the marks' trading day, not a
+        // statement print, so they resolve even with zero quarterly rows.
         let mut fin = CompanyFinancials {
             symbol: "AAPL".into(),
             market_cap: Some(3_000_000_000_000.0),
@@ -1769,10 +1559,9 @@ mod tests {
 
     #[test]
     fn a_holding_with_no_statement_levels_at_all_carries_no_basis() {
-        // The case `None` is actually for: nothing supplied a statement level, so
-        // there is no basis to disagree with. A fund reaches the engine this way (it
-        // skips the facts call), and `None` must keep meaning this rather than
-        // doubling as "annual".
+        // Nothing supplied a statement level, so there is no basis. A fund reaches
+        // the engine this way, and `None` must keep meaning this rather than
+        // doubling as annual.
         let mut fin = CompanyFinancials {
             symbol: "ITOT".into(),
             market_cap: Some(1_000_000.0),
@@ -1786,10 +1575,9 @@ mod tests {
     #[test]
     fn an_equity_instant_alone_carries_no_flow_basis_and_a_sec_flow_fill_is_annual() {
         use crate::portfolio::StatementBasis;
-        // Codex round 1: thin quarters beside FMP's own
-        // balance sheet, with the SEC leg never run (no CIK), used to stamp
-        // `Annual` off the equity instant alone — SEC provenance for a level SEC
-        // never supplied. An instant on no flow basis is `None`.
+        // Thin quarters beside FMP's own balance sheet, SEC never run: an instant
+        // on no flow basis is `None`, never SEC provenance for a level SEC never
+        // supplied.
         let mut fin = fmp_only();
         fin.quarterly_income = quarters(2, true, false);
         fin.total_equity = Some(60_000_000_000.0);
@@ -1801,10 +1589,8 @@ mod tests {
             Some(60_000_000_000.0),
             "the instant stands"
         );
-        // Codex round 2: SEC supplying only equity (an issuer with no matching
-        // revenue concept) fills an instant, not a flow — the annual FLOW basis is
-        // not stamped, or the prompt would call flows that never reached the
-        // engine "SEC annual".
+        // SEC supplying only equity fills an instant, not a flow, so the annual
+        // flow basis is not stamped.
         let mut fin = fmp_only();
         fin.quarterly_income = quarters(2, true, false);
         assert!(!apply_ttm_statement_basis(&mut fin));
@@ -1846,9 +1632,6 @@ mod tests {
 
     #[test]
     fn ttm_basis_rejects_a_non_contiguous_four_quarter_window() {
-        // A feed gap (a skipped quarter) makes the "four newest rows" span more
-        // than twelve months — adoption must fail onto the annual-fallback path
-        // rather than sum a 15-month "TTM" into every multiple.
         let mut fin = fmp_only();
         let mut rows = quarters(5, true, false);
         rows.remove(1); // drop 2026-03-31: newest four now span 2025-06-30..2026-06-30
@@ -1859,9 +1642,6 @@ mod tests {
 
     #[test]
     fn ttm_prior_window_gaps_on_a_non_contiguous_eight_quarter_run() {
-        // The TTM window itself is contiguous, but a gap inside the prior four
-        // shifts the YoY comparison a quarter — growth gaps rather than
-        // misaligning, while the TTM basis itself stands.
         let mut fin = fmp_only();
         let mut rows = quarters(8, true, false);
         rows.remove(5); // drop 2025-03-31 from the prior window
@@ -1873,10 +1653,6 @@ mod tests {
 
     #[test]
     fn loss_maker_pe_derives_negative_so_the_engine_guard_is_reachable() {
-        // The signed P/E derive (grade-v2.1): a loss-maker must produce a
-        // NEGATIVE P/E — `None` silently excused every loss-maker from the
-        // engine's fixed "a loss-maker is never cheap" valuation score, a
-        // ~25-point axis escape. P/B keeps the positive-denominator derive.
         let mut fin = fmp_only();
         fin.market_cap = Some(1_000.0);
         fin.net_income = Some(-50.0);
@@ -1903,8 +1679,7 @@ mod tests {
     fn ttm_gross_profit_mixes_reported_and_derived_quarters() {
         let mut fin = fmp_only();
         let mut rows = quarters(4, true, true);
-        // Two quarters report the gross line, two derive theirs from cost of
-        // revenue — the sum must not gap on the mix.
+        // Two quarters report the gross line, two derive theirs from cost of revenue.
         rows[1].gross_profit = None;
         rows[3].gross_profit = None;
         fin.quarterly_income = rows;
@@ -1970,17 +1745,14 @@ Watch the 2s10s and the labor prints.
         assert!(sections.contains("Rotation, not rupture"), "{sections}");
         assert!(sections.contains("Stay long quality"), "{sections}");
         assert!(sections.contains("Watch the 2s10s"), "{sections}");
-        // Non-house-view sections are excluded.
         assert!(!sections.contains("Dow up"), "{sections}");
         assert!(!sections.contains("a bullet"), "{sections}");
     }
 
     #[test]
     fn extract_honors_the_section_level_contract() {
-        // A `###` sub-heading inside a kept `##` section belongs to it (the
-        // pre-fix walk ended capture there, silently dropping the section's
-        // remainder); a level-1 `#` heading ends capture (it previously failed
-        // the "##" strip and leaked unrelated prose in).
+        // A `###` sub-heading inside a kept `##` section belongs to it; a level-1
+        // `#` heading ends capture.
         let md = "\
 ## Forward Outlook
 Watch the 2s10s.
@@ -2005,13 +1777,9 @@ Sources and footnotes.
 
     #[test]
     fn extract_truncates_multi_byte_prose_without_panicking() {
-        // Whole-line pushes overshoot the byte cap, and report prose is full of
-        // multi-byte punctuation — the final cut must respect char boundaries
-        // (`String::truncate` panics mid-character; the panic unwound past every
-        // run_finished emitter, stranding the tracker with no Failed row).
         // Header (24 bytes) + "x" puts the em-dash run at byte 25; the cap at
-        // 6000 lands (6000 − 25) = 5975 bytes in — 5975 mod 3 = 2, mid-dash by
-        // construction, so the pre-fix truncate reliably panicked here.
+        // 6000 lands (6000 − 25) = 5975 bytes in, and 5975 mod 3 = 2 is mid-dash
+        // by construction.
         let md = format!("## Market Signal Thesis\nx{}\n", "—".repeat(9_000));
         let sections = extract_house_view_sections(&md);
         assert!(sections.len() <= HOUSE_VIEW_CHAR_CAP, "{}", sections.len());
@@ -2089,10 +1857,7 @@ Sources and footnotes.
 
     #[test]
     fn option_chain_leg_is_labeled_whenever_consulted_and_none_is_distinct_from_not_run() {
-        // Every eligible stock requests the chain (`job`), so a request that came back
-        // with nothing — or failed, its gap in the manifest — is still a consulted
-        // adapter (`docs/storage.md`: "the source labels name every adapter the
-        // holding consulted"); only a leg the retrieval gate skipped leaves no label.
+        // `docs/storage.md`: "the source labels name every adapter the holding consulted".
         let chain_labels = |sources: Vec<String>| -> Vec<String> {
             sources.into_iter().filter(|s| s.contains("option chain")).collect()
         };
@@ -2101,27 +1866,19 @@ Sources and footnotes.
             underlying_price: Some(195.0),
             contracts: vec![],
         };
-        // Consulted, returned a chain: the plain label.
         assert_eq!(
             chain_labels(stock_sources_with_chain(LegOutcome::Got(&chain))),
             vec!["Schwab option chain".to_string()]
         );
-        // Consulted, none returned (or the request failed): labeled as consulted,
-        // with the none-returned note.
         assert_eq!(
             chain_labels(stock_sources_with_chain(LegOutcome::Empty)),
             vec!["Schwab option chain (none returned)".to_string()]
         );
-        // Never requested: no chain label at all.
         assert!(chain_labels(stock_sources_with_chain(LegOutcome::NotRun)).is_empty());
     }
 
     #[test]
     fn a_gradeable_holding_names_the_schwab_position_snapshot() {
-        // Every holding's position values — eligibility, side, P/L, the action call's
-        // sizing evidence — come from the Schwab holdings snapshot, so a gradeable
-        // holding names it beside the FMP pull; the not-gradeable branch keeps its
-        // own wording (pinned in `assembly_never_claims_the_house_view_...`).
         let sources = stock_sources(LegOutcome::NotRun, None);
         assert_eq!(
             sources,
@@ -2131,9 +1888,8 @@ Sources and footnotes.
             ],
             "{sources:?}"
         );
-        // A fund's FMP pull is `fetch_fund_financials` — quote + EOD + dividends, never
-        // the statement / consensus endpoints — so its label says so rather than
-        // borrowing the stock surface's name (Codex round 2, 2026-08-18).
+        // A fund's FMP pull is `fetch_fund_financials` — never the statement /
+        // consensus endpoints — so its label says so.
         let fund = assemble(
             Position {
                 symbol: "QQQ".into(),
@@ -2177,12 +1933,6 @@ Sources and footnotes.
 
     #[test]
     fn assembly_never_claims_the_house_view_because_it_cannot_know() {
-        // The house view is loaded once per run and rides EVERY dossier, so listing it
-        // unconditionally made every ordinary cash, option and bond audit claim a
-        // source that holding's verdict never consulted: both the non-gradeable
-        // eligibility route and the guard-terminal route return from
-        // `pipeline::analyze_holding` ahead of either 6f prompt and the per-holding
-        // action call's prompt.
         let house_view = HouseView {
             recent_summaries: Vec::new(),
             latest_sections: Some("## Market Signal Thesis\nrisk-on.".into()),
@@ -2222,16 +1972,12 @@ Sources and footnotes.
             .sources
         };
 
-        // A class the equity pipeline never grades: only the evidence that decided it.
         assert_eq!(
             assemble_with(AssetClass::Cash),
             vec!["Schwab position (cash — not graded by the equity pipeline)".to_string()],
         );
 
-        // And the same for a GRADEABLE holding: assembly cannot know whether the
-        // verdict will reach an interpretation call, so it claims nothing either way.
-        // The interpretation paths add it themselves — pinned in `pipeline`, both
-        // directions.
+        // The interpretation paths add it themselves — pinned in `pipeline`.
         assert!(
             !assemble_with(AssetClass::Stock)
                 .iter()
@@ -2240,8 +1986,7 @@ Sources and footnotes.
         );
     }
 
-    /// The source list for a stock assembled with the given SEC leg, chain leg, and
-    /// listing, over the FMP-only financials.
+    /// Over the FMP-only financials.
     fn stock_sources_full(
         sec_facts: LegOutcome<'_, CompanyFacts>,
         chain: LegOutcome<'_, OptionChain>,
@@ -2250,8 +1995,6 @@ Sources and footnotes.
         stock_sources_assembled(fmp_only(), sec_facts, chain, listing)
     }
 
-    /// The source list for a stock assembled over the given FMP financials, SEC
-    /// leg, chain leg, and listing.
     fn stock_sources_assembled(
         fin: CompanyFinancials,
         sec_facts: LegOutcome<'_, CompanyFacts>,
@@ -2292,8 +2035,7 @@ Sources and footnotes.
         .sources
     }
 
-    /// The source list for a stock assembled with the given SEC leg and listing (no
-    /// chain leg run).
+    /// No chain leg run.
     fn stock_sources(
         sec_facts: LegOutcome<'_, CompanyFacts>,
         listing: Option<crate::portfolio::listing::ListingResolution>,
@@ -2301,17 +2043,11 @@ Sources and footnotes.
         stock_sources_full(sec_facts, LegOutcome::NotRun, listing)
     }
 
-    /// The source list for a stock assembled with the given chain leg (no SEC leg
-    /// run, no listing).
+    /// No SEC leg run, no listing.
     fn stock_sources_with_chain(chain: LegOutcome<'_, OptionChain>) -> Vec<String> {
         stock_sources_full(LegOutcome::NotRun, chain, None)
     }
 
-    /// The 2026-08-24 large-scale review's Priority-1 minor: the sources line
-    /// recorded the basis only when
-    /// TTM was adopted, so an annual-fallback holding's audit named no basis while
-    /// `portfolio-analysis.md` §Starting parameters says the adopted basis is
-    /// recorded there.
     #[test]
     fn sources_line_names_the_adopted_statement_basis() {
         let basis_labels = |sources: Vec<String>| -> Vec<String> {
@@ -2320,7 +2056,6 @@ Sources and footnotes.
                 .filter(|s| s.contains("statement basis"))
                 .collect()
         };
-        // Four contiguous quarters: the TTM basis, and only it.
         let mut ttm = fmp_only();
         ttm.quarterly_income = quarters(8, true, false);
         assert_eq!(
@@ -2332,7 +2067,6 @@ Sources and footnotes.
             )),
             vec!["FMP TTM statement basis (four-quarter sums)".to_string()]
         );
-        // No usable quarters, SEC annual facts filling the levels: the annual basis.
         let facts = CompanyFacts {
             revenue: Some(400_000_000_000),
             revenue_prior: Some(360_000_000_000),
@@ -2348,8 +2082,8 @@ Sources and footnotes.
             )),
             vec!["SEC annual statement basis (latest full-year lines)".to_string()]
         );
-        // FMP's own balance sheet beside thin quarters, SEC never run: no basis, so
-        // no label claims SEC provenance (Codex round 1).
+        // An equity instant beside thin quarters, SEC never run: no basis, so no
+        // label claims SEC provenance.
         let mut instant_only = fmp_only();
         instant_only.quarterly_income = quarters(2, true, false);
         instant_only.total_equity = Some(60_000_000_000.0);
@@ -2360,8 +2094,7 @@ Sources and footnotes.
             None
         ))
         .is_empty());
-        // An equity-only SEC fill is the same instant-only shape: no flow basis, no
-        // label (Codex round 2).
+        // An equity-only SEC fill is the same instant-only shape.
         let equity_only = CompanyFacts {
             stockholders_equity: Some(60_000_000_000),
             ..CompanyFacts::default()
@@ -2375,7 +2108,6 @@ Sources and footnotes.
             None
         ))
         .is_empty());
-        // No statement lines from anywhere: no basis, and no label claiming one.
         assert!(basis_labels(stock_sources_assembled(
             fmp_only(),
             LegOutcome::NotRun,
@@ -2387,16 +2119,12 @@ Sources and footnotes.
 
     #[test]
     fn sec_leg_is_labeled_whenever_consulted_and_empty_is_distinct_from_not_run() {
-        // M3 of the 2026-08-18 doc/code audit: the label used to depend on the facts
-        // being nonempty, so a consulted-but-empty EDGAR fetch left no trace and read
-        // exactly like a leg the job never ran.
         let sec_labels = |sources: Vec<String>| -> Vec<String> {
             sources
                 .into_iter()
                 .filter(|s| s.contains("SEC EDGAR"))
                 .collect()
         };
-        // Consulted, nonempty: the plain label.
         let facts = CompanyFacts {
             revenue: Some(400_000_000_000),
             ..CompanyFacts::default()
@@ -2405,9 +2133,7 @@ Sources and footnotes.
             sec_labels(stock_sources(LegOutcome::Got(&facts), None)),
             vec!["SEC EDGAR company facts".to_string()]
         );
-        // Consulted, empty: labeled as consulted, with the empty note — whether the
-        // job hands over the empty facts a queried endpoint returned or the bare
-        // `Empty` outcome.
+        // Empty facts from a queried endpoint and the bare `Empty` outcome label alike.
         assert_eq!(
             sec_labels(stock_sources(LegOutcome::Got(&CompanyFacts::default()), None)),
             vec!["SEC EDGAR company facts (empty)".to_string()]
@@ -2416,28 +2142,22 @@ Sources and footnotes.
             sec_labels(stock_sources(LegOutcome::Empty, None)),
             vec!["SEC EDGAR company facts (empty)".to_string()]
         );
-        // Never run: no SEC label at all. This is also the no-CIK case — the facts
-        // endpoint was never queried, and the "no CIK mapping" gap (recorded by the
-        // job's `sec_company_facts`, pinned there) is the trace it leaves.
+        // Never run is also the no-CIK case: the "no CIK mapping" gap recorded by
+        // the job's `sec_company_facts` is the trace it leaves.
         assert!(sec_labels(stock_sources(LegOutcome::NotRun, None)).is_empty());
     }
 
     #[test]
     fn profile_lookup_is_a_source_on_the_common_resolved_route_too() {
-        // The one-per-stock profile lookup feeds the listing identity, the issuer
-        // name, and the outcome sector on every stock — the audit named it only when
-        // it was guard-terminal (M3, 2026-08-18).
         use crate::portfolio::listing::ListingResolution;
         let identity = "FMP company profile (listing identity, issuer name, sector)".to_string();
         let guard = "FMP company profile (listing-resolution guard)".to_string();
 
-        // Resolved: the identity label beside the financials pull.
         let resolved = stock_sources(LegOutcome::NotRun, Some(ListingResolution::SupportedUs));
         assert!(resolved.contains(&identity), "{resolved:?}");
         assert!(resolved.contains(&"FMP company financials".to_string()));
         assert!(!resolved.contains(&guard));
-        // Unverified (an FMP profile gap): the lookup still ran and is named; the
-        // guard's degraded input is the pipeline's to record.
+        // Unverified (an FMP profile gap): the lookup still ran and is named.
         let unverified = stock_sources(
             LegOutcome::NotRun,
             Some(ListingResolution::Unverified {
@@ -2445,15 +2165,12 @@ Sources and footnotes.
             }),
         );
         assert!(unverified.contains(&identity), "{unverified:?}");
-        // Guard-terminal: the Schwab snapshot the position came from plus the guard
-        // label — the profile read is the evidence that decided the verdict, and no
-        // FMP financials pull ran.
+        // Guard-terminal: no FMP financials pull ran.
         let terminal = stock_sources(LegOutcome::NotRun, Some(ListingResolution::Unresolved));
         assert_eq!(
             terminal,
             vec!["Schwab position (holdings snapshot)".to_string(), guard]
         );
-        // No listing resolution (no lookup ran): no profile label.
         assert!(
             !stock_sources(LegOutcome::NotRun, None).iter().any(|s| s.contains("company profile")),
             "{:?}",
@@ -2463,9 +2180,7 @@ Sources and footnotes.
 
     #[test]
     fn ttm_basis_resolves_conflicting_duplicate_periods_to_the_latest_filing() {
-        // The newest quarter served twice with different prints (a restatement):
-        // the later-filed row must set the TTM basis in either arrival order —
-        // the letter cannot depend on response ordering.
+        // The newest quarter served twice (a restatement), in either arrival order.
         let base = |order_restated_first: bool| {
             let mut rows = quarters(8, true, false);
             rows[0].filing_date = Some("2026-07-01".into());
@@ -2493,10 +2208,8 @@ Sources and footnotes.
 
     #[test]
     fn ttm_basis_canonicalizes_the_statement_rows_in_place() {
-        // An out-of-order feed (oldest first): the basis must read the true newest
-        // four — not the wire head — AND leave both statement vecs canonical on the
-        // fin, so every later reader (the driver ladder's trailing prints and share
-        // basis, the anchor windows, the pre-profit leg) inherits the same order.
+        // An oldest-first feed: the basis must read the true newest four and
+        // leave both statement vecs canonical for every later reader.
         let mut fin = fmp_only();
         let mut rows = quarters(8, true, false);
         rows.reverse(); // wire head becomes 2024-09-30
@@ -2520,10 +2233,8 @@ Sources and footnotes.
             },
         ];
         assert!(apply_ttm_statement_basis(&mut fin));
-        // The sums read the true newest four quarters, not the reversed head.
         assert_eq!(fin.revenue, Some(394.0));
         assert_eq!(fin.revenue_prior, Some(378.0));
-        // And the rows are now canonical in place, on both statements.
         assert_eq!(fin.quarterly_income[0].period_end, "2026-06-30");
         assert_eq!(fin.quarterly_income[7].period_end, "2024-09-30");
         assert_eq!(fin.quarterly_cash_flow[0].period_end, "2026-06-30");
@@ -2531,9 +2242,6 @@ Sources and footnotes.
 
     #[test]
     fn statement_rows_canonicalize_even_when_the_basis_is_not_adopted() {
-        // Three quarters cannot sum a TTM, but the rows still canonicalize: the
-        // driver ladder and anchor windows read this fin next, and their order
-        // guarantee must not depend on whether the basis adopted.
         let mut fin = fmp_only();
         let mut rows = quarters(3, true, false);
         rows.reverse();
@@ -2547,10 +2255,8 @@ Sources and footnotes.
     fn prior_verdict_lookup_reads_the_latest_run() {
         let conn = Connection::open_in_memory().unwrap();
         storage::init_schema(&conn).unwrap();
-        // No prior run -> no prior verdict.
         assert!(prior_verdict_for(None, "AAPL").is_none());
 
-        // Persist a run carrying an AAPL verdict; the lookup finds it.
         let run = crate::portfolio::PortfolioRun {
             run_id: "r1".into(),
             created_at: "2026-06-20T00:00:00Z".into(),
@@ -2652,7 +2358,6 @@ Sources and footnotes.
                 evidence_floor_version: crate::portfolio::engine::EVIDENCE_FLOOR_VERSION.to_string(),
                 degraded_inputs: vec![],
                 action_annotations: vec![],
-                // The target stamp rides the typed target record (Codex I11).
                 target_meta: Some(crate::portfolio::engine::TargetMeta {
                     parameter_version: "targets-v4".into(),
                     ..Default::default()
@@ -2688,11 +2393,8 @@ Sources and footnotes.
         let prior = prior_verdict_for(latest.as_ref(), "AAPL").expect("verdict present");
         assert_eq!(prior.grade_parameter_version.as_deref(), Some("grade-v2"));
         assert_eq!(prior.target_parameter_version.as_deref(), Some("targets-v4"));
-        // The analysis record loads by identity off the same audit row, its
-        // own date with it.
         let analysis = prior.analysis.as_ref().expect("the analysis record");
         assert_eq!((analysis.text.as_str(), analysis.written.as_str()), ("The analysis.", "2026-08-03"));
-        // The read-through mark and the fund basis load off the same row.
         assert_eq!(prior.accuracy_read_through, Some(41));
         assert_eq!(prior.fund_exposure.as_ref().and_then(|b| b.nav), Some(73.5));
         // No `analyzed_at` on the verdict -> the vintage falls back to the
@@ -2702,11 +2404,9 @@ Sources and footnotes.
 
     #[test]
     fn prior_verdict_lookup_dates_a_selective_carry_by_its_own_vintage() {
-        // A selective run re-persists a carried verdict (its `analyzed_at` and
-        // its audit's authoring-spot basis intact) into a newer container run.
-        // The retrospective's "since" anchor must be the verdict's effective
-        // vintage — the container run's `created_at` would pair run A's spot
-        // with run B's date (Codex round 2, finding 2).
+        // A selective run re-persists a carried verdict (its `analyzed_at` intact)
+        // into a newer container run; the container's `created_at` would pair run
+        // A's spot with run B's date.
         let conn = Connection::open_in_memory().unwrap();
         storage::init_schema(&conn).unwrap();
         let run = crate::portfolio::PortfolioRun {
@@ -2796,8 +2496,7 @@ Sources and footnotes.
         let o = assemble_option_overlay(200.0, &refs, with_delta, true).unwrap();
         assert_eq!(o.class, OverlayClass::Collar);
         assert_eq!(o.coverage_ratio, Some(0.5));
-        // No option rows → no overlay at all — and a zero-net row (fully
-        // offset contracts) is no exposure, never a leg or an overlay.
+        // A zero-net row (fully offset contracts) is never a leg or an overlay.
         assert!(assemble_option_overlay(200.0, &[], with_delta, true).is_none());
         let rows = [opt_row(CALL_210, 0.0)];
         let refs: Vec<&Position> = rows.iter().collect();
@@ -2813,16 +2512,14 @@ Sources and footnotes.
     #[test]
     fn overlay_never_reads_naked_or_unrecognized_legs_as_covered() {
         let no_delta = |_: &crate::schwab::OccContract| None;
-        // A naked short call (2 contracts over 100 shares) must never read
-        // covered — `other`, with the naked note.
+        // 2 short calls over 100 shares: naked.
         let rows = [opt_row(CALL_210, -2.0)];
         let refs: Vec<&Position> = rows.iter().collect();
         let o = assemble_option_overlay(100.0, &refs, no_delta, false).unwrap();
         assert_eq!(o.class, OverlayClass::Other, "{o:?}");
         assert!(o.coverage_ratio.is_none());
         assert!(o.gaps.iter().any(|g| g.contains("naked")), "{o:?}");
-        // An unrecognized symbol forces `other`; its delta is a gap, so the
-        // net delta is None — whole or not at all.
+        // An unrecognized symbol's delta is a gap, so the net delta is None.
         let rows = [opt_row("AAPL WEIRD LEG", 1.0)];
         let refs: Vec<&Position> = rows.iter().collect();
         let o = assemble_option_overlay(100.0, &refs, no_delta, false).unwrap();

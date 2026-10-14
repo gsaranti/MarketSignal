@@ -1,13 +1,8 @@
-//! The embedding seam for vector memory: a pure text → vector boundary.
-//!
-//! Embeddings are a fixed internal stage — OpenAI `text-embedding-3-large`
-//! (`docs/storage.md §Embeddings`, `docs/agents.md §Fixed Internal Models`),
-//! non-configurable and distinct from the user-selectable agent models. Mirrors
-//! the model-adapter spine (`headline_filter` is the template): the trait method
-//! is synchronous and pure, a deterministic `StubEmbedder` stands in offline,
-//! and the real `OpenAiEmbedder` (its blocking HTTP call) replaces the stub
-//! behind the same trait, inside the same `spawn_blocking` as the rest of the
-//! pipeline.
+//! The embedding seam for vector memory: a fixed internal stage, OpenAI
+//! `text-embedding-3-large` (`docs/storage.md §Embeddings`, `docs/agents.md
+//! §Fixed Internal Models`), distinct from the user-selectable agent models.
+//! The trait is synchronous; the real adapter's blocking HTTP call rides the
+//! pipeline's `spawn_blocking`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,34 +12,26 @@ use serde_json::{json, Value};
 
 use crate::progress::RunContext;
 
-/// OpenAI embeddings endpoint — fixed internal stages call OpenAI directly.
 const OPENAI_EMBEDDINGS_URL: &str = "https://api.openai.com/v1/embeddings";
 
 /// The fixed internal embedding model (`docs/storage.md §Embeddings`).
 pub const EMBEDDING_MODEL: &str = "text-embedding-3-large";
 
-/// `text-embedding-3-large`'s native dimension (no `dimensions` reduction is
-/// requested). The store itself stays dimension-agnostic — `vector_memory`
-/// skips rows whose dimension mismatches a query — so this constant is for the
-/// live smoke's assertion, not an enforced schema.
+/// The model's native dimension (no `dimensions` reduction is requested). The
+/// store stays dimension-agnostic, so this is for the live smoke's assertion,
+/// not an enforced schema.
 pub const EMBEDDING_DIM: usize = 3072;
 
-/// Byte cap on any text sent to an embedder.
-///
-/// A byte bound rather than a char or token one because it is the only form that
-/// *promises* the provider's limit is respected: every token consumes at least one
-/// input byte, so `tokens ≤ bytes`, and 8,000 bytes can never exceed
-/// `text-embedding-3-large`'s 8,192-token input limit. A char cap cannot promise it —
-/// a multi-byte char can fall back to several byte tokens.
-///
-/// It is applied inside the adapters, so it holds for **every** call rather than only
-/// the ones whose caller remembered: the retrieval query was capped, but the two
-/// persistence paths (a report summary, a durable learning) were not, and an
-/// oversized one is rejected by the provider and lost rather than truncated.
+/// Byte cap on any text sent to an embedder. A byte bound, not a char or token
+/// one, because it is the only form that promises the provider's limit is
+/// respected: every token consumes at least one input byte, so `tokens ≤
+/// bytes` and 8,000 bytes can never exceed the 8,192-token input limit.
+/// Applied inside the adapters, so it holds for every call rather than only
+/// the ones whose caller remembered.
 pub const EMBEDDING_INPUT_MAX_BYTES: usize = 8_000;
 
-/// `text` cut to at most [`EMBEDDING_INPUT_MAX_BYTES`], backed off to a char boundary
-/// so the slice can never split a multi-byte character.
+/// Backed off to a char boundary so the slice can never split a multi-byte
+/// character.
 pub fn bounded_input(text: &str) -> &str {
     if text.len() <= EMBEDDING_INPUT_MAX_BYTES {
         return text;
@@ -56,26 +43,15 @@ pub fn bounded_input(text: &str) -> &str {
     &text[..end]
 }
 
-/// Validate a parsed embedding before it is stored or searched — the post-parse
-/// check the real adapter runs (`docs/report-workflow.md §Step 4`).
-///
-/// A vector is not trusted because the call returned 200. Two of these are
-/// **poisoning** guards rather than hygiene: a non-finite component makes every
-/// cosine comparison it touches `NaN`, and a zero vector has no direction, so its
-/// cosine against anything is either `NaN` or a meaningless zero — both silently
-/// corrupt recall for the life of the row rather than failing. The finiteness check
-/// existed only at persistence (`vector_memory::insert_memory`), which guarded the
-/// store but let a poisoned *query* vector reach the search unchecked.
-///
-/// The identity check catches a provider serving a different embedder than the one
-/// requested — its vectors sit in a different space, which cosine cannot detect. It is
-/// deliberately tolerant: a match is case-insensitive and accepts either name being a
-/// prefix of the other, so a dated or tagged variant is not a false failure, and a
-/// response carrying no model field is not checked at all rather than rejected.
-///
-/// Dimensionality is deliberately **not** checked. The store is dimension-agnostic
-/// by design — `vector_memory` skips rows whose dimension mismatches the query — and
-/// that skip is the guard; asserting a configured dimension here would contradict it.
+/// The post-parse check before a vector is stored or searched
+/// (`docs/report-workflow.md §Step 4`). A non-finite component makes every
+/// cosine comparison it touches `NaN` and a zero vector has no direction; both
+/// would silently corrupt recall rather than fail. The identity check catches
+/// a provider serving a different embedder, whose vectors sit in a space cosine
+/// cannot detect; it is deliberately tolerant (case-insensitive, either name a
+/// prefix of the other, and an absent model field is not checked). Dimension
+/// is deliberately not checked: the store is dimension-agnostic and its skip
+/// is the guard.
 fn validate_embedding(
     vector: Vec<f32>,
     served_model: Option<&str>,
@@ -108,16 +84,14 @@ fn validate_embedding(
     Ok(vector)
 }
 
-/// Whether a served model identity answers for the configured one — see
-/// [`validate_embedding`] for why this is prefix-tolerant.
+/// Prefix-tolerant; see [`validate_embedding`].
 fn model_matches(served: &str, configured: &str) -> bool {
     let (a, b) = (served.trim().to_ascii_lowercase(), configured.trim().to_ascii_lowercase());
     !a.is_empty() && (a.starts_with(&b) || b.starts_with(&a))
 }
 
-/// The embedding stage. One method: text in, vector out. Sync and pure, like
-/// the other model-stage traits — the blocking HTTP call inside the real
-/// adapter rides the application layer's `spawn_blocking` seam.
+/// Sync and pure, like the other model-stage traits; the real adapter's
+/// blocking HTTP call rides the application layer's `spawn_blocking` seam.
 pub trait Embedder {
     fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>>;
 }
@@ -125,10 +99,7 @@ pub trait Embedder {
 /// The stub's small fixed dimension — tests never need 3072 floats.
 pub const STUB_EMBEDDING_DIM: usize = 8;
 
-/// Deterministic offline stand-in: folds the text's bytes into a small fixed-
-/// dimension vector, so the same text always embeds identically and different
-/// texts (almost always) differ — enough for the store's insert/search paths to
-/// be exercised without a live key. The constant first component keeps the
+/// Deterministic offline stand-in. The constant first component keeps the
 /// vector non-zero even for empty text, so cosine similarity stays defined.
 #[derive(Debug, Default)]
 pub struct StubEmbedder;
@@ -144,22 +115,18 @@ impl Embedder for StubEmbedder {
     }
 }
 
-/// Build the embeddings request body: the fixed model, one input text.
 fn build_request(text: &str) -> Value {
-    // The byte cap is applied HERE, in the builder, rather than at each call site:
-    // this is what goes on the wire, so capping it is what makes the bound hold for
-    // every call — and it keeps the guarantee unit-testable without a live daemon.
+    // The byte cap is applied here, not at each call site, so the bound holds
+    // for every call and stays unit-testable without a live daemon.
     json!({ "model": EMBEDDING_MODEL, "input": bounded_input(text) })
 }
 
-/// Pull the vector out of the embeddings response envelope
-/// (`data[0].embedding`). Pure, so the envelope contract is unit-testable
-/// without a live call. A missing field or a non-numeric component is a typed
-/// error rather than a silent partial vector.
+/// A missing field or a non-numeric component is a typed error rather than a
+/// silent partial vector.
 fn parse_embedding_response(value: &Value) -> Result<Vec<f32>> {
-    // **Exactly one** vector: the request sent one input, so a response carrying
-    // several means the envelope is not the one this code reads, and silently taking
-    // `data[0]` would pair some other input's vector with this text.
+    // The request sent one input, so several vectors mean the envelope is not
+    // the one this code reads; taking `data[0]` would pair some other input's
+    // vector with this text.
     if let Some(rows) = value.pointer("/data").and_then(Value::as_array) {
         if rows.len() != 1 {
             anyhow::bail!(
@@ -187,9 +154,7 @@ fn parse_embedding_response(value: &Value) -> Result<Vec<f32>> {
 pub struct OpenAiEmbedder {
     api_key: String,
     http: reqwest::blocking::Client,
-    /// Run context for the tracker row each embed call emits. Defaults to a
-    /// no-op (tests / offline smokes); the live command attaches the real one
-    /// via [`OpenAiEmbedder::with_context`].
+    /// Defaults to a no-op context until [`OpenAiEmbedder::with_context`].
     progress: Arc<RunContext>,
 }
 
@@ -206,16 +171,12 @@ impl OpenAiEmbedder {
         })
     }
 
-    /// Attach a live run context so each embed call streams a request row to the
-    /// tracker. Without it the adapter keeps its no-op context.
     pub fn with_context(mut self, ctx: Arc<RunContext>) -> Self {
         self.progress = ctx;
         self
     }
 
-    /// Resolve the adapter from the environment, for the live smoke and any
-    /// caller that bypasses the gate. Uses the OpenAI key — embeddings are a
-    /// fixed internal OpenAI stage (`config::openai_key`).
+    /// For the live smoke and any caller that bypasses the gate.
     pub fn from_env() -> Result<Self> {
         Self::new(crate::config::AppConfig::from_env().openai_key()?)
     }
@@ -239,10 +200,6 @@ impl OpenAiEmbedder {
 
 impl Embedder for OpenAiEmbedder {
     fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        // One tracker row per embedding call. Group "memory" rows follow the
-        // currently-running step in the tracker (`App.vue`'s requestStep) — the
-        // research step for the Step-4/10 retrieval pulls, the persist step for
-        // the Step-17 summary write.
         self.progress
             .request_started("OpenAI", "memory", "embedding", "Memory embedding");
         let result = (|| -> Result<Vec<f32>> {
@@ -285,7 +242,6 @@ mod tests {
         assert_eq!(a.len(), STUB_EMBEDDING_DIM);
         assert_eq!(a, b, "same text embeds identically");
         assert_ne!(a, c, "different texts embed differently");
-        // Empty text still yields a non-zero vector, so cosine stays defined.
         let empty = StubEmbedder.embed("").unwrap();
         assert!(empty.iter().any(|v| *v != 0.0));
     }
@@ -308,8 +264,6 @@ mod tests {
 
     #[test]
     fn parse_embedding_response_errors_on_a_missing_vector() {
-        // An empty array is a cardinality failure (0 vectors for 1 input) and says so;
-        // an absent envelope has no count to report and names the missing field.
         let err = parse_embedding_response(&json!({ "data": [] })).unwrap_err();
         assert!(err.to_string().contains("0 vectors for one input"), "{err}");
         let err = parse_embedding_response(&json!({})).unwrap_err();
@@ -318,11 +272,6 @@ mod tests {
 
     #[test]
     fn a_poisoning_vector_is_rejected_at_the_call_not_only_at_persistence() {
-        // These two are the reason the validator exists. A non-finite component makes
-        // every cosine comparison it touches NaN; a zero vector has no direction, so
-        // its cosine is undefined. Finiteness was checked only at
-        // `vector_memory::insert_memory` — guarding the store, while a poisoned QUERY
-        // vector reached the search unchecked.
         let err = validate_embedding(vec![0.1, f32::NAN], None, EMBEDDING_MODEL).unwrap_err();
         assert!(err.to_string().contains("non-finite"), "{err}");
         let err = validate_embedding(vec![0.1, f32::INFINITY], None, EMBEDDING_MODEL).unwrap_err();
@@ -331,22 +280,16 @@ mod tests {
         assert!(err.to_string().contains("zero vector"), "{err}");
         let err = validate_embedding(vec![], None, EMBEDDING_MODEL).unwrap_err();
         assert!(err.to_string().contains("empty vector"), "{err}");
-        // A vector with a legitimate zero component is fine — only an ALL-zero one
-        // has no direction.
+        // Only an all-zero vector has no direction.
         assert!(validate_embedding(vec![0.0, -0.5, 0.0], None, EMBEDDING_MODEL).is_ok());
     }
 
     #[test]
     fn a_wrong_embedder_identity_is_rejected_but_tag_variants_are_not() {
-        // A provider serving a different embedder than the one requested produces
-        // vectors in a different space, which cosine cannot detect — the vectors look
-        // perfectly valid and recall is quietly wrong.
         let err = validate_embedding(vec![0.1], Some("text-embedding-3-small"), EMBEDDING_MODEL)
             .unwrap_err();
         assert!(err.to_string().contains("not the configured"), "{err}");
 
-        // Tolerances that must NOT fail: case, surrounding space, and either name
-        // being a prefix of the other (a dated or tagged variant).
         for served in [
             "text-embedding-3-large",
             "Text-Embedding-3-Large",
@@ -358,29 +301,21 @@ mod tests {
                 "{served} must answer for the configured model"
             );
         }
-        // A response with no model field is not checked rather than rejected — the
-        // check is only available when the provider echoes an identity.
         assert!(validate_embedding(vec![0.1], None, EMBEDDING_MODEL).is_ok());
-        // An empty served identity is not a match claim either.
+        // An empty served identity is not a match claim.
         assert!(validate_embedding(vec![0.1], Some(""), EMBEDDING_MODEL).is_err());
     }
 
     #[test]
     fn the_input_byte_cap_holds_for_every_call_and_never_splits_a_char() {
-        // The cap is in bytes because that is the only form that promises the
-        // provider's token limit is respected (tokens ≤ bytes). The leading ASCII char
-        // shifts every 2-byte `é` onto an odd offset, so the cut lands mid-char and
-        // must back off to the previous boundary.
+        // The leading ASCII char shifts every 2-byte `é` onto an odd offset, so
+        // the cut lands mid-char and must back off to the previous boundary.
         let oversized = format!("a{}", "é".repeat(EMBEDDING_INPUT_MAX_BYTES));
         let capped = bounded_input(&oversized);
         assert_eq!(capped.len(), EMBEDDING_INPUT_MAX_BYTES - 1);
         assert!(capped.is_char_boundary(capped.len()));
         assert_eq!(bounded_input("short"), "short");
 
-        // And the request builder applies it, so every call is bounded — including the
-        // two persistence paths (a report summary, a durable learning) that never
-        // capped their own input and would have had an oversized one rejected by the
-        // provider and lost.
         assert_eq!(
             build_request(&oversized)["input"].as_str().unwrap().len(),
             EMBEDDING_INPUT_MAX_BYTES - 1
@@ -389,9 +324,6 @@ mod tests {
 
     #[test]
     fn a_response_carrying_several_vectors_for_one_input_is_rejected() {
-        // The request sends ONE input, so a multi-vector response means the envelope
-        // is not the one this code reads. Silently taking `data[0]` would pair some
-        // other input's vector with this text — a wrong vector, stored as if right.
         let err = parse_embedding_response(&json!({
             "data": [ { "embedding": [0.1] }, { "embedding": [0.2] } ]
         }))

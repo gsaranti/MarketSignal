@@ -1,11 +1,6 @@
-//! Throwaway localhost HTTP server for offline round-trip tests.
-//!
-//! Shared by `http_retry`'s own retry/backoff coverage and by each gated adapter's
-//! offline round-trip test (FMP / FRED / BLS / Tavily / fmp_news). A test scripts a
-//! fixed sequence of canned replies — one per inbound connection — points the unit
-//! under test at [`MockHttp::base_url`], and asserts the wire path (URL build →
-//! `send_with_retry` → `interpret_response` → domain output) end to end without a live
-//! API key. Compiled only under `cfg(test)`.
+//! Throwaway localhost HTTP server for offline round-trip tests: a test scripts
+//! a fixed sequence of canned replies, one per inbound connection, and points
+//! the unit under test at [`MockHttp::base_url`].
 
 #![cfg(test)]
 
@@ -15,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// One canned reply the mock server writes for a single inbound connection.
+/// One canned reply for a single inbound connection.
 pub enum Canned {
     /// A complete HTTP/1.1 reply with a matching `Content-Length`.
     Reply {
@@ -23,46 +18,40 @@ pub enum Canned {
         headers: Vec<(&'static str, &'static str)>,
         body: &'static str,
     },
-    /// Declares `content_length` bytes but writes only `partial`, then lets the
-    /// connection close — simulating a body dropped mid-stream so the client's
-    /// `Response::text()` errors. Served as HTTP 200 (see `write_canned`) so the
-    /// status is non-retryable: the *only* path to a second attempt is the body
-    /// re-read branch, which is exactly what the dropped-body test pins.
+    /// Declares `content_length` bytes but writes only `partial`, then closes,
+    /// so the client's `Response::text()` errors. Served as HTTP 200 so the
+    /// status is non-retryable: the only path to a second attempt is the body
+    /// re-read branch.
     DropBody {
         content_length: usize,
         partial: &'static str,
     },
-    /// Sleeps `for_ms` after reading the request, then serves `then` — a daemon
-    /// that accepts the request and goes quiet before answering, so a test can pin
-    /// a client's header-wait deadline. Size the sleep past the deadline under test:
-    /// the worker keeps sleeping after the client has given up, and its late write
-    /// to the closed socket is ignored.
+    /// Sleeps `for_ms` after reading the request, then serves `then`, so a test
+    /// can pin a client's header-wait deadline. Size the sleep past the deadline
+    /// under test; the worker's late write to the closed socket is ignored.
     Delay { for_ms: u64, then: Box<Canned> },
-    /// Writes a `status` head and `partial` (close-delimited, no `Content-Length`),
-    /// sleeps `for_ms`, then lets the connection close — a body that goes silent
-    /// mid-stream, so a test can pin a client's per-read idle deadline on a
-    /// success stream or on an error body alike.
+    /// Writes a `status` head and `partial` (close-delimited, no
+    /// `Content-Length`), sleeps `for_ms`, then closes, so a test can pin a
+    /// client's per-read idle deadline.
     StallMidBody {
         status: u16,
         partial: &'static str,
         for_ms: u64,
     },
-    /// Writes one close-delimited body chunk at a time, flushing each chunk and
-    /// sleeping for the paired delay before the next one. This distinguishes a
-    /// total request deadline from a per-read idle deadline: every gap can stay
-    /// under the idle bound while the complete response outlives that bound.
+    /// Writes one close-delimited chunk at a time, sleeping the paired delay
+    /// after each. Distinguishes a total request deadline from a per-read idle
+    /// deadline: every gap can stay under the idle bound while the complete
+    /// response outlives it.
     DripBody {
         status: u16,
         chunks: Vec<(&'static str, u64)>,
     },
 }
 
-/// A throwaway localhost HTTP server that serves a fixed script of replies — one
-/// per inbound connection — and counts the connections it accepted. The listener
-/// is bound on the caller's thread (so the port is live before `serve` returns),
-/// then handed to a detached worker that consumes the whole script and exits.
-/// Size each script to the expected number of attempts so no `accept()` blocks
-/// past the run.
+/// The listener is bound on the caller's thread, so the port is live before
+/// `serve` returns, then handed to a detached worker that consumes the whole
+/// script and exits. Size each script to the expected number of attempts so no
+/// `accept()` blocks past the run.
 pub struct MockHttp {
     pub base_url: String,
     attempts: Arc<AtomicUsize>,
@@ -85,19 +74,17 @@ impl MockHttp {
         }
     }
 
-    /// Connections accepted so far == requests the unit under test actually made.
-    /// Every increment lands before the matching reply is written, so reading
-    /// this once the call has returned sees the final count.
+    /// Connections accepted so far. Every increment lands before the matching
+    /// reply is written, so reading this once the call has returned sees the
+    /// final count.
     pub fn attempts(&self) -> usize {
         self.attempts.load(Ordering::SeqCst)
     }
 
-    /// The request targets — the `/path?query` portion of each request line (e.g.
-    /// `/quote?symbol=%5EGSPC`) — in arrival order, one per accepted connection. Each is
-    /// recorded *before* its reply is written, so reading this once the call has returned
-    /// sees them all. Lets a test assert the endpoint path/query the adapter actually
-    /// built, not merely that *a* request reached the mock — so a typo in a `*_PATH` const
-    /// fails the test rather than silently hitting the mock anyway.
+    /// The `/path?query` portion of each request line, in arrival order, each
+    /// recorded before its reply is written. Lets a test assert the endpoint
+    /// the adapter actually built, so a typo in a `*_PATH` const fails the test
+    /// rather than silently hitting the mock anyway.
     pub fn request_targets(&self) -> Vec<String> {
         self.targets
             .lock()
@@ -105,11 +92,8 @@ impl MockHttp {
             .clone()
     }
 
-    /// The path component of each request target — the `/path` with any `?query` stripped
-    /// — in arrival order. For a test asserting the endpoint path *exactly*: a suffix
-    /// regression like `/quote-v2` fails `assert_eq!(request_paths(), ["/quote"])` where it
-    /// would slip past a `starts_with`. Use [`Self::request_targets`] when the query
-    /// matters (a per-call var reaching the wire).
+    /// [`Self::request_targets`] with any `?query` stripped, for asserting the
+    /// endpoint path exactly (a `starts_with` would let `/quote-v2` slip past).
     pub fn request_paths(&self) -> Vec<String> {
         self.request_targets()
             .into_iter()
@@ -141,17 +125,14 @@ fn serve_script(
                 .push(target);
         }
         let _ = write_canned(&mut stream, canned);
-        // `stream` drops at the end of the iteration: for `DropBody` that is the
-        // mid-body EOF; for `Reply` the `Content-Length` body is already complete.
+        // `stream` drops here: for `DropBody` that is the mid-body EOF.
     }
 }
 
-/// Read the inbound request through its header terminator and any declared
-/// `Content-Length` body, returning the bytes seen so the caller can record the request
-/// target. Reading the whole request lets the client's write complete before we reply:
-/// a model adapter's POST body (the streaming agents' prompts) is large enough to fill
-/// the socket buffer and stall the client's write if left unread. Best-effort and bounded
-/// by a read timeout.
+/// Reads the whole request (head plus any declared `Content-Length` body) so
+/// the client's write completes before the reply: a model adapter's POST body
+/// is large enough to fill the socket buffer and stall the client if left
+/// unread. Best-effort, bounded by a read timeout.
 fn drain_request(stream: &mut TcpStream) -> Vec<u8> {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let mut seen: Vec<u8> = Vec::new();
@@ -192,9 +173,8 @@ fn content_length(head: &[u8]) -> usize {
         .unwrap_or(0)
 }
 
-/// Extract the request target — the second token of the request line (e.g. the
-/// `/quote?symbol=%5EGSPC` in `GET /quote?symbol=%5EGSPC HTTP/1.1`) — from the raw
-/// request head, if present.
+/// The second token of the request line (`/quote?symbol=%5EGSPC` in
+/// `GET /quote?symbol=%5EGSPC HTTP/1.1`), if present.
 fn request_target(head: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(head).ok()?;
     let first_line = text.lines().next()?;

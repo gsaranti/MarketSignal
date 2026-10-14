@@ -1,25 +1,10 @@
-//! Deterministic change view between two baseline scans.
-//!
-//! Continuity across reports is otherwise narrative-only (the vector-memory report
-//! summaries): the main agent sees this run's numbers and the prior report's prose,
-//! but never the prior report's *numbers*. This module closes that gap. The
-//! application layer persists each run's baseline (`storage::baseline_snapshots`) and,
-//! on the next run, computes the level-by-level change against the most recent prior
-//! snapshot here — in Rust, deterministically — so the agent reads an exact, bounded
-//! diff rather than re-deriving arithmetic from two raw snapshots.
-//!
-//! Cadence-honest by construction: reports are not guaranteed weekly (the user
-//! chooses when to generate one), so the diff carries the actual elapsed interval
-//! ([`BaselineDeltas::elapsed_days`]) rather than assuming a week — a 35 bp move means
-//! very different things over an hour versus three weeks.
-//!
-//! Only **level-bearing** groups are diffed (the [`DELTA_GROUPS`] list): a series whose
-//! `price`/`pe`/premium is a standing level, joined by series id. Set-valued or
-//! already-derivative groups (movers, earnings, calendar, industries, index
-//! performance, and the sector *performance* percentages) are deliberately excluded —
-//! diffing a return would be a noisy second derivative. A series present in only one of
-//! the two snapshots yields no `SeriesDelta`; it is surfaced as a `new` / `missing`
-//! transition instead of a fabricated change.
+//! Deterministic change view between two baseline scans: the level-by-level diff of this
+//! run's baseline against the most recent prior snapshot (`storage::baseline_snapshots`),
+//! computed in Rust so the agent reads an exact, bounded diff rather than re-deriving
+//! arithmetic from two raw snapshots. Only the level-bearing [`DELTA_GROUPS`] are diffed;
+//! a series present in only one snapshot surfaces as a `new` / `missing` transition, never
+//! a fabricated change. The diff carries the actual elapsed interval, since reports are
+//! not guaranteed weekly.
 
 use std::collections::{HashMap, HashSet};
 
@@ -39,7 +24,6 @@ pub const DELTA_GROUPS: [GroupKind; 6] = [
     GroupKind::MarketRiskPremium,
 ];
 
-/// Which way a level moved between the prior report and this one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Direction {
@@ -71,25 +55,20 @@ pub struct SeriesTransition {
     pub group: GroupKind,
     pub id: String,
     pub name: String,
-    /// Why the series is absent from the run it's missing in, when that run's gap manifest
-    /// explains it: a transient `unavailable` / `rejected` / `malformed` fetch failure, or
-    /// `out-of-scope`. `None` when no gap recorded the absence — a genuine coverage change,
-    /// not a data outage. Lets the agent tell a dropped *data feed* apart from a series
-    /// actually entering or leaving the market.
+    /// The gap reason that explains the absence, when the missing run's manifest recorded
+    /// one. `None` means no gap recorded it — a genuine coverage change, not a data outage.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<GapReason>,
 }
 
-/// The deterministic change view handed to the agent (and, once Step 8 lands, the
-/// research router): how each level-bearing series moved since the previous report,
-/// which series newly appeared, and which dropped out — all over an explicit elapsed
-/// interval.
+/// The deterministic change view handed to the agent: how each level-bearing series moved
+/// since the previous report, which newly appeared, and which dropped out, over an
+/// explicit elapsed interval.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BaselineDeltas {
-    /// Days elapsed since the prior report's baseline was captured (fractional). The
-    /// cadence is not fixed weekly, so this is the real gap, not an assumed week.
+    /// Days elapsed since the prior report's baseline was captured (fractional): the real
+    /// gap, not an assumed week.
     pub elapsed_days: f64,
-    /// Series present in both snapshots, with their level change.
     pub changed: Vec<SeriesDelta>,
     /// Series present this run but absent from the prior snapshot.
     pub new: Vec<SeriesTransition>,
@@ -98,9 +77,8 @@ pub struct BaselineDeltas {
 }
 
 /// `(id, name, level)` for each series in `group` — the uniform shape the join works
-/// over. Non-level-bearing groups (everything outside [`DELTA_GROUPS`]) yield nothing.
-/// Shared with the baseline history (`baseline_history`), so one definition fixes the
-/// level-bearing series both views read.
+/// over; groups outside [`DELTA_GROUPS`] yield nothing. Shared with `baseline_history`,
+/// so one definition fixes the level-bearing series both views read.
 pub(crate) fn series_levels(
     data: &BaselineMarketData,
     group: GroupKind,
@@ -109,10 +87,6 @@ pub(crate) fn series_levels(
         quotes
             .iter()
             .map(|q| {
-                // The quote name is used verbatim: the typed `change` carries its own unit
-                // (`change.kind`), so the baseline name no longer holds a point-delta marker
-                // that this cross-report view — self-describing via its own `abs_change` /
-                // `pct_change` — would have to strip.
                 (q.symbol.clone(), q.name.clone(), q.price)
             })
             .collect()
@@ -122,11 +96,9 @@ pub(crate) fn series_levels(
         GroupKind::Internals => from_quotes(&data.internals),
         GroupKind::MacroLevels => from_quotes(&data.macro_levels),
         GroupKind::LaborLevels => from_quotes(&data.labor_levels),
-        // Sector P/E is exchange-specific, so the join key pins (sector, exchange) — a
-        // NASDAQ tech P/E and an NYSE tech P/E are distinct series. A row whose `pe` was
-        // band-dropped to `None` (out of `(0.0, SECTOR_PE_MAX]`) has no level to diff, so it
-        // is skipped here — it surfaces as a `new`/`missing` transition the same way a series
-        // present in only one run does, rather than diffing against a fabricated level.
+        // Sector P/E is exchange-specific, so the join key pins (sector, exchange). A row
+        // whose `pe` was band-dropped to `None` has no level to diff, so it surfaces as a
+        // `new` / `missing` transition rather than diffing against a fabricated level.
         GroupKind::SectorPe => data
             .sector_pe
             .iter()
@@ -155,10 +127,9 @@ pub(crate) fn series_levels(
     }
 }
 
-/// A `(group, series_id) -> reason` lookup over one snapshot's gap manifest, so a series
-/// absent from the gathered levels can be tagged with *why* it was absent. Keyed the way
+/// A `(group, series_id) -> reason` lookup over one snapshot's gap manifest. Keyed the way
 /// the adapters record gaps (the provider series id, which doubles as the quote symbol);
-/// composite-key groups (sector P/E, MRP) simply won't match and degrade to no reason.
+/// composite-key groups (sector P/E, MRP) won't match and degrade to no reason.
 fn gap_reasons(data: &BaselineMarketData) -> HashMap<(GroupKind, &str), GapReason> {
     data.gaps
         .iter()
@@ -166,12 +137,10 @@ fn gap_reasons(data: &BaselineMarketData) -> HashMap<(GroupKind, &str), GapReaso
         .collect()
 }
 
-/// Compute the level-by-level change of `current` against `prior` over `elapsed_days`.
-/// Pure and deterministic: same inputs, same output, no I/O. A series in both snapshots
-/// becomes a [`SeriesDelta`]; one present in only `current` is `new`, only `prior` is
-/// `missing`. A transition is tagged with the gap reason that explains its absence (the
-/// missing run's manifest) when one exists, so a data-feed outage reads differently from
-/// a series genuinely entering or leaving the market.
+/// The level-by-level change of `current` against `prior` over `elapsed_days`. A series
+/// in both snapshots becomes a [`SeriesDelta`]; one present in only `current` is `new`,
+/// only `prior` is `missing`, tagged with the gap reason from the missing run's manifest
+/// when one exists.
 pub fn compute_deltas(
     current: &BaselineMarketData,
     prior: &BaselineMarketData,
@@ -268,7 +237,6 @@ mod tests {
         }
     }
 
-    /// rose / fell / new / missing in one pass, plus elapsed pass-through.
     #[test]
     fn computes_rise_fall_new_and_missing() {
         let prior = BaselineMarketData {
@@ -307,11 +275,8 @@ mod tests {
         assert!(!d.changed.iter().any(|s| s.id == "^TNX" || s.id == "^DXY"));
     }
 
-    /// The quote name flows into the delta view verbatim. With the typed `change` carrying its
-    /// own unit (`change.kind`), the baseline name no longer holds a point-delta marker, so
-    /// `from_quotes` no longer strips one — this pins that pass-through (a changed delta and a
-    /// `new` transition, the two `from_quotes` outputs) so a future change can't silently
-    /// re-mangle the name.
+    /// Pins the name pass-through on both `from_quotes` outputs (a changed delta and a
+    /// `new` transition) so a future change can't silently re-mangle the name.
     #[test]
     fn carries_the_quote_name_into_the_delta_view_verbatim() {
         let prior = BaselineMarketData {
@@ -344,7 +309,6 @@ mod tests {
         );
     }
 
-    /// A zero prior level yields a move but no percentage (no honest denominator).
     #[test]
     fn zero_prior_level_omits_pct_but_keeps_abs() {
         let prior = BaselineMarketData {
@@ -362,8 +326,8 @@ mod tests {
         assert_eq!(m.direction, Direction::Up);
     }
 
-    /// The same diff over a one-hour gap reports a tiny elapsed honestly — the model,
-    /// not this layer, judges whether so small a window makes the move meaningful.
+    /// The model, not this layer, judges whether so small a window makes the move
+    /// meaningful.
     #[test]
     fn elapsed_passes_through_for_a_rapid_regeneration() {
         let prior = BaselineMarketData {
@@ -380,8 +344,6 @@ mod tests {
         assert_eq!(d.changed.len(), 1);
     }
 
-    /// The exchange-specific valuation groups join on their composite key, and the
-    /// performance-percentage `sectors` group is excluded from diffing entirely.
     #[test]
     fn valuation_groups_join_and_sectors_are_excluded() {
         use crate::data_sources::SectorPerformance;
@@ -440,9 +402,7 @@ mod tests {
         assert!(!d.changed.iter().any(|s| s.group == GroupKind::Sectors));
     }
 
-    /// The trailing-year reads against a group's own history are structural reads, not
-    /// inter-report levels: populating them on either side leaves the change view exactly as
-    /// the snapshot `pe` alone produces it, and `industries` stays out of the diff.
+    /// History reads are structural, not inter-report levels, so they never enter the diff.
     #[test]
     fn history_reads_leave_the_change_view_unchanged() {
         use crate::data_sources::{IndustrySnapshot, PeHistory, TrailingReturn};
@@ -506,7 +466,7 @@ mod tests {
     }
 
     /// The primary-market group carries its own recent-vs-prior trend, so the change view
-    /// never diffs it: two snapshots differing only in it yield the same view.
+    /// never diffs it.
     #[test]
     fn the_primary_market_group_stays_out_of_the_change_view() {
         use crate::data_sources::{ActivityWindow, IpoActivity, PrimaryMarketActivity};
@@ -554,9 +514,7 @@ mod tests {
             .any(|s| s.group == GroupKind::PrimaryMarket));
     }
 
-    /// A series that resolved last run but failed this run is `missing` *and* carries the
-    /// gap reason from this run's manifest — so a transient feed outage isn't read as the
-    /// series leaving the market.
+    /// A transient feed outage must not read as the series leaving the market.
     #[test]
     fn missing_series_carries_its_gap_reason_when_the_manifest_explains_it() {
         use crate::data_sources::DataGap;
@@ -583,7 +541,6 @@ mod tests {
         assert_eq!(m.reason, Some(GapReason::Unavailable));
     }
 
-    /// A series absent with no gap recorded is a genuine coverage change — no reason.
     #[test]
     fn genuinely_absent_series_has_no_reason() {
         let prior = BaselineMarketData {

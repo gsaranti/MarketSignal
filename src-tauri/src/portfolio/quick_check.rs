@@ -1,19 +1,10 @@
-//! The engine-only **quick check** (`docs/portfolio-analysis.md §The quick check`,
-//! `docs/portfolio-workflow.md §The quick check`): a cheap between-run pass that
-//! keeps the engine's reads *live* — it loads the **last run's holdings snapshot
-//! and verdicts** (no Schwab pull — it tests the computed picture, not the book),
-//! refreshes prices, the `DGS2`/`DGS10` prints, and the per-asset-type evidence
-//! legs, re-derives the hurdle (the stored v2 basis re-anchored closed-form on the
-//! fresh `DGS10`) and the frozen twelve-month band read on priced verdicts — the
-//! two engine monitors — and raises **attention flags** and quiet **evidence-event
-//! badges**. It reads the engine arm alone: the thesis document, the conviction
-//! and the expected prices are not evaluated between runs. Never rewrites any
-//! model-authored content. No model call, no web research, no Schwab call.
-//!
-//! Its only writes are the flags, the badges, the per-family sweep states and its
-//! own refreshed rate prints, persisted in its own single-row store, **never**
-//! into `portfolio_runs`: a quick-check write there would surface in the sidebar
-//! history and, worse, become the next full run's diff baseline and carry source.
+//! The engine-only quick check (`docs/portfolio-analysis.md §The quick check`,
+//! `docs/portfolio-workflow.md §The quick check`): a between-run pass over the
+//! last run's holdings snapshot and verdicts that refreshes prices, rate prints
+//! and the evidence legs, re-reads the two engine monitors, and raises attention
+//! flags and evidence-event badges. No model call, no web research, no Schwab
+//! call. Its state persists in its own single-row store, never in
+//! `portfolio_runs`, where it would become the next full run's diff baseline.
 
 use anyhow::Result;
 use rusqlite::Connection;
@@ -44,8 +35,8 @@ const MATERIAL_FORMS: [&str; 3] = ["10-K", "10-Q", "8-K"];
 const REVISION_MOVE_FRACTION: f64 = 0.05;
 const REVISION_ABS_FLOOR: f64 = 0.10;
 
-/// Rate-cache max age for the quick paths' fail-soft (days, against the print's
-/// as-of date — the drafted ~1-week bound reusing the house-view freshness bound).
+/// Rate-cache max age for the quick paths' fail-soft, in days against the
+/// print's as-of date.
 const RATE_CACHE_MAX_AGE_DAYS: i64 = 7;
 
 /// Fund exposure-shift leg: a top sector weight moving this much or more.
@@ -62,13 +53,10 @@ const EXPENSE_EPS: f64 = 1e-6;
 /// run's 180-day volatility/trailing window so the reads share one basis.
 pub const QUICK_EOD_LOOKBACK_DAYS: i64 = 180;
 
-/// The semantics of persisted quick-check evaluation state. `v2` keeps the
-/// split-anchor fetch widening isolated from the fixed 180-day trailing-return
-/// and volatility window (Review 2 N3); `v3` retires rolling-NTM revision
-/// events and compares estimates only on matched fiscal periods (Review 2 M11);
-/// `v4` withholds filing flow comparisons unless their authored basis is TTM;
-/// `v5` sweeps the two engine monitors alone — the ledger-condition evaluation,
-/// its persisted per-condition states and the news-seed leg are gone.
+/// The evaluation semantics stamped on persisted quick-check state: the two
+/// engine monitors swept alone, revision events compared only on matched fiscal
+/// periods, and the split-anchor fetch widening kept apart from the fixed
+/// 180-day trailing window.
 pub const QUICK_CHECK_PARAMETER_VERSION: &str = "quick-check-v5";
 
 // ---- Typed sweep results -----------------------------------------------------
@@ -93,13 +81,11 @@ pub enum SweepFamily {
     RateAnchor,
 }
 
-/// A family's sweep state: **`fresh_clear`** — successfully checked and nothing
-/// fired (a new observation evaluated clean, or a successful retrieval confirming
-/// no unseen observation exists); **`flagged`**; or **`unknown`** — the retrieval
-/// failed or the stored basis is missing, so the sweep could not vouch either
-/// way. On a selective run `unknown` surfaces as a degraded-sweep **card badge**,
-/// exactly like a `flagged` family — it no longer force-includes (since the
-/// 2026-08-16 ruling — `docs/portfolio-analysis.md §Triggering`).
+/// A family's sweep state: `fresh_clear` — checked and nothing fired; `flagged`;
+/// or `unknown` — the retrieval failed or the stored basis is missing, so the
+/// sweep could not vouch either way. On a selective run `unknown` surfaces as a
+/// degraded-sweep card badge, like a `flagged` family; it never force-includes
+/// (`docs/portfolio-analysis.md §Triggering`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SweepState {
@@ -299,9 +285,8 @@ impl QuickCheckDataSource for LiveQuickCheckData {
     }
 
     fn fund_data(&self, symbol: &str) -> FundData {
-        // The sweep's variant: no `profile` leg — the quick check never re-runs
-        // closed-end detection (`docs/data-sources.md` §Portfolio Analysis —
-        // endpoint surface: the profile row is full-pass only).
+        // No `profile` leg: the quick check never re-runs closed-end detection
+        // (`docs/data-sources.md` §Portfolio Analysis).
         self.fmp.fetch_fund_refresh_data(symbol)
     }
 
@@ -514,10 +499,10 @@ fn run_quick_check_at(
         }
     };
 
-    // Sweep-eligible holdings, each with its **own** last-full-pass boundary —
-    // per holding, not per run: a verdict a selective run carried forward keeps
-    // its older vintage, so the evidence-event legs still look back to the pass
-    // that actually examined it (`docs/portfolio-analysis.md` §Triggering).
+    // Each holding carries its own last-full-pass boundary, not the run's: a
+    // verdict a selective run carried forward keeps its older vintage, so the
+    // evidence-event legs look back to the pass that actually examined it
+    // (`docs/portfolio-analysis.md` §Triggering).
     let targets: Vec<SweepTarget<'_>> = run
         .holdings
         .positions
@@ -584,13 +569,6 @@ fn sweep_eligible(verdict: &HoldingVerdict) -> bool {
     }
 }
 
-/// A verdict's effective last-full-pass **ET session date** (YYYY-MM-DD) inside
-/// the run whose `created_at` is given — the per-holding "since the last full
-/// pass" boundary ([`crate::portfolio::effective_vintage`]). ET, not the UTC
-/// date prefix: an evening-ET pass has already rolled to the next UTC date, and
-/// a UTC-dated boundary would hide the pass's own ET day *and* the entire next
-/// ET day from the date-only filing/earnings feeds
-/// ([`crate::market_clock::et_date_of`]).
 /// Fetch slack past the holding's last-pass boundary so the split-bridge anchor
 /// bar — the newest settled close strictly before that ET session — stays inside
 /// the sweep's dated-EOD window across weekends, holidays, and short halts.
@@ -612,11 +590,16 @@ fn eod_lookback_for(last_pass_date: &str, today: &str) -> i64 {
     QUICK_EOD_LOOKBACK_DAYS.max(span)
 }
 
+/// A verdict's effective last-full-pass ET session date (YYYY-MM-DD) — the
+/// per-holding "since the last full pass" boundary. ET, not the UTC date
+/// prefix: an evening-ET pass has already rolled to the next UTC date, and a
+/// UTC-dated boundary would hide the pass's own ET day and the next from the
+/// date-only filing/earnings feeds.
 fn vintage_date(verdict: &HoldingVerdict, run_created_at: &str) -> String {
     let vintage = crate::portfolio::effective_vintage(verdict, run_created_at);
     match crate::market_clock::et_date_of(vintage) {
         Some(d) => d.format("%Y-%m-%d").to_string(),
-        // Unparseable vintage: the old prefix read, degraded rather than absent.
+        // Unparseable vintage: the date prefix, degraded rather than absent.
         None => vintage.chars().take(10).collect(),
     }
 }
@@ -656,9 +639,7 @@ fn sweep_targets(pass: SweepPass<'_>, ctx: &RunContext) -> Result<Vec<HoldingQui
     // The price pass runs under its own step: its per-symbol fetches emit
     // request rows, and a row arriving while no backend step runs falls
     // through to the tracker's synthesized never-finished "Baseline market
-    // data" step — the exact Finding 6 phantom, reachable on the quick-check
-    // and selective-tail paths after the report-pipeline half was fixed
-    // (attempt-1 review sweep).
+    // data" step.
     ctx.step_started("sweep-prices", "Refresh prices (sweep)");
     for target in &pass.targets {
         if ctx.is_cancelled() {
@@ -703,10 +684,9 @@ fn sweep_targets(pass: SweepPass<'_>, ctx: &RunContext) -> Result<Vec<HoldingQui
         let position = target.position;
         let step_key = holding_step_key(&position.symbol);
         ctx.step_started(step_key.clone(), format!("Check {}", position.symbol));
-        // Case-insensitive like every neighboring symbol join (the diff, the
-        // retention seam, `prior_verdict_for`) — a casing drift between the
-        // fresh pull and the stored sweep state must not silently drop the
-        // carried flag and events.
+        // Case-insensitive like every neighboring symbol join: a casing drift
+        // between the fresh pull and the stored sweep state must not silently
+        // drop the carried flag and events.
         let prior_holding = pass.prior_state.and_then(|s| {
             s.holdings
                 .iter()
@@ -736,14 +716,11 @@ fn sweep_targets(pass: SweepPass<'_>, ctx: &RunContext) -> Result<Vec<HoldingQui
     Ok(holdings_state)
 }
 
-/// The in-run sweep a **selective run** executes over its unselected tail before
-/// the per-holding loop (`docs/portfolio-analysis.md` §Triggering — the first
-/// mixed-vintage safety rule). Positions come from the run's **fresh Step-2
-/// pull** (current quantities and marks); verdicts and audits come from the
-/// prior run being carried; each
-/// holding's evidence-event boundary is its own effective vintage. The caller
-/// owns persistence — the run's persist seam retains carried holdings' states
-/// re-stamped to the new run.
+/// The in-run sweep a selective run executes over its unselected tail before
+/// the per-holding loop (`docs/portfolio-analysis.md` §Triggering). Positions
+/// come from the run's fresh Step-2 pull; verdicts and audits from the prior
+/// run being carried; each holding's evidence-event boundary is its own
+/// effective vintage. The caller owns persistence.
 pub struct TailSweep<'a> {
     pub data: &'a dyn QuickCheckDataSource,
     pub prior_run: &'a crate::portfolio::PortfolioRun,
@@ -814,11 +791,10 @@ fn sweep_session_date(now: &str) -> String {
 /// aged against the print's as-of date (falling back to the fetch date), the
 /// drafted rate-cache max age.
 fn rate_cache_fresh(cache: &RatePrints, today: &str) -> bool {
-    // A FRED `as_of` is already a market day, so it parses directly. The
-    // fallback — the cache's own fetch instant, used only where FRED served no
-    // observation date — dates through the **ET session** like every other
-    // session-keyed read: its UTC prefix would put an evening fetch a day ahead
-    // and read the cache one day younger than it is.
+    // A FRED `as_of` is already a market day. The fallback — the cache's own
+    // fetch instant — dates through the ET session like every other
+    // session-keyed read; its UTC prefix would read an evening fetch a day
+    // younger than it is.
     let as_of = cache
         .dgs10_as_of
         .as_deref()
@@ -860,13 +836,10 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
     let is_stock = inp.position.asset_class == AssetClass::Stock;
     let priced = matches!(inp.verdict.disposition, VerdictDisposition::Priced(_));
     let basis = inp.audit.and_then(|a| a.quick_basis.as_ref());
-    // The withheld-comparator signature: a priced row carrying its anchor with
-    // no quick basis — the shape a pass whose engine computed no basis leaves,
-    // since every full pass persists the basis it computed on its own anchor's
-    // basis. Its band and revision legs don't exist to check — the families
-    // read `unknown`, never a silent `fresh_clear` vouch through legs the row
-    // lacks; the band leg below skips on the same signature. (An abstained row
-    // is not priced, so it never matches.)
+    // A priced row carrying its anchor with no quick basis is the shape a pass
+    // whose engine computed no basis leaves. Its band and revision legs don't
+    // exist to check, so those families read `unknown`, never a silent
+    // `fresh_clear`; the band leg below skips on the same signature.
     let comparators_withheld = priced
         && inp
             .audit
@@ -887,13 +860,12 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
 
     // The split-adjustment bridge (`docs/portfolio-analysis.md` §Starting
     // parameters): the stored anchor bar re-read from this sweep's fresh series
-    // gives the exact cumulative re-basis factor since the last full pass —
-    // exactly 1.0 in the unchanged common case. `Some(f)`: stored
-    // price-denominated comparators convert through `f` (1.0 also covers a
-    // no-price exit's row, which carries no anchor and runs as stored until a
-    // full pass stamps one). `None`: an anchor exists but its bar is missing from the
-    // fresh window — the basis is unverifiable, so price-denominated
-    // comparisons are excluded this sweep rather than run cross-basis.
+    // gives the cumulative re-basis factor since the last full pass — 1.0 in
+    // the unchanged case. `Some(f)`: stored price-denominated comparators
+    // convert through `f` (1.0 also covers a row with no anchor). `None`: an
+    // anchor exists but its bar is missing from the fresh window, so the basis
+    // is unverifiable and price-denominated comparisons are excluded this
+    // sweep rather than run cross-basis.
     let bridge: Option<f64> = match inp.audit.and_then(|a| a.authoring_close.as_ref()) {
         None => Some(1.0),
         Some(anchor) => inp
@@ -924,8 +896,8 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
     }
 
     // -- Stock legs ------------------------------------------------------------
-    // The filing re-pull's dividend leg: the hurdle's payout leg refreshes on
-    // filing cadence (`docs/portfolio-analysis.md` §The quick check).
+    // The hurdle's payout leg refreshes on filing cadence
+    // (`docs/portfolio-analysis.md` §The quick check).
     let mut filing_dividends: Option<f64> = None;
     if is_stock {
         match inp.data.recent_filings(&symbol) {
@@ -945,12 +917,10 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             FilingSweep::Filings(rows) => {
                 // Inclusive of the boundary day: filing dates are date-only, so
                 // a filing landing later on the pass's own ET day cannot be told
-                // apart from one the pass already saw. Inclusive re-raises a
-                // seen boundary-day item's badge on every sweep until a full pass
-                // on a *later* ET day advances the
-                // vintage past it (a same-day re-pass re-lands on the boundary);
-                // strict `>` would instead hide the unseen one permanently. One
-                // contract across the filing / earnings legs.
+                // from one the pass already saw. Inclusive re-raises a seen
+                // boundary-day badge until a full pass on a later ET day
+                // advances the vintage; strict `>` would hide the unseen one
+                // permanently. One contract across the filing / earnings legs.
                 let fresh_material: Vec<&RecentFiling> = rows
                     .iter()
                     .filter(|f| {
@@ -965,13 +935,11 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                         format!("{} filed {}", newest.form, newest.filing_date),
                         inp.now,
                     ));
-                    // The statement-and-dividends re-pull: the payout leg's fresh
-                    // value arrives with the filing, not just the fact of it.
                     let fin = inp.data.statements_refresh(&symbol);
-                    // The payout leg: a `None` dividends read with **no recorded
-                    // gap** is the adapter's confirmed non-payer, so a dividend
-                    // elimination reaches the hurdle as zero; a failed retrieval
-                    // (gap recorded) keeps the stored leg instead.
+                    // A `None` dividends read with no recorded gap is the
+                    // adapter's confirmed non-payer, so a dividend elimination
+                    // reaches the hurdle as zero; a failed retrieval (gap
+                    // recorded) keeps the stored leg instead.
                     let dividends_failed = fin
                         .gaps
                         .iter()
@@ -985,11 +953,8 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                         refresh_gaps.push("no quarterly income".to_string());
                     }
                 }
-                // A filing landed but a leg of the value re-pull failed
-                // (statements, balance sheet, or dividends): the fact of the
-                // filing is recorded (the event above), yet the sweep could not
-                // fully evaluate it — the family cannot vouch, so it degrades
-                // rather than clears.
+                // A filing landed but a leg of the re-pull failed: the family
+                // cannot vouch, so it degrades rather than clears.
                 families.push(if refresh_gaps.is_empty() {
                     FamilySweep {
                         family: SweepFamily::Filing,
@@ -1020,9 +985,6 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 note: Some(format!("revision preflight failed: {e}")),
             }),
             Ok(fresh) => {
-                // Stored per-share rows convert onto the fresh basis. The helper
-                // then matches period ids and holds the prior maturity weights
-                // constant, renormalizing them if only a surviving row overlaps.
                 let stored_periods = basis
                     .map(|b| b.consensus_eps_periods.as_slice())
                     .unwrap_or_default();
@@ -1107,7 +1069,6 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             }
         }
 
-        // Earnings re-pull: a fresh actual since the last full pass.
         match inp.data.earnings(&symbol) {
             Err(e) => families.push(FamilySweep {
                 family: SweepFamily::Earnings,
@@ -1155,13 +1116,11 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             let fresh_exposure = fund::exposure_basis(&fresh_fund);
             let equity_fund = stored.class_label.contains("equity")
                 || fresh_exposure.class_label.contains("equity");
-            // Legs the stored basis expects but this refresh couldn't supply:
-            // a missing fresh print is a non-observation, never a zero or a
-            // "change" — those legs degrade the family instead of fabricating
-            // an evidence event. Endpoint gaps ride into the degraded list —
-            // but the weightings legs bear on **equity** funds alone, so a bond
-            // or commodity fund's empty equity weightings are its expected
-            // shape, never a degraded sweep.
+            // A missing fresh print is a non-observation, never a zero or a
+            // "change": those legs degrade the family instead of fabricating an
+            // evidence event. The weightings legs bear on equity funds alone,
+            // so a bond or commodity fund's empty equity weightings are its
+            // expected shape, never a degraded sweep.
             let weightings_gap = |g: &&String| {
                 g.starts_with(crate::fmp::FUND_SECTOR_WEIGHTS_GAP_PREFIX)
                     || g.starts_with(crate::fmp::FUND_COUNTRY_WEIGHTS_GAP_PREFIX)
@@ -1176,16 +1135,12 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             let weightings_degraded =
                 fresh_fund.sector_weights.is_empty() && stored.top_sector.is_some();
             let us_degraded = stored.us_share.is_some() && fresh_exposure.us_share.is_none();
-            // Material `etf/info` change: the expense ratio moving, or the
-            // strategy-classification routing changing. A print appearing
-            // where none was stored is a real change; a stored print the
-            // refresh couldn't read is a degraded leg. The class-label
-            // comparison runs only on a relevantly-ungapped refresh whose
-            // exposure inputs are intact where the label depends on them — a
-            // failed weightings or US-share leg reshapes an equity fund's
-            // *derived* class ("equity fund without usable weightings"), which
-            // is retrieval damage, not a mandate change; a non-equity label
-            // derives from `etf/info` alone.
+            // A print appearing where none was stored is a real change; a
+            // stored print the refresh couldn't read is a degraded leg. The
+            // class-label comparison runs only where the label's exposure
+            // inputs are intact: a failed weightings or US-share leg reshapes
+            // an equity fund's derived class ("equity fund without usable
+            // weightings"), which is retrieval damage, not a mandate change.
             let expense_moved = match (stored.expense_ratio, fresh_exposure.expense_ratio) {
                 (Some(a), Some(b)) => (a - b).abs() > EXPENSE_EPS,
                 (None, Some(_)) => true,
@@ -1199,20 +1154,17 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 .gaps
                 .iter()
                 .any(|g| g.starts_with(crate::fmp::FUND_INFO_GAP_PREFIX));
-            // Every label derives from the asset-class string, so the label-level
-            // comparison additionally requires it: an omitted `assetClass`
-            // reshapes the label to "fund with unresolved strategy class" —
-            // retrieval damage, not a mandate change.
+            // An omitted `assetClass` reshapes the label to "fund with
+            // unresolved strategy class" — retrieval damage, not a mandate
+            // change — so the label comparison requires it.
             let class_comparable = relevant_gaps_clean
                 && fresh_fund.asset_class.is_some()
                 && (!equity_fund || (!weightings_degraded && !us_degraded));
             // The coarse mandate family (equity vs not) derives from `etf/info`
-            // alone, so a real asset-class transition — a stored equity fund
-            // freshly reporting Fixed Income — fires **for every fund** even
-            // while the weightings-shaped label refinement is degraded (the
-            // every-fund asset-class-change contract). Only an unreadable
-            // mandate suppresses it — and that reads the family degraded, never
-            // a silent clear.
+            // alone, so an asset-class transition fires for every fund even
+            // while the weightings-shaped label refinement is degraded. Only an
+            // unreadable mandate suppresses it, and that reads the family
+            // degraded, never a silent clear.
             let mandate_comparable = info_leg_healthy && fresh_fund.asset_class.is_some();
             if info_leg_healthy && fresh_fund.asset_class.is_none() {
                 degraded.push(
@@ -1224,12 +1176,10 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
             let mandate_moved = mandate_comparable
                 && is_equity_label(&stored.class_label)
                     != is_equity_label(&fresh_exposure.class_label);
-            // The structural (option-overlay) flag keeps its class routing, so a
-            // flag transition changes no label — it is its own change leg of the
-            // every-fund contract (a structural-flag reclassification counts).
-            // The flag reads from the fund's *name* blob, so it stays checkable
-            // when only the asset class is missing — but needs a healthy info
-            // leg and a returned name (a missing one would fake a flag-clear).
+            // A structural (option-overlay) flag transition changes no label, so
+            // it is its own change leg. The flag reads from the fund's name, so
+            // it stays checkable when only the asset class is missing, but a
+            // missing name would fake a flag-clear.
             let flag_comparable = info_leg_healthy && fresh_fund.name.is_some();
             let flag_moved =
                 flag_comparable && stored.structural_flag != fresh_exposure.structural_flag;
@@ -1258,8 +1208,6 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                     inp.now,
                 ));
             }
-            // Exposure shift (equity funds, either branch): the US-guard
-            // crossing in either direction, or a top-sector move.
             if equity_fund {
                 match (stored.us_share, fresh_exposure.us_share) {
                     (Some(a), Some(b)) => {
@@ -1326,10 +1274,8 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
                 }
             });
         } else {
-            // No stored comparator (a pre-basis run): none of the fund change
-            // legs can be evaluated, so the family cannot vouch — the
-            // degraded-sweep state, never a claimed clear. Self-resolves when
-            // the next full run persists the exposure basis.
+            // No stored comparator: none of the fund change legs can be
+            // evaluated, so the family cannot vouch — never a claimed clear.
             families.push(FamilySweep {
                 family: SweepFamily::FundInfo,
                 state: SweepState::Unknown,
@@ -1343,11 +1289,9 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
     }
 
     // -- Bridge-excluded band leg (priced only) ---------------------------------
-    // The frozen band read below skips where the last full pass withheld its
-    // comparators, or where the split-bridge anchor cannot be resolved against
-    // the fresh window. A skipped read is a non-detection, never a clear: the
-    // market family cannot vouch for the carried verdict this sweep, so a
-    // claimed `fresh_clear` downgrades to `unknown` with the cause named
+    // A skipped band read is a non-detection, never a clear: the market family
+    // cannot vouch for the carried verdict this sweep, so a claimed
+    // `fresh_clear` downgrades to `unknown` with the cause named
     // (`docs/portfolio-analysis.md` §The quick check, §Starting parameters).
     let graded = match &inp.verdict.disposition {
         VerdictDisposition::Priced(g) => Some(g),
@@ -1388,20 +1332,18 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
     if priced {
         match (basis, inp.rates, inp.price, bridge.filter(|f| *f > 0.0)) {
             (Some(b), Some(r), Some((price, _)), Some(f)) => {
-                // The payout leg refreshes on filing cadence (`docs/portfolio-analysis.md`
-                // §The quick check): a new filing's dividend re-pull replaces the
-                // stored trailing-TTM payout proxy, so a filing-driven change can
-                // reach the hurdle; drivers and percentiles stay the stored basis
-                // (no re-estimation). A gapped dividend read keeps the stored leg.
+                // A new filing's dividend re-pull replaces the stored payout
+                // proxy; drivers and percentiles stay the stored basis
+                // (`docs/portfolio-analysis.md` §The quick check).
                 let mut hurdle_basis = b.clone();
                 if let Some(d) = filing_dividends {
-                    // A fresh filing's per-share dividend arrives on the FRESH
-                    // basis while the scenario runs on the stored one, so it
-                    // converts like the price (`d ⁄ f`) — else a split plus a
-                    // same-sweep filing mis-scales the payout leg by the factor.
+                    // The fresh dividend arrives on the fresh basis while the
+                    // scenario runs on the stored one, so it converts like the
+                    // price (`d ⁄ f`) — else a split plus a same-sweep filing
+                    // mis-scales the payout leg by the factor.
                     hurdle_basis.forward_dividends = d / f;
                 }
-                // The fresh price converts INTO the stored basis (`price ⁄ f`), so
+                // The fresh price converts into the stored basis (`price ⁄ f`) so
                 // the whole scenario set stays on one basis; the total-return
                 // reads are ratios, basis-free either way.
                 let scenario = engine::reanchor_scenarios(&hurdle_basis, *price / f, r.dgs10);
@@ -1487,22 +1429,19 @@ fn sweep_holding(inp: SweepInputs<'_>) -> HoldingQuickState {
         if let (Some((price, _)), Some(g), Some(f), true) =
             (inp.price, graded, bridge.filter(|f| *f > 0.0), basis.is_some())
         {
-            // The frozen band — the last full pass's stored twelve-month band on
-            // the engine arm — converts onto the fresh basis (`target × f`), so
-            // the compared — and rendered — pair share one basis; an
-            // unresolvable bridge skips the read (fail closed). The read runs
-            // only where the pass persisted its basis: a priced row with none
-            // (its engine computed no basis) has nothing to certify its band
-            // against — absent beats wrong.
+            // The frozen band converts onto the fresh basis (`target × f`) so
+            // the compared and rendered pair share one basis; an unresolvable
+            // bridge skips the read (fail closed). The read runs only where the
+            // pass persisted its basis: a priced row with none has nothing to
+            // certify its band against — absent beats wrong.
             let band = g.price_targets.twelve_month.as_ref().map(|t| (t.bear * f, t.bull * f));
             if let Some((bear, bull)) = band {
                 let (lo, hi) = (bear.min(bull), bear.max(bull));
-                // The flag fires on a *change* in spot's relationship to the frozen
+                // The flag fires on a change in spot's relation to the frozen
                 // band, never on the standing state: a band authored with spot
-                // already outside was an examined observation (the model wrote its
-                // document seeing it), so re-raising it every sweep — and force-
-                // including the holding on every selective run — is noise. A
-                // verdict authored with no spot to relate reads as authored-inside.
+                // already outside was an examined observation, so re-raising it
+                // every sweep is noise. A verdict authored with no spot to
+                // relate reads as authored-inside.
                 let current = crate::portfolio::BandRelation::of(*price, bear, bull);
                 let authored = g
                     .authored_band_relation
@@ -1603,17 +1542,13 @@ mod tests {
     #[test]
     fn the_sweep_dates_itself_on_the_et_session_not_the_utc_prefix() {
         use super::sweep_session_date;
-        // 9:30 PM ET on 2026-08-04 — the UTC instant has rolled to the 5th, but the
-        // sweep belongs to the 4th's session. The old UTC-prefix read dated it the
-        // 5th, which aged a rate print by one against `RATE_CACHE_MAX_AGE_DAYS` (a
-        // FRED observation date is a market day) and put the sweep a day ahead of
-        // the ET-dated last-pass boundaries it looks back to.
+        // 9:30 PM ET on 2026-08-04: the UTC instant has rolled to the 5th, but
+        // the sweep belongs to the 4th's session.
         assert_eq!(sweep_session_date("2026-08-05T01:30:00+00:00"), "2026-08-04");
         // Mid-session, where the two readings agree.
         assert_eq!(sweep_session_date("2026-08-05T15:00:00+00:00"), "2026-08-05");
-        // Degradation is the old prefix read, never a panic or an empty date: a
-        // date-only value carries no instant to convert, and a malformed stamp keeps
-        // the pre-conversion behavior rather than vanishing.
+        // A date-only or malformed stamp degrades to the prefix read, never a
+        // panic or an empty date.
         assert_eq!(sweep_session_date("2026-08-05"), "2026-08-05");
         assert_eq!(sweep_session_date("2026-08-05T99:99:99"), "2026-08-05");
     }
@@ -1863,11 +1798,9 @@ mod tests {
 
     #[test]
     fn the_evidence_event_boundary_is_per_holding_not_per_run() {
-        // Two holdings in one run: FRESH was analyzed by the run itself; CARRD
-        // rides vintage-stamped from an older pass (a selective run's carry). An
-        // earnings actual dated between the two vintages is an unexamined event
-        // for the carried holding only — the boundary is each holding's own
-        // last full pass, never the run's `created_at`.
+        // FRESH was analyzed by the run itself; CARRD rides vintage-stamped from
+        // an older pass. An earnings actual dated between the two vintages is an
+        // unexamined event for the carried holding only.
         let conn = mem();
         let mut fresh = priced_verdict("FRESH");
         fresh.analyzed_at = Some("2026-08-01T00:00:00Z".into());
@@ -1943,8 +1876,6 @@ mod tests {
         // An evening-ET full pass: 2026-08-05 01:30 UTC = 2026-08-04 21:30 EDT.
         // The boundary is the ET session day (the 4th), inclusive: an 8-K and an
         // earnings actual dated the pass's own ET day are visible to the sweep.
-        // Under the old UTC-prefix strict boundary (`> "2026-08-05"`) both were
-        // permanently invisible — the piece-3 ruling-1 repro.
         let conn = mem();
         let mut verdict = priced_verdict("AAPL");
         verdict.analyzed_at = Some("2026-08-05T01:30:00+00:00".into());
@@ -1993,8 +1924,7 @@ mod tests {
     fn the_sweep_price_pass_runs_under_its_own_step() {
         // Every request row needs an owning backend step: a row arriving while
         // nothing runs synthesizes the tracker's phantom never-finished
-        // "Baseline market data" step (Finding 6's quick-check half — the
-        // price pass fetches per symbol before the first per-holding step).
+        // "Baseline market data" step.
         let conn = mem();
         let run = sample_run(priced_verdict("AAPL"), audit_for("AAPL", None));
         store::record_run(&conn, &run).unwrap();
@@ -2033,8 +1963,8 @@ mod tests {
     #[test]
     fn an_unreadable_only_store_refuses_as_unreadable_not_never_ran() {
         // Rows that decode on none of the loud-skip passes are unreadable, not
-        // absent — the refusal must not claim "no run exists" over persisted
-        // (if corrupt) work (combined-range review).
+        // absent: the refusal must not claim "no run exists" over persisted
+        // (if corrupt) work.
         let conn = mem();
         conn.execute(
             "INSERT INTO portfolio_runs (run_id, created_at, run_json) \
@@ -2068,9 +1998,8 @@ mod tests {
 
     #[test]
     fn authored_outside_band_flags_only_on_a_relation_change() {
-        // A band authored with spot already outside it was an examined observation
-        // (the model wrote its document seeing it): the standing state must not flag —
-        // badging the holding on every selective run — sweep after sweep.
+        // A band authored with spot already outside it was an examined
+        // observation: the standing state must not flag sweep after sweep.
         let insert = |conn: &rusqlite::Connection, authored| {
             let mut verdict = priced_verdict("AAPL");
             if let crate::portfolio::VerdictDisposition::Priced(g) = &mut verdict.disposition {
@@ -2184,9 +2113,8 @@ mod tests {
     #[test]
     fn an_unresolvable_bridge_excludes_the_band_and_revision_legs_rather_than_running_them() {
         // An anchor whose bar date is absent from the fresh window: the basis is
-        // unverifiable — the frozen band and the revision comparator are
-        // excluded, never run cross-basis, and the families that would have
-        // vouched through them read `unknown` with the cause named.
+        // unverifiable, so the band and revision comparators are excluded
+        // rather than run cross-basis.
         let conn = mem();
         let mut audit = audit_for("AAPL", Some(basis()));
         audit.authoring_close =
@@ -2214,15 +2142,12 @@ mod tests {
                 .is_some_and(|n| n.contains("price basis unverifiable")),
             "{market:?}"
         );
-        // Neither can the revision family vouch: its stored comparator was
-        // excluded, so a successful retrieval must not read `fresh_clear`.
         let revision = h
             .families
             .iter()
             .find(|f| f.family == SweepFamily::Revision)
             .expect("revision family present");
         assert_eq!(revision.state, SweepState::Unknown, "{revision:?}");
-        // The rate family too — the hurdle cannot re-anchor across the bridge.
         let rate = h
             .families
             .iter()
@@ -2233,19 +2158,15 @@ mod tests {
 
     #[test]
     fn a_withheld_comparator_row_reads_unknown_not_fresh_clear() {
-        // The full-pass-output → quick-check seam: a priced row carrying its
-        // anchor with no quick basis — the shape a pass whose engine computed
-        // no basis leaves (no full pass withholds one). The next sweep must
-        // read the affected families `unknown` — never a silent `fresh_clear`
-        // vouch through legs that don't exist — and must not bridge the band
-        // (a conversion against an uncertified basis would read spot outside a
+        // A priced row carrying its anchor with no quick basis: the affected
+        // families must read `unknown`, and the band must not be bridged (a
+        // conversion against an uncertified basis would read spot outside a
         // mis-scaled band and flag).
         let conn = mem();
         let mut verdict = priced_verdict("AAPL");
         if let crate::portfolio::VerdictDisposition::Priced(g) = &mut verdict.disposition {
-            // The old-basis band [150, 260] as the unresolvable pass stamped it
-            // on the fresh (÷4) basis: bridged again by the sweep's 0.25 it
-            // would read [9.4, 16.3] against a price of 48.
+            // The band [150, 260] stamped on the fresh (÷4) basis: bridged again
+            // by the sweep's 0.25 it would read [9.4, 16.3] against a price of 48.
             g.price_targets.twelve_month = Some(PriceTarget {
                 base: 52.5,
                 bear: 37.5,
@@ -2290,9 +2211,6 @@ mod tests {
 
     #[test]
     fn a_tail_sweep_stamps_its_badges_with_the_parent_runs_pinned_instant() {
-        // The tail sweep is part of its parent run: every badge it raises dates
-        // from the run's one pinned instant, never a second clock read that
-        // could cross the 8 PM ET rollover inside one run.
         let run = sample_run(priced_verdict("AAPL"), audit_for("AAPL", Some(basis())));
         let tail = std::collections::HashSet::from(["AAPL".to_string()]);
         // Band [150, 260]; 140 sits below it, so the band monitor flags.
@@ -2424,7 +2342,6 @@ mod tests {
         assert!(kinds.contains(&EvidenceEventKind::RevisionMove));
         // Events are the quiet badge, never the amber flag.
         assert!(h.flag.is_none());
-        // A second identical sweep does not duplicate the events.
         let s2 = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
         assert_eq!(s2.holdings[0].evidence_events.len(), h.evidence_events.len());
     }
@@ -2551,7 +2468,6 @@ mod tests {
         // A role-risk fund carries no band and no hurdle read: the change legs
         // are quiet badges, never the amber flag.
         assert!(h.flag.is_none(), "{:?}", h.flag);
-        // A repeat sweep against the SAME print does not duplicate the events.
         let s2 = run_quick_check(&stub, &conn, &noop_ctx()).unwrap();
         assert_eq!(s2.holdings[0].evidence_events.len(), h.evidence_events.len());
     }
@@ -2605,9 +2521,8 @@ mod tests {
         )
         .unwrap();
 
-        // Weightings failed: the fresh derivation reads "equity fund without
-        // usable weightings" — retrieval damage, not a mandate change — and the
-        // stored top sector / US share have no fresh side. No event may fire.
+        // Weightings failed: the fresh label reads "equity fund without usable
+        // weightings" — retrieval damage, not a mandate change.
         let mut stub = StubData::quiet(200.0, "2026-08-01");
         stub.fund = FundData {
             symbol: "BONDX".into(),
@@ -2636,10 +2551,8 @@ mod tests {
 
     #[test]
     fn a_non_equity_fund_is_not_degraded_by_its_empty_equity_weightings() {
-        // A bond fund's empty equity weightings are its expected shape — the
-        // weightings legs bear on equity funds alone, so the recorded endpoint
-        // gaps must not read the family unknown (which would badge the
-        // fund on every selective run forever).
+        // A bond fund's empty equity weightings are its expected shape, so the
+        // recorded endpoint gaps must not read the family unknown.
         let conn = mem();
         store::insert_run(
             &conn,
@@ -2683,10 +2596,9 @@ mod tests {
 
     #[test]
     fn a_mandate_transition_fires_for_every_fund_even_with_degraded_weightings() {
-        // A stored US equity fund freshly reports Fixed Income. The coarse
-        // mandate family derives from `etf/info` alone, so the change event
-        // must fire even though the (now empty) equity-weight endpoints record
-        // gaps that keep the label-level comparison off.
+        // A stored US equity fund freshly reports Fixed Income: the change
+        // event fires even though the empty equity-weight endpoints record gaps
+        // that keep the label-level comparison off.
         let conn = mem();
         store::insert_run(
             &conn,
@@ -2721,8 +2633,7 @@ mod tests {
         let h = &s.holdings[0];
         let kinds: Vec<EvidenceEventKind> = h.evidence_events.iter().map(|e| e.kind).collect();
         assert!(kinds.contains(&EvidenceEventKind::FundInfoChange), "{kinds:?}");
-        // The degraded weighting legs still read the family unknown — the
-        // transition sweep badges rather than silently clearing.
+        // The degraded weighting legs still read the family unknown.
         let fam = h
             .families
             .iter()
@@ -2733,10 +2644,8 @@ mod tests {
 
     #[test]
     fn an_overlay_flag_transition_fires_the_change_event_with_no_label_change() {
-        // A US equity fund newly reading covered-call: the structural flag flips
-        // while the class label stays "US equity fund" — the every-fund contract
-        // counts a structural-flag reclassification, so the event must fire off
-        // the persisted flag, not the label.
+        // The structural flag flips while the class label stays "US equity
+        // fund", so the event must fire off the persisted flag, not the label.
         let conn = mem();
         store::insert_run(
             &conn,
@@ -2783,10 +2692,9 @@ mod tests {
 
     #[test]
     fn a_missing_asset_class_degrades_but_the_overlay_leg_still_reads_from_the_name() {
-        // etf/info returns a usable name but no assetClass (which records no
-        // gap): the mandate and label legs cannot be checked — the family
-        // degrades — while the overlay flag, read from the name blob, still
-        // detects a real covered-call transition.
+        // A usable name but no assetClass (which records no gap): the mandate
+        // and label legs degrade while the overlay flag, read from the name,
+        // still detects the covered-call transition.
         let conn = mem();
         store::insert_run(
             &conn,
@@ -2841,8 +2749,6 @@ mod tests {
 
     #[test]
     fn a_fund_without_a_stored_exposure_basis_reads_unknown_not_clear() {
-        // A pre-basis run has no comparator: none of the fund change legs can be
-        // evaluated, so the family must not claim a clear it never checked.
         let conn = mem();
         store::insert_run(&conn, &fund_run(None)).unwrap();
         let mut stub = StubData::quiet(200.0, "2026-08-01");
@@ -2929,9 +2835,8 @@ mod tests {
             .expect("the elimination newly fails the hurdle");
         assert_eq!(flag.trigger, FlagTrigger::HurdleNewlyFails);
 
-        // The same read with a recorded dividend gap is a failed retrieval —
-        // the stored payout leg stands (no flag) and the filing family reads
-        // `unknown` (the re-pull was incomplete).
+        // The same read with a recorded dividend gap is a failed retrieval: the
+        // stored payout leg stands and the filing family reads `unknown`.
         let conn = mem();
         let verdict = priced_verdict("AAPL");
         store::insert_run(&conn, &sample_run(verdict, audit_for("AAPL", Some(dividend_basis()))))

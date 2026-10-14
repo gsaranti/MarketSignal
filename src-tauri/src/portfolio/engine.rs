@@ -1,20 +1,8 @@
 //! The deterministic financial-analysis engine (`docs/portfolio-analysis.md` §The
-//! per-holding pipeline, step 2; `docs/local-models.md §Context-memory discipline` —
-//! "Compute, don't guess"). Every **engine-arm** number in a holding's verdict
-//! originates here: the four sub-scores, the composite grade they roll up to, the
-//! bear / base / bull bands at three horizons with their methodology, the
-//! options-activity signal, the forensic reads and the engine's own rung. The
-//! engine never guesses — a missing input becomes a gap, never a fabricated
-//! level. The model authors its own arm beside these — the thesis document and
-//! its typed appendix — and model-arm values never alter or bind the engine arm
-//! (the boundary statement: `docs/portfolio-analysis.md` §The holding verdict).
-//!
-//! All formulas are simple, bounded, and **calibratable** — the grade-weight
-//! formula, the risk-tier thresholds, and the options-signal parameters are the
-//! constants this slice deliberately leaves open to shadow-tune against live runs
-//! rather than pinning (the durable plan-time parameters live in
-//! [`crate::portfolio`]). They are gathered at the top of the module so the
-//! calibration surface is one place.
+//! per-holding pipeline, step 2). Every engine-arm number in a holding's verdict
+//! originates here; a missing input becomes a gap, never a fabricated level, and
+//! model-arm values never alter or bind the engine arm. The calibratable
+//! constants are gathered at the top so the calibration surface is one place.
 
 use serde::{Deserialize, Serialize};
 
@@ -28,84 +16,45 @@ use crate::schwab::{OptionChain, OptionKind};
 
 // ---- Calibration surface (NOT pinned — shadow-tune against live runs) ---------
 
-/// Composite-grade weights over the **letter** sub-scores (`docs/portfolio-analysis.md`
-/// §Starting parameters — the settled ex-momentum re-weight: momentum is computed
-/// alongside but lives **outside the letter**, re-homed to the market-setup read in
-/// the conviction / positioning context, because a price move is the one grade input
-/// that isn't a business fundamental). `grade_from_subscores` divides by their sum,
-/// so they need not total 1.0. A stock's sub-scores are the factor composite's
-/// axes (`portfolio::factors`); an axis none of whose factors resolved is imputed
-/// to the neutral midpoint (50) by `analyze` before the roll-up, so a missing input
-/// pulls the composite toward neutral rather than being dropped — an
-/// impute-to-neutral, not a renormalization over the present sub-scores. One
-/// roll-up serves both branches.
+/// Composite-grade weights over the letter sub-scores (`docs/portfolio-analysis.md`
+/// §Starting parameters). Momentum is computed alongside but lives outside the
+/// letter. `grade_from_subscores` divides by their sum, so they need not total
+/// 1.0. An axis none of whose factors resolved is imputed to the neutral
+/// midpoint (50) by `analyze` before the roll-up — an impute-to-neutral, not a
+/// renormalization over the present sub-scores.
 const W_QUALITY: f64 = 0.40;
 const W_VALUATION: f64 = 0.30;
 const W_RISK: f64 = 0.30;
 
-/// Composite-score cutoffs for each letter grade (0–100, higher better). Drafted
-/// for grade-v3's scores, where 50 is a sector-typical name: a factor scores 50
-/// at its band's anchor and at its own history's median, so C spans the
-/// sector-typical middle. Shadow-tuned after the dev-run batch.
+/// Composite-score cutoffs for each letter grade (0–100, higher better). A
+/// factor scores 50 at its band's anchor and at its own history's median, so C
+/// spans the sector-typical middle. Drafted, calibratable.
 const GRADE_A: f64 = 70.0;
 const GRADE_B: f64 = 60.0;
 const GRADE_C: f64 = 45.0;
 const GRADE_D: f64 = 35.0;
 
-/// Evidence floor: the minimum number of real **letter** sub-scores (quality /
-/// valuation / risk — momentum is context, not a letter input) below which the
-/// holding abstains rather than grading on too little
-/// (`docs/portfolio-analysis.md` §Evidence floor). A stock's sub-score is real
+/// Evidence floor: the minimum number of real letter sub-scores (quality /
+/// valuation / risk — momentum is not a letter input) below which the holding
+/// abstains (`docs/portfolio-analysis.md` §Evidence floor). A sub-score is real
 /// when at least one of its axis's factors resolved ([`letter_axis`]).
 const MIN_SUBSCORES_FOR_GRADE: usize = 2;
 
-// -- The momentum sub-score's band on the fund branch (`docs/portfolio-analysis.md`
-//    §Starting parameters — a clamped linear map, `(lo, hi)` mapping lo → 0 and
-//    hi → 100 through `scale`). A stock's sub-scores are the factor composite's
-//    axes (`portfolio::factors`), its momentum among them; the stock bands this
-//    block carried through grade-v2.3 retired with grade-v3.
-
-/// Momentum (context, outside the letter): trailing return −30% → 0, +30% → 100.
+/// The fund branch's momentum band (`docs/portfolio-analysis.md` §Starting
+/// parameters): a clamped linear map through `scale`, trailing return −30% → 0,
+/// +30% → 100. Momentum is context, outside the letter.
 const MOMENTUM_TRAILING_RETURN_BAND: (f64, f64) = (-0.30, 0.30);
 
-/// The grade-parameter version, stamped on each run's audit
-/// (`HoldingAudit.grade_parameter_version`) so a parameter boundary — a band
-/// recalibration moving letters with no input change, or a stamped sub-score's
-/// input re-homing — is recognizable to the self-review's computed reads for
-/// what it changed ([`grade_parameter_change`]).
-/// v2 (the 2026-08-03 shadow-tune against run
-/// `3b21ae85`, certified v1-exact first): the recentered-growth bands above plus
-/// the negative-D/E → 0 guard.
-// v2.1 (2026-08-05, piece-3 walk): the dossier's P/E derive went signed, making
-// the negative-P/E fixed-score guard reachable for loss-makers — an input-
-// semantics change that can move letters, so it is stamped as its own version
-// even though every band, weight, and cutoff is unchanged.
-// v2.2 (2026-08-27, the large-scale review's fund-momentum finding): the fund
-// path's momentum sub-score reads the 180-day `price_history` through
-// `momentum_score` — the stock read — instead of the ~1,600-day `daily_closes`
-// against the same band, which pinned funds at 0 / 100. Momentum is outside the
-// letter, so no letter moves; the stamp marks that a persisted fund
-// `sub_scores.momentum` means a different read, which the what-changed delta
-// and the frozen `CalibrationSnapshot` consume. Bands, weights, and cutoffs
-// are unchanged from `grade-v2.1`.
-// v2.3 (2026-08-30, Review 2 N5): the fund valuation admits a sector-P/E
-// surface only when both exchange legs served, so a partial board response can
-// no longer move a fund's valuation sub-score or letter without a source gap.
-// v3 (2026-10-13, the factor machinery's task 2): a stock's quality, valuation,
-// risk and momentum sub-scores are the factor composite's axes
-// (`portfolio::factors`) — sector- and history-normalized factors chosen by the
-// metric class — replacing the clamped maps over margins, multiples, volatility
-// and leverage; the letter cutoffs move to A 70 / B 60 / C 45 / D 35 on both
-// branches, the weights unchanged. The fund's sub-scores read as before, so only
-// its letter can move.
-// Consumers read what a boundary changed through [`grade_parameter_change`] —
-// extend it with every bump.
+/// The grade-parameter version stamped on each run's audit
+/// (`HoldingAudit.grade_parameter_version`), so a boundary where letters or a
+/// stamped sub-score can move with no input change is recognizable to the
+/// self-review's computed reads. Extend [`grade_parameter_change`] with every
+/// bump.
 pub const GRADE_PARAMETER_VERSION: &str = "grade-v3";
 
-/// What a grade-parameter boundary changed for a persisted record — the meaning a
-/// stamp mismatch carries to its consumer (the self-review's method-change
-/// line), so it names the actual change rather than a generic band
-/// recalibration a holding may not have been touched by.
+/// What a grade-parameter boundary changed for a persisted record — the meaning
+/// a stamp mismatch carries to the self-review's method-change line, so it
+/// names the actual change rather than a generic recalibration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GradeParameterChange {
     /// Bands, weights, cutoffs, or a letter-bearing input's semantics moved —
@@ -126,7 +75,7 @@ pub(crate) enum GradeParameterChange {
 }
 
 impl GradeParameterChange {
-    /// Which change a boundary crossing several names: the stock's factor
+    /// Which change names a boundary crossing several: the stock's factor
     /// rebuild over the letter recalibration it supersedes; on the fund branch
     /// the source-basis change over the momentum re-homing, and the redrawn
     /// cutoffs below every earlier fund change, so a fund prior across one
@@ -142,13 +91,11 @@ impl GradeParameterChange {
     }
 }
 
-/// The branch a stamped record was graded on. The fund path carries its own
-/// bands and never reads the holding P/E, so a bump can touch one branch and
+/// The branch a stamped record was graded on: a bump can touch one branch and
 /// leave the other's records meaning exactly what they did. The scenario-target
-/// stamp history reads the same split — the fund form swaps the consensus
-/// ladder for the exposure composite — so one branch key serves both
-/// ([`target_parameter_change`]). The self-review's parameter-boundary line
-/// reads the prior verdict's own branch (`docs/portfolio-workflow.md` §Step 6b).
+/// stamp history reads the same split ([`target_parameter_change`]); the
+/// self-review reads the prior verdict's own branch
+/// (`docs/portfolio-workflow.md` §Step 6b).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GradeBranch {
     Stock,
@@ -157,27 +104,17 @@ pub(crate) enum GradeBranch {
 
 /// The stamp history, oldest first: each version with what its bump changed on
 /// the stock and the fund branch. The boundary a prior sits across is the union
-/// of the rows after its version, read on the holding's branch — so every bump
+/// of the rows after its version, read on the holding's branch, so every bump
 /// appends a row here (a test pins the last row to the current stamp).
 const GRADE_PARAMETER_HISTORY: &[(
     &str,
     Option<GradeParameterChange>,
     Option<GradeParameterChange>,
 )] = &[
-    // v2: the stock sub-score bands recentered plus the negative-D/E guard. The
-    // fund path scores on its own bands and percentile, untouched.
     ("grade-v2", Some(GradeParameterChange::Letters), None),
-    // v2.1: the dossier's P/E derive went signed — the stock valuation path only;
-    // the fund path never reads the holding P/E.
     ("grade-v2.1", Some(GradeParameterChange::Letters), None),
-    // v2.2: fund momentum re-homed to the short price window — the fund branch
-    // only; a stock's record means exactly what it did.
     ("grade-v2.2", None, Some(GradeParameterChange::FundMomentum)),
-    // v2.3: a one-board sector-P/E response is a typed gap rather than a fund
-    // valuation input. Stock valuation never reads this source.
     ("grade-v2.3", None, Some(GradeParameterChange::FundSectorPeBasis)),
-    // v3: the stock sub-scores rebuilt from the factor composite; the shared
-    // cutoffs redrawn, so a fund's letter alone can move.
     (
         "grade-v3",
         Some(GradeParameterChange::FactorScores),
@@ -187,11 +124,10 @@ const GRADE_PARAMETER_HISTORY: &[(
 
 /// The change a prior record's stamp sits across on `branch` — the branch the
 /// PRIOR record was scored on — or `None` when the record carries the current
-/// stamp or the boundary changed nothing on that branch. A prior with no stamp
-/// (no audit row for the symbol) and an unrecognized stamp both read as no
-/// describable boundary: asserting a cause whose semantics are unknowable would
-/// hand the model citable evidence for it (the resume gate and the certification
-/// leg still refuse the raw mismatch).
+/// stamp or the boundary changed nothing on that branch. A missing or
+/// unrecognized stamp also reads as `None`: asserting a cause whose semantics
+/// are unknowable would hand the model citable evidence for it (the resume gate
+/// and the certification leg still refuse the raw mismatch).
 pub(crate) fn grade_parameter_change(
     prior: Option<&str>,
     branch: GradeBranch,
@@ -209,25 +145,21 @@ pub(crate) fn grade_parameter_change(
             GradeBranch::Stock => *stock,
             GradeBranch::Fund => *fund,
         })
-        // The highest-precedence change names the boundary
-        // (`GradeParameterChange::precedence`).
         .max_by_key(|change| change.precedence())
 }
 
 /// Fallback three-month scenario half-band (fraction of the base target) when
-/// realized volatility can't be computed — the retired one-month leg's 5%
-/// scaled by √3 (targets-v7). The twelve-month band needs no fallback under v2
-/// — its bear/bull ARE the scenario prices.
+/// realized volatility can't be computed: 5% scaled by √3. The twelve-month
+/// band needs no fallback — its bear/bull are the scenario prices.
 const THREE_MONTH_FALLBACK_BAND: f64 = 0.087;
 
 /// Trading sessions the three-month band covers — the √t horizon the daily
-/// realized volatility is scaled to (targets-v7: the near-horizon leg moved
-/// from 21 to 63 sessions). The suite's convention: the dispersion floor
-/// annualizes by √252, the technology-event pre-flag scales by √sessions.
+/// realized volatility is scaled to. The suite's convention: the dispersion
+/// floor annualizes by √252, the technology-event pre-flag scales by √sessions.
 const THREE_MONTH_SESSIONS: f64 = 63.0;
 
-/// The three-month half-band's clamp — the retired one-month leg's [2%, 15%]
-/// scaled by √3 (`docs/portfolio-analysis.md` §Starting parameters).
+/// The three-month half-band's clamp: [2%, 15%] scaled by √3
+/// (`docs/portfolio-analysis.md` §Starting parameters).
 const THREE_MONTH_BAND_CLAMP: (f64, f64) = (0.035, 0.26);
 
 /// The three-year leg compounds each scenario's twelve-month driver this many
@@ -235,8 +167,8 @@ const THREE_MONTH_BAND_CLAMP: (f64, f64) = (0.035, 0.26);
 /// declared extrapolation).
 const THREE_YEAR_EXTRA_YEARS: i32 = 2;
 
-// -- v2 rate-anchored scenario-target function (`docs/portfolio-analysis.md`
-//    §Starting parameters — the settled shape; every rate/return is a decimal ratio).
+// -- The rate-anchored scenario-target function (`docs/portfolio-analysis.md`
+//    §Starting parameters); every rate/return is a decimal ratio.
 
 /// The trailing anchor window the scenario multiple re-anchors over, in quarters.
 const ANCHOR_WINDOW_QUARTERS: usize = 12;
@@ -253,94 +185,61 @@ const DEGENERATE_DENOMINATOR_EPS: f64 = 0.01;
 /// date is the period end plus this many days (the suite's freshness-basis constant).
 pub(crate) const FILING_GRACE_DAYS: i64 = 45;
 
-/// Sanity clamp on the implied annual driver growth versus the trailing print
-/// (the v1 bound, retained by the v2 ladder). Released under the targets-v4
-/// trough signature — see [`CLAMP_RELEASE_MIN_CONSENSUS_ROWS`].
+/// Sanity clamp on the implied annual driver growth versus the trailing print.
+/// Released under the trough signature — see [`CLAMP_RELEASE_MIN_CONSENSUS_ROWS`].
 const DRIVER_GROWTH_MIN: f64 = -0.25;
 const DRIVER_GROWTH_MAX: f64 = 0.35;
 
-/// Anchor-multiple sanity bound (targets-v4): an anchor observation whose raw
-/// multiple exceeds the holding's **current** trailing multiple by more than this
-/// factor is dropped before the percentile surfaces. A trailing-multiple anchor
-/// exists to describe a multiple regime the market actually paid; one several
-/// times richer than today's own multiple inside a ~3-year window is a
-/// denominator artifact (a near-zero-EPS quarter — attempt 2's RKT anchored at
-/// 420×/1223×/2511× against a 90× current multiple) or a departed valuation
-/// regime (LCID's bubble-era P/S band), not reversion evidence. Relative rather
-/// than absolute so a genuinely extreme regime the market still pays (TSLA at
-/// 351× against 66–297× anchors) keeps its history. Drafted, calibratable
-/// (`docs/verification/2026-08-13-big-run-attempt-2.md` §Workstream 3).
+/// Anchor-multiple sanity bound: an anchor observation whose raw multiple
+/// exceeds the holding's **current** trailing multiple by more than this factor
+/// is dropped before the percentile surfaces. A multiple several times richer
+/// than today's inside a ~3-year window is a denominator artifact (a
+/// near-zero-EPS quarter) or a departed valuation regime, not reversion
+/// evidence. Relative rather than absolute so a genuinely extreme regime the
+/// market still pays keeps its history. Drafted, calibratable.
 const ANCHOR_MULTIPLE_SANITY_FACTOR: f64 = 3.0;
 
-/// Corroboration floor for the targets-v4 **trough clamp release**: with at least
-/// this many forward consensus rows **contributing to the selected rung's
-/// blended mid** (the per-field counts on [`ConsensusEstimate`], not
-/// `periods_used`) AND the current
-/// trailing multiple sitting above the anchor window's own rich-end (P75) raw
-/// multiple AND the trailing print itself depressed against the window's
-/// demonstrated earning power ([`TROUGH_PRINT_FRACTION`]) — a recent earnings
-/// trough against a normal-multiple history, where price held while the trailing
-/// print collapsed — the growth clamp is released and the corroborated consensus
-/// prices unclamped. Without the release the clamp compresses valid recovery
-/// consensus to trough scale (attempt 2's GM: a $14.35 consensus crushed to a
-/// $2.67 driver → a −79% "base"). The gates deliberately exclude whole-window
-/// troughs (LUV), downward re-ratings (CRM), and price-driven multiple expansion
-/// with earnings intact (the rich-multiple rally — Codex round 1, finding 1),
-/// where releasing would remove the sanity bound exactly when valuation is
-/// stretched. Drafted, calibratable.
+/// Corroboration floor for the trough clamp release: with at least this many
+/// forward consensus rows contributing to the selected rung's blended mid (the
+/// per-field counts on [`ConsensusEstimate`], not `periods_used`) AND the
+/// current trailing multiple above the anchor window's own rich-end (P75) raw
+/// multiple AND the trailing print depressed against the window's demonstrated
+/// earning power ([`TROUGH_PRINT_FRACTION`]), the growth clamp is released and
+/// the corroborated consensus prices unclamped; without it the clamp compresses
+/// valid recovery consensus to trough scale. The gates deliberately exclude
+/// whole-window troughs, downward re-ratings, and price-driven multiple
+/// expansion with earnings intact, where releasing would remove the sanity
+/// bound exactly when valuation is stretched. Drafted, calibratable.
 const CLAMP_RELEASE_MIN_CONSENSUS_ROWS: u8 = 2;
 
 /// The release's direct trough test: the trailing print must sit below this
-/// fraction of the anchor window's **largest** admissible trailing print — the
-/// earning power the issuer has actually demonstrated inside the ~3-year window.
-/// A multiple can sit above its own history two ways (earnings collapsed, or
+/// fraction of the anchor window's largest admissible trailing print. A
+/// multiple can sit above its own history two ways (earnings collapsed, or
 /// price rallied); only the first is a trough, and only the print itself can
 /// tell them apart. Drafted, calibratable.
 const TROUGH_PRINT_FRACTION: f64 = 0.67;
 
-/// Minimum scenario half-spread on the price axis (decimal, around the base target):
-/// the dispersion floor `spread_anchored_scenarios` widens a too-tight bear/bull band
-/// to, volatility-scaled between these bounds (`docs/portfolio-analysis.md` §Starting
-/// parameters). Zero scenario dispersion degenerates the three-state hurdle into a
-/// point test, so an artificially flat surface (near-realized consensus, the
-/// current-multiple carry) reads as false certainty — recorded when it binds.
+/// Minimum scenario half-spread on the price axis (decimal, around the base
+/// target), volatility-scaled between these bounds
+/// (`docs/portfolio-analysis.md` §Starting parameters). Zero scenario
+/// dispersion degenerates the three-state hurdle into a point test, so an
+/// artificially flat surface reads as false certainty — recorded when it binds.
 const DISPERSION_FLOOR_MIN: f64 = 0.05;
 const DISPERSION_FLOOR_MAX: f64 = 0.20;
 /// Scale from annualized realized volatility to the half-spread floor.
 const DISPERSION_FLOOR_VOL_SCALE: f64 = 0.5;
 
-/// The scenario-target function's parameter version, stamped on each run's audit so
-/// target calibration never mixes bases (`docs/portfolio-analysis.md` §Outcome
-/// learning). v3: the NTM consensus blend, the dispersion floor, and the recorded
-/// clamp-collapse — run `3b21ae85` is the v2 baseline. v4: the anchor-multiple
-/// sanity bound and the trough clamp release, drafted against attempt 2's
-/// persisted dataset (run `6a52f1dd` is the v3 baseline;
-/// `docs/verification/2026-08-13-big-run-attempt-2.md` §Workstream 3). v5: the
-/// one-month band √t-scaled to its 21 sessions under the unchanged clamp (ruled
-/// 2026-08-27 — a units inconsistency, not a calibration), and the anchor
-/// share-count basis — each historical revenue-per-share print denominated on
-/// an in-window diluted count — cut the same session without its own stamp, so
-/// v5 names both. v6: the fund form requires both exchange legs for its
-/// sector-P/E snapshot and history; a partial board response is a gap, never a
-/// target input. v7: the near-horizon leg is the **three-month** band — base =
-/// spot × (1 + PR_base ⁄ 4), the half-band √t-scaled to 63 sessions under the
-/// [3.5%, 26%] clamp with the 8.7% fallback (each the one-month leg's constant
-/// scaled by √3) — and the **three-year** leg is new: on the stock form each
-/// scenario's twelve-month driver compounded two further years at the clamped
-/// annual growth the two coming fiscal-year rows imply, times the same scenario
-/// multiple, the dispersion floor's half-spread scaled by √3; on the fund form
-/// the twelve-month scenario prices held unchanged, recorded flat-growth
-/// (`docs/portfolio-analysis.md` §Starting parameters). The stamp moves
-/// whenever a stored target's basis changes, by correction as much as by
-/// calibration.
+/// The scenario-target function's parameter version, stamped on each run's
+/// audit so target calibration never mixes bases (`docs/portfolio-analysis.md`
+/// §Outcome learning). The stamp moves whenever a stored target's basis
+/// changes, by correction as much as by calibration; extend
+/// [`SCENARIO_TARGET_PARAMETER_HISTORY`] with every bump.
 pub const SCENARIO_TARGET_PARAMETER_VERSION: &str = "targets-v7";
 
 /// The horizons a scenario-target parameter boundary can have moved on one
-/// branch — the meaning a target-stamp mismatch carries to its consumer (the
-/// self-review's method-change line), so it names the horizons
-/// the boundary could actually have moved rather than "the targets" (the
-/// 2026-08-24 review's Codex I11, the grade stamp's [`GradeParameterChange`]
-/// mirrored onto the target axis).
+/// branch — the meaning a target-stamp mismatch carries to the self-review's
+/// method-change line, so it names the horizons the boundary could actually
+/// have moved rather than "the targets".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TargetHorizons {
     pub three_month: bool,
@@ -374,9 +273,7 @@ impl TargetHorizons {
         !self.three_month && !self.twelve_month && !self.three_year
     }
 
-    /// The name for the moved targets, the horizons in window order — the
-    /// self-review's method-change line renders it as price bands. Never
-    /// rendered empty:
+    /// The name for the moved targets, in horizon order. Never rendered empty:
     /// [`target_parameter_change`] returns `None` where no horizon moved.
     pub(crate) fn label(self) -> &'static str {
         match (self.three_month, self.twelve_month, self.three_year) {
@@ -395,34 +292,20 @@ impl TargetHorizons {
 /// The target stamp history, oldest first: each version with the horizons its
 /// bump can have moved on the stock and the fund branch. The boundary a prior
 /// sits across is the union of the rows after its version, read on the
-/// holding's branch — so every bump appends a row here (a test pins the last
-/// row to the current stamp). The store is wiped before the first run under
-/// `targets-v5` (ruled 2026-08-29), so no prior stamped earlier can exist and
-/// `targets-v4` reads as unrecognized. The v6 row makes a v5 fund prior
-/// attributable across the exchange-basis boundary; only the rows after a
-/// stamp count. The rows before v7 name the near-horizon leg under its current
-/// field: the one-month leg of their day became the three-month leg at v7.
+/// holding's branch, so every bump appends a row here (a test pins the last
+/// row to the current stamp). A stamp older than the first row reads as
+/// unrecognized.
 const SCENARIO_TARGET_PARAMETER_HISTORY: &[(&str, TargetHorizons, TargetHorizons)] = &[
-    // v5: the near-horizon band √t-scaled (`build_price_targets`, both forms)
-    // and the anchor share-count basis — the stock consensus ladder's
-    // revenue-per-share rung, so the twelve-month scenario prices and, through
-    // `PR_base`, the near-horizon base. The fund form has no consensus ladder.
     (
         "targets-v5",
         TargetHorizons::of(true, true, false),
         TargetHorizons::THREE_MONTH,
     ),
-    // v6: the complete-exchange admission rule can change the fund's
-    // twelve-month scenarios and the near-horizon base derived from them.
-    // Stocks never read the sector-P/E source.
     (
         "targets-v6",
         TargetHorizons::NONE,
         TargetHorizons::of(true, true, false),
     ),
-    // v7: the near-horizon leg moved from one month to three months (its
-    // window, clamp and fallback) and the three-year leg is new, on both
-    // forms; the twelve-month scenarios are untouched.
     (
         "targets-v7",
         TargetHorizons::of(true, false, true),
@@ -433,11 +316,9 @@ const SCENARIO_TARGET_PARAMETER_HISTORY: &[(&str, TargetHorizons, TargetHorizons
 /// The horizons a prior record's target stamp sits across on `branch` — the
 /// branch the PRIOR record was priced on — or `None` when the record carries
 /// the current stamp, the boundary moved nothing on that branch, or the stamp
-/// is missing or unrecognized (the same rule as [`grade_parameter_change`]: an
-/// undescribable boundary asserts no cause, since a citable row for it would
-/// let a real move be attributed to it). A prior with no target record
-/// (`target_meta: None` — a never-priced prior) reaches here as `None` and
-/// stays silent: it had no target to move.
+/// is missing or unrecognized (the same rule as [`grade_parameter_change`]). A
+/// never-priced prior (`target_meta: None`) reaches here as `None` and stays
+/// silent: it had no target to move.
 pub(crate) fn target_parameter_change(
     prior: Option<&str>,
     branch: GradeBranch,
@@ -485,8 +366,7 @@ const TIER_PREMIUM_LOW: f64 = 0.03;
 const TIER_PREMIUM_MEDIUM: f64 = 0.05;
 const TIER_PREMIUM_HIGH: f64 = 0.08;
 
-/// Stock tier legs (Trade Opportunities' canonical constants — `docs/trade-opportunities.md`
-/// §Starting parameters; Portfolio adopts the rule under its stated missing-input rule).
+/// Stock tier legs (`docs/trade-opportunities.md` §Starting parameters).
 const TIER_HIGH_MAX_MCAP: f64 = 2.0e9;
 const TIER_LOW_MIN_MCAP: f64 = 10.0e9;
 const TIER_HIGH_MIN_ANNUAL_VOL: f64 = 0.40;
@@ -510,10 +390,9 @@ pub struct DatedValue {
     pub value: f64,
 }
 
-/// One dated daily bar with its share volume — the tradability flag's input
-/// (`portfolio::tradability`), parsed from the same deep EOD feed as the dated
-/// closes. `volume` is `None` where the row served no finite, non-negative
-/// volume: that session is a missing volume day, never a zero.
+/// One dated daily bar with its share volume (`portfolio::tradability`).
+/// `volume` is `None` where the row served no finite, non-negative volume: a
+/// missing volume day, never a zero.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DailyBar {
     pub date: String,
@@ -521,34 +400,29 @@ pub struct DailyBar {
     pub volume: Option<f64>,
 }
 
-/// The run-level rate anchors (`docs/portfolio-workflow.md` §Step 5): the `DGS2` and
-/// `DGS10` prints plus the dated `DGS10` anchor-window history the v2 percentile join
-/// reads. All values are **decimal ratios** (`4.5%` → `0.045` — the suite's shared
-/// rate representation, normalized at the adapter seam).
+/// The run-level rate anchors (`docs/portfolio-workflow.md` §Step 5). All values
+/// are **decimal ratios** (`4.5%` → `0.045`), normalized at the adapter seam.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RateAnchors {
     pub dgs2: f64,
     pub dgs10: f64,
-    /// The prints' observation dates (ISO), where the source carried them — the as-of
-    /// dates the persisted rate cache records for the quick paths' fail-soft
-    /// (`docs/portfolio-analysis.md` §Starting parameters, rate-cache max age).
-    /// `None` on fixtures.
+    /// The prints' observation dates (ISO), where the source carried them — the
+    /// as-of dates the rate cache's max age reads (`docs/portfolio-analysis.md`
+    /// §Starting parameters). `None` on fixtures.
     pub dgs2_date: Option<String>,
     pub dgs10_date: Option<String>,
     /// Dated `DGS10` observations covering the trailing anchor window plus alignment
     /// slack, sorted oldest-first.
     pub dgs10_history: Vec<DatedValue>,
-    /// A degraded-input note when the anchor-window history request failed: the run
-    /// proceeds with an empty admissible window — every spread observation
-    /// inadmissible, the targets on their documented raw-percentile / carry fallback
-    /// — never a new failure state (`docs/portfolio-analysis.md` §Starting
-    /// parameters). Only the two run-level prints hard-fail (§Failure posture).
+    /// A degraded-input note when the anchor-window history request failed: the
+    /// run proceeds with an empty admissible window, never a new failure state
+    /// (`docs/portfolio-analysis.md` §Starting parameters). Only the two
+    /// run-level prints hard-fail (§Failure posture).
     pub history_gap: Option<String>,
 }
 
 /// One quarterly income-statement print (newest first in
-/// [`CompanyFinancials::quarterly_income`]) — the trailing driver prints the v2
-/// anchor window joins on.
+/// [`CompanyFinancials::quarterly_income`]).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct QuarterlyIncomeRow {
     /// Period end, ISO date.
@@ -560,13 +434,11 @@ pub struct QuarterlyIncomeRow {
     pub eps_diluted: Option<f64>,
     pub diluted_shares: Option<f64>,
     /// Statement lines for the TTM statement basis (`docs/portfolio-analysis.md`
-    /// §Starting parameters — four-quarter sums feeding the margin / growth /
-    /// multiple inputs, the grade-band slice's F5 closure).
+    /// §Starting parameters).
     pub net_income: Option<f64>,
     pub gross_profit: Option<f64>,
     pub cost_of_revenue: Option<f64>,
-    /// Quarterly operating income — the pre-profit overlay's eligibility leg (TTM
-    /// operating income ≤ 0 — `docs/portfolio-analysis.md` §Starting parameters).
+    /// The pre-profit overlay's eligibility leg (TTM operating income ≤ 0).
     pub operating_income: Option<f64>,
     /// Research and development expense — the value-creation read's R&D
     /// capitalization source (`portfolio::value_creation`).
@@ -578,10 +450,9 @@ pub struct QuarterlyIncomeRow {
 }
 
 /// One annual income-statement print — the commodity cyclical's mid-cycle
-/// margin source (the driver override's normalization window,
-/// `docs/trade-opportunities.md` §Starting parameters). Any order and
-/// duplicates are tolerated: the mid-cycle read canonicalizes by period end,
-/// the latest filing winning a restatement.
+/// margin source (`docs/trade-opportunities.md` §Starting parameters). Any
+/// order and duplicates are tolerated: the mid-cycle read canonicalizes by
+/// period end, the latest filing winning a restatement.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AnnualIncomeRow {
     /// Fiscal-year end, ISO date.
@@ -594,14 +465,13 @@ pub struct AnnualIncomeRow {
 /// One quarterly cash-flow-statement print (newest first in
 /// [`CompanyFinancials::quarterly_cash_flow`]) — the pre-profit overlay's burn /
 /// runway / capex-intensity source (`docs/portfolio-analysis.md` §Starting
-/// parameters). Fetched only for stocks; the fund surface never pulls statements.
+/// parameters). Fetched only for stocks.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct QuarterlyCashFlowRow {
     /// Period end, ISO date.
     pub period_end: String,
-    /// The statement feed's filing date — the canonicalization tie-break when one
-    /// period arrives twice (a restatement): the latest filing wins, never wire
-    /// order.
+    /// The canonicalization tie-break on a restatement: the latest filing wins,
+    /// never wire order.
     pub filing_date: Option<String>,
     /// The feed's reported free cash flow, where present.
     pub free_cash_flow: Option<f64>,
@@ -631,17 +501,15 @@ impl QuarterlyCashFlowRow {
 /// One quarterly balance-sheet print (newest first in
 /// [`CompanyFinancials::quarterly_balance_sheet`]). The newest row supplies the
 /// leverage leg, the P/B denominator and the pre-profit runway's liquid-resource
-/// lines (copied onto the financials' flat fields at the pull); the rows behind it
-/// carry the soft forensic flags' year-over-year receivables and inventory
-/// comparator (`docs/portfolio-analysis.md` §Starting parameters). Fetched only
-/// for stocks; the fund surface never pulls statements.
+/// lines (copied onto the financials' flat fields at the pull); the rows behind
+/// it carry the soft forensic flags' year-over-year comparator
+/// (`docs/portfolio-analysis.md` §Starting parameters). Fetched only for stocks.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct QuarterlyBalanceSheetRow {
     /// Period end, ISO date.
     pub period_end: String,
-    /// The statement feed's filing date — the canonicalization tie-break when one
-    /// period arrives twice (a restatement): the latest filing wins, never wire
-    /// order.
+    /// The canonicalization tie-break on a restatement: the latest filing wins,
+    /// never wire order.
     pub filing_date: Option<String>,
     pub total_debt: Option<f64>,
     /// Stockholders' (parent-only) equity first, `totalEquity` as the fallback.
@@ -657,10 +525,9 @@ pub struct QuarterlyBalanceSheetRow {
     pub total_assets: Option<f64>,
 }
 
-/// The provider's Altman Z and Piotroski F scores (`financial-scores`) — the soft
-/// forensic flags' score inputs, an enriching surface whose absence is a recorded
-/// gap and never a floor (`docs/portfolio-analysis.md` §Evidence floor, §Starting
-/// parameters).
+/// The provider's Altman Z and Piotroski F scores — the soft forensic flags'
+/// inputs; their absence is a recorded gap, never a floor
+/// (`docs/portfolio-analysis.md` §Evidence floor).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct FinancialScores {
     pub altman_z: Option<f64>,
@@ -682,13 +549,12 @@ pub struct ConsensusEpsPeriod {
     pub ntm_weight: f64,
 }
 
-/// **next-twelve-months (NTM) read**: a time-weighted blend of the two nearest
-/// forward fiscal-year rows by their month-overlap with the rolling twelve-month
-/// window, so a mostly-reported current fiscal year (whose consensus ≈ the trailing
-/// print) contributes only its remaining months rather than masquerading as the
-/// forward year (`docs/portfolio-analysis.md` §Starting parameters). Mid is the
-/// consensus average; low / high bound the bear / bull scenario drivers where the
-/// spread is published.
+/// The next-twelve-months (NTM) read: a time-weighted blend of the two nearest
+/// forward fiscal-year rows by their month-overlap with the rolling window, so a
+/// mostly-reported current fiscal year contributes only its remaining months
+/// rather than masquerading as the forward year (`docs/portfolio-analysis.md`
+/// §Starting parameters). Low / high bound the bear / bull scenario drivers
+/// where the spread is published.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConsensusEstimate {
     /// The near row's fiscal-period end, ISO date.
@@ -704,12 +570,12 @@ pub struct ConsensusEstimate {
     pub periods_used: u8,
     /// The near row's blend weight (1.0 on a single-row read).
     pub near_weight: f64,
-    /// Forward rows that actually **contributed** to the blended EPS mid — the
-    /// corroboration count the targets-v4 clamp release reads for the EPS rung.
-    /// `periods_used` counts blended rows, not rows behind any given field: inside an
-    /// active blend a leg only one row carries is used alone, and a boundary-day near
-    /// row (weight exactly 0) is present without contributing — either way a single
-    /// estimate would masquerade as two-row corroboration (Codex rounds 1–2).
+    /// Forward rows that actually contributed to the blended EPS mid — the
+    /// corroboration count the clamp release reads. `periods_used` counts
+    /// blended rows, not rows behind any given field: a leg only one row carries
+    /// is used alone, and a boundary-day near row (weight exactly 0) is present
+    /// without contributing — either way a single estimate would masquerade as
+    /// two-row corroboration.
     pub eps_mid_rows: u8,
     /// The revenue rung's counterpart: forward rows contributing to the revenue
     /// mid.
@@ -752,15 +618,14 @@ pub struct CompanyFinancials {
     pub current_price: Option<f64>,
     pub market_cap: Option<f64>,
     pub shares_outstanding: Option<f64>,
-    /// The profile's served beta for a stock — the shared engine's low-beta
-    /// factor and the cost-of-equity input (`portfolio::factors`,
-    /// `portfolio::value_creation`); set from the job's one profile read,
-    /// `None` on a fund, a gapped profile or an omitted field.
+    /// The profile's served beta for a stock (`portfolio::factors`,
+    /// `portfolio::value_creation`); `None` on a fund, a gapped profile or an
+    /// omitted field.
     pub beta: Option<f64>,
-    /// The quote's served 52-week high and low — FETCHED VALUES renders the
-    /// range as the provider states it, never a computed min / max over the
-    /// fetched closes (`docs/portfolio-workflow.md` §Step 6c; ruled
-    /// 2026-10-08). `None` where the quote gapped or omitted them.
+    /// The quote's served 52-week high and low — rendered as the provider states
+    /// them, never a computed min / max over the fetched closes
+    /// (`docs/portfolio-workflow.md` §Step 6c). `None` where the quote gapped or
+    /// omitted them.
     pub year_high: Option<f64>,
     pub year_low: Option<f64>,
     /// Most-recent and prior-period revenue (the growth numerator/denominator).
@@ -778,10 +643,10 @@ pub struct CompanyFinancials {
     pub pb_ratio: Option<f64>,
     /// Chronological closing prices (oldest first), for momentum and volatility.
     pub price_history: Vec<f64>,
-    /// Deep **dated** daily closes (oldest first) — the v2 anchor join's price side
-    /// and the drawdown read (FMP dated EOD).
+    /// Deep dated daily closes (oldest first) — the anchor join's price side and
+    /// the drawdown read.
     pub daily_closes: Vec<DatedValue>,
-    /// Trailing quarterly income prints, newest first — the v2 anchor window's
+    /// Trailing quarterly income prints, newest first — the anchor window's
     /// trailing driver source (needs ~4 extra quarters beyond the window for TTM).
     pub quarterly_income: Vec<QuarterlyIncomeRow>,
     /// Trailing quarterly cash-flow prints, newest first — the pre-profit overlay's
@@ -800,40 +665,33 @@ pub struct CompanyFinancials {
     /// The provider's Altman Z and Piotroski F scores — the soft forensic flags'
     /// score inputs ([`FinancialScores`]); `None` where the call gapped.
     pub financial_scores: Option<FinancialScores>,
-    /// The forward consensus (nearest coming fiscal year) — the v2 driver ladder.
+    /// The forward consensus (nearest coming fiscal year) — the driver ladder.
     pub consensus: Option<ConsensusEstimate>,
     /// Trailing-twelve-month dividends per share — the backward-looking payout
     /// proxy the twelve-month total return adds (a sustainable basis, never a
     /// raw special or a forward estimate).
     pub ttm_dividends_per_share: Option<f64>,
     /// The latest dividend payments on or before the session, newest first, off
-    /// the same `dividends` read as the trailing sum — FETCHED VALUES renders
-    /// these as reported and the sum stays an engine computation
-    /// (`docs/portfolio-workflow.md` §Step 6c; ruled 2026-10-08). Empty on a
-    /// non-payer, a gapped read, and every offline stub.
+    /// the same `dividends` read as the trailing sum — rendered as reported
+    /// while the sum stays an engine computation (`docs/portfolio-workflow.md`
+    /// §Step 6c). Empty on a non-payer, a gapped read, and every offline stub.
     pub recent_dividends: Vec<crate::portfolio::evidence::DividendRow>,
     /// Tagged inputs a source could not resolve, carried into the prompt so the model
     /// reasons over what is absent rather than inferring it.
     pub gaps: Vec<String>,
     /// Which statement window the values above were computed on — set at the
-    /// canonicalization choke point (`dossier::apply_ttm_statement_basis`) by every
-    /// producer that adopts or falls back. `None` where no statement basis applies
-    /// (a fund) or was resolved.
-    ///
-    /// Read by the prompt's statement-basis line and the audit's sources line: it
+    /// canonicalization choke point (`dossier::apply_ttm_statement_basis`).
+    /// `None` where no statement basis applies (a fund) or was resolved. It
     /// alters no value, only names the window the levels stand on.
     pub statement_basis: Option<crate::portfolio::StatementBasis>,
-    /// Which balance sheet supplied `total_equity` — the denominator of debt/equity
-    /// and price/book — stamped at the SEC merge (`dossier::merge_financials`), the
-    /// one seam that knows what finally filled it. `None` where no equity line
-    /// reached the engine (a fund, or both legs empty) and on the quick check's
-    /// sweep surface, which is not the authority on it.
-    ///
-    /// Read by the prompt's statement-basis line beside `statement_basis`, on the
-    /// two balance-sheet instants alone: a fail-soft gap on the FMP balance-sheet leg
-    /// flips the equity leg between a quarter-end instant and a year-end one under
-    /// an unchanged flow basis, and both series step with nothing having happened
-    /// ([`crate::portfolio::EquitySource`]). It alters no value.
+    /// Which balance sheet supplied `total_equity`, stamped at the SEC merge
+    /// (`dossier::merge_financials`), the one seam that knows what finally
+    /// filled it. `None` where no equity line reached the engine (a fund, or
+    /// both legs empty) and on the quick check's sweep surface. Read beside
+    /// `statement_basis`: a fail-soft gap on the FMP balance-sheet leg flips the
+    /// equity leg between a quarter-end instant and a year-end one under an
+    /// unchanged flow basis ([`crate::portfolio::EquitySource`]). It alters no
+    /// value.
     pub equity_source: Option<crate::portfolio::EquitySource>,
 }
 
@@ -854,19 +712,16 @@ impl std::fmt::Display for StatementUnitIssue {
     }
 }
 
-/// The shared statement canonicalization policy, applied **in place**: quarterly
-/// income and cash-flow rows sort newest-first by `(period_end, filing_date)`
-/// descending and deduplicate by period end, so a duplicated period (a restatement
-/// served twice) resolves to the latest filing — never to wire order. The residual —
-/// equal period AND equal/absent filing dates with different values — keeps the
-/// first-served row.
+/// The shared statement canonicalization policy, applied in place: quarterly
+/// rows sort newest-first by `(period_end, filing_date)` descending and
+/// deduplicate by period end, so a restatement served twice resolves to the
+/// latest filing, never to wire order; equal period and equal/absent filing
+/// dates keep the first-served row.
 ///
-/// Called once at the statement choke point (`dossier::apply_ttm_statement_basis`,
-/// which every statement-consuming path passes before any engine read), so the TTM
-/// sums, the driver ladder's growth-clamp trailing prints and share basis, and the
-/// anchor-observation windows all read one canonical order. The pre-profit overlay
-/// (`pre_profit::statement_inputs`) additionally holds the same rule locally — its
-/// order-independence is a standalone, test-pinned contract.
+/// Called once at the statement choke point (`dossier::apply_ttm_statement_basis`),
+/// which every statement-consuming path passes before any engine read, so every
+/// window reads one canonical order. The pre-profit overlay
+/// (`pre_profit::statement_inputs`) holds the same rule locally.
 pub fn canonicalize_statements(fin: &mut CompanyFinancials) {
     fin.quarterly_income.sort_by(|a, b| {
         b.period_end
@@ -888,15 +743,13 @@ pub fn canonicalize_statements(fin: &mut CompanyFinancials) {
     fin.quarterly_balance_sheet.dedup_by(|a, b| a.period_end == b.period_end);
 }
 
-/// Whether a run of newest-first quarterly period-ends is **consecutive
-/// quarters**: each adjacent pair sits roughly one quarter apart (60–120 days,
-/// covering 13/14-week fiscal calendars and transition stubs). Canonicalization
-/// fixes order and duplicates but cannot detect a *skipped* quarter — and every
-/// fixed-width window in the chain (the TTM statement basis, the anchor
-/// windows, the trailing clamp prints, the pre-profit YoY / margin windows)
-/// assumes its rows are consecutive, so a feed gap would silently stretch a
-/// "TTM" past twelve months. An undatable period-end reads non-contiguous
-/// (the conservative side: the window degrades to its gap path).
+/// Whether a run of newest-first quarterly period-ends is consecutive quarters:
+/// each adjacent pair sits 60–120 days apart (covering 13/14-week fiscal
+/// calendars and transition stubs). Canonicalization fixes order and duplicates
+/// but cannot detect a skipped quarter, and every fixed-width window in the
+/// chain assumes consecutive rows, so a feed gap would silently stretch a "TTM"
+/// past twelve months. An undatable period-end reads non-contiguous (the window
+/// degrades to its gap path).
 pub fn quarters_contiguous<'a, I>(period_ends: I) -> bool
 where
     I: IntoIterator<Item = &'a str>,
@@ -943,10 +796,9 @@ pub struct ComputedMetrics {
 }
 
 /// One moved metric of the engine-computed input delta
-/// (`docs/portfolio-workflow.md` §Step 6b — the metric-level diff): the prior
-/// audit's stored value beside this run's. Either side is `None` where that run
-/// could not compute the metric — an appearing or disappearing value is a change,
-/// never a fabricated zero-delta.
+/// (`docs/portfolio-workflow.md` §Step 6b). Either side is `None` where that
+/// run could not compute the metric — an appearing or disappearing value is a
+/// change, never a fabricated zero-delta.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricChange {
     pub name: &'static str,
@@ -977,12 +829,10 @@ pub fn metric_pairs(
 }
 
 /// The engine-computed metric delta: every [`ComputedMetrics`] field whose stored
-/// prior value differs from this run's. Resolution is **exact `old ≠ new`**
-/// (ruled 2026-08-21 — no materiality margin): persisted numerics round-trip
-/// bit-exact (`docs/storage.md` — the `float_roundtrip` guarantee), so equality
-/// is a real no-change and any difference is a concrete delta entry. A metric
-/// absent on both sides is no entry. The positioning leg of the designed delta
-/// stays excluded — its data legs are unbuilt.
+/// prior value differs from this run's. Resolution is exact `old ≠ new`, no
+/// materiality margin: persisted numerics round-trip bit-exact
+/// (`docs/storage.md`), so equality is a real no-change. A metric absent on
+/// both sides is no entry.
 pub fn metric_delta(prior: &ComputedMetrics, current: &ComputedMetrics) -> Vec<MetricChange> {
     metric_pairs(prior, current)
         .into_iter()
@@ -1056,13 +906,10 @@ pub struct PriorEngineRead<'a> {
 }
 
 /// The realized engine data a continuity run computes for the self-review
-/// (`docs/portfolio-workflow.md` §Step 6b): the price now and its move since
-/// the prior read; the prior run's every stored metric, sub-score, grade, band,
-/// tier and hurdle-state value beside this run's, resolved at exact `then !=
-/// now`; and the grade- and scenario-target parameter boundaries named for what
-/// they changed on the prior's branch, absent where they changed nothing. The
-/// accuracy record rides beside it in the review's realized block
-/// ([`crate::portfolio::review`]).
+/// (`docs/portfolio-workflow.md` §Step 6b): the price and its move since the
+/// prior read, every stored engine value then and now at exact `then != now`,
+/// and the parameter boundaries named for what they changed on the prior's
+/// branch, absent where they changed nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RealizedEngineData {
     /// The price now; `None` where the run served no usable spot.
@@ -1167,9 +1014,9 @@ pub struct HurdleRead {
     pub admits_new_money: bool,
 }
 
-/// How the v2 scenario targets were derived — recorded on the audit so a target's
-/// basis (and any fallback) is inspectable, and versioned so calibration never mixes
-/// target bases.
+/// How the scenario targets were derived — recorded on the audit so a target's
+/// basis (and any fallback) is inspectable, and versioned so calibration never
+/// mixes target bases.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TargetMeta {
     /// The ladder rung: "consensus forward EPS", "consensus forward revenue per
@@ -1205,21 +1052,20 @@ pub struct TargetMeta {
     /// True when the scenario band was widened to the volatility-scaled dispersion
     /// floor.
     pub dispersion_floor_applied: bool,
-    /// (targets-v4) anchor observations dropped by the multiple sanity bound — raw
-    /// multiples above the current multiple × the drafted factor.
+    /// Anchor observations dropped by the multiple sanity bound — raw multiples
+    /// above the current multiple × the drafted factor.
     pub anchor_bounded: usize,
-    /// (targets-v4) true when the trough release priced the unclamped consensus
-    /// (corroborated rows + current multiple above the anchor window's rich end).
+    /// True when the trough release priced the unclamped consensus.
     pub clamp_released: bool,
-    /// (targets-v7) the clamped annual growth the three-year leg compounded —
-    /// the two coming fiscal-year rows' implied growth on the selected rung;
-    /// `None` where the leg held growth flat.
+    /// The clamped annual growth the three-year leg compounded — the two coming
+    /// fiscal-year rows' implied growth on the selected rung; `None` where the
+    /// leg held growth flat.
     pub three_year_growth: Option<f64>,
-    /// (targets-v7) true where the three-year leg held growth flat: a single
-    /// forward row, no definable growth, or the fund form's flat driver.
+    /// True where the three-year leg held growth flat: a single forward row, no
+    /// definable growth, or the fund form's flat driver.
     pub three_year_flat_growth: bool,
-    /// (targets-v7) true when the three-year band was widened to its
-    /// dispersion-floor half-spread (the twelve-month floor's × √3).
+    /// True when the three-year band was widened to its dispersion-floor
+    /// half-spread (the twelve-month floor's × √3).
     pub three_year_floor_applied: bool,
     pub parameter_version: String,
 }
@@ -1312,8 +1158,8 @@ impl MetricSeries {
             )
     }
 
-    /// The unit sentence the metric line renders beside the value
-    /// (attempt-6 Finding 2: "(decimal)" alone left a stated 3% read as 3.0).
+    /// The unit sentence the metric line renders beside the value; "(decimal)"
+    /// alone left a stated 3% read as 3.0.
     pub fn unit_note(&self) -> &'static str {
         match self {
             MetricSeries::NetMargin
@@ -1388,7 +1234,7 @@ pub fn price_targets_finite(targets: &crate::portfolio::PriceTargets) -> bool {
 /// a negative one prices finite but financially meaningless targets — so the
 /// stock and fund floors read through this, as does the FMP quote parser at the
 /// one seam every quote consumer rides (`docs/portfolio-analysis.md` §Evidence
-/// floor; Codex I1, ruled 2026-08-28).
+/// floor).
 pub fn usable_price(value: Option<f64>) -> Option<f64> {
     value.filter(|v| v.is_finite() && *v > 0.0)
 }
@@ -1397,27 +1243,7 @@ pub fn usable_price(value: Option<f64>) -> Option<f64> {
 /// the resume gate refuses a trail stamped under another (its completed
 /// holdings were floored under a different rule, and a resume must never mix
 /// them with the current one), and on every holding's audit record, so a floor
-/// correction stays attributable (the suite's shared versioning discipline).
-/// `evidence-floor-v1` was the presence floor as shipped — a served price or
-/// NAV of any value passed. `evidence-floor-v2`: the usability floor
-/// ([`usable_price`] — finite and strictly positive on the stock price and both
-/// fund legs, an unusable fund quote falling to a usable NAV), off the
-/// 2026-08-24 review's Codex I1 (ruled 2026-08-28; the stamp off its Codex
-/// round 1). `evidence-floor-v3`: the fund analog's eight-sample history floor
-/// counts distinct in-quarter observations — each constant-mix sample admits
-/// only prints dated within its own quarter
-/// ([`crate::portfolio::fund::composite_yield_history`]), where under v2 one
-/// stale print could back all twelve samples — off the review's Codex I2
-/// (ruled 2026-08-28). `evidence-floor-v4`: the usability rule at the
-/// dated-EOD parse — a served zero or negative close drops as an unreadable
-/// row on the 180-day and the deep pulls alike, where under v3 it was admitted
-/// and read as a −100% return into σ, momentum, and drawdown — off the
-/// review's Codex I16, its reviewer round (the stamp off its Codex round 1;
-/// ruled 2026-08-29).
-/// v5 rejects unverified statement units and routes option-overlay funds to role/risk.
-/// v6 (grade-v3): a stock's letter sub-score is real when at least one of its
-/// factor-composite axis's factors resolved ([`letter_axis`]), where under v5 it
-/// was real when its clamped map had an input.
+/// correction stays attributable. Bump it whenever the floor's rule changes.
 pub const EVIDENCE_FLOOR_VERSION: &str = "evidence-floor-v6";
 
 /// The profile labels a stock's grade reads: the sector picks its factors'
@@ -1443,13 +1269,13 @@ pub(crate) fn letter_axis(composite: &FactorComposite, axis: Axis) -> Option<f64
         .flatten()
 }
 
-/// Analyze a holding's financials into sub-scores, a grade, and scenario targets — or
-/// abstain. The sub-scores are the factor composite's axes — quality, value, low
-/// risk and momentum — under the profile's sector and metric class, with no
-/// archetype and no revision pace. The evidence floor fails when there is no
-/// usable current price ([`usable_price`] — nothing to target or value against)
-/// or fewer than [`MIN_SUBSCORES_FOR_GRADE`] letter sub-scores are real; either
-/// is an explicit `insufficient-evidence`, never a low-conviction guess.
+/// Analyze a holding's financials into sub-scores, a grade, and scenario targets
+/// — or abstain. The sub-scores are the factor composite's axes under the
+/// profile's sector and metric class, with no archetype and no revision pace.
+/// The evidence floor fails when there is no usable current price
+/// ([`usable_price`]) or fewer than [`MIN_SUBSCORES_FOR_GRADE`] letter
+/// sub-scores are real; either is an explicit `insufficient-evidence`, never a
+/// low-conviction guess.
 pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors, profile: GradeProfile) -> EngineVerdict {
     if !fin.unit_issues.is_empty() {
         return EngineVerdict::InsufficientEvidence(format!(
@@ -1479,9 +1305,8 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors, profile: GradeProfi
     let momentum = letter_axis(&factors, Axis::Momentum);
     let risk = letter_axis(&factors, Axis::LowRisk);
 
-    // The evidence floor counts **letter** sub-scores only — momentum is computed
-    // alongside but lives outside the letter (`docs/portfolio-analysis.md` §Starting
-    // parameters, the settled ex-momentum re-weight).
+    // The evidence floor counts letter sub-scores only; momentum lives outside
+    // the letter.
     let computed = [quality, valuation, risk]
         .iter()
         .filter(|s| s.is_some())
@@ -1489,9 +1314,8 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors, profile: GradeProfi
 
     let Some(price) = usable_price(fin.current_price) else {
         return EngineVerdict::InsufficientEvidence(match fin.current_price {
-            // A served print the usability rule rejected names itself — its
-            // own reason, distinct from the finite-target gate's below, which
-            // it never reaches.
+            // A served print the usability rule rejected names itself, distinct
+            // from the finite-target gate's reason below.
             Some(served) => format!(
                 "no usable current price for the holding (served {served}) — cannot value \
                  or set targets"
@@ -1506,11 +1330,11 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors, profile: GradeProfi
         ));
     }
 
-    // The v2 rate-anchored scenario targets. No admissible driver on any ladder rung
-    // is the named evidence-floor reason (`docs/portfolio-analysis.md` §Evidence floor).
+    // No admissible driver on any ladder rung is a named evidence-floor reason
+    // (`docs/portfolio-analysis.md` §Evidence floor).
     let bundle = match scenario_targets_v2(price, fin, rates, &metrics, None, &[]) {
-        // The output gate ([`price_targets_finite`]): a non-finite target exits
-        // the holding here, per-holding and never run-level.
+        // A non-finite target exits the holding here, per-holding and never
+        // run-level.
         TargetOutcome::Computed(b) if !price_targets_finite(&b.targets) => {
             return EngineVerdict::InsufficientEvidence(
                 "non-finite scenario pricing: a feed extreme overflowed a per-share driver \
@@ -1528,12 +1352,10 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors, profile: GradeProfi
         }
     };
 
-    // A missing sub-score takes the neutral midpoint (50) so the composite stays
-    // defined; dividing by the full fixed weight sum keeps it on the same 0–100 scale
-    // (an impute-to-neutral, not a renormalization over the present sub-scores). The
-    // count gate above guarantees at least two are real, so this never grades on all
-    // defaults — and a letter resting on any imputed axis carries the visible
-    // low-confidence marker.
+    // A missing sub-score takes the neutral midpoint (50) and the composite
+    // divides by the full fixed weight sum — an impute-to-neutral, not a
+    // renormalization. The count gate above guarantees at least two are real; a
+    // letter resting on any imputed axis carries the low-confidence marker.
     let low_confidence_grade = quality.is_none() || valuation.is_none() || risk.is_none();
     let sub_scores = SubScores {
         quality: quality.unwrap_or(50.0),
@@ -1543,9 +1365,6 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors, profile: GradeProfi
     };
     let grade = grade_from_subscores(&sub_scores);
 
-    // Deterministic per-branch tier assignment, then the tier-scaled hurdle over the
-    // scenario total returns — assigned before anything downstream consumes it
-    // (`docs/portfolio-workflow.md` §Step 6b).
     let (risk_tier, tier_gaps) = assign_stock_tier(fin, &metrics);
     let hurdle = hurdle_read(&bundle.scenario, rates.dgs2, risk_tier);
 
@@ -1567,10 +1386,9 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors, profile: GradeProfi
     }))
 }
 
-/// Roll the **letter** sub-scores (quality / valuation / risk) up to a letter grade
-/// through the fixed ex-momentum weights — momentum is context, never a letter input
-/// (`docs/portfolio-analysis.md` §Starting parameters). Public so a reviewer (and the
-/// live smoke) can assert the roll-up directly.
+/// Roll the letter sub-scores (quality / valuation / risk) up to a letter grade;
+/// momentum is never a letter input (`docs/portfolio-analysis.md` §Starting
+/// parameters). Public so the live smoke can assert the roll-up directly.
 pub fn grade_from_subscores(s: &SubScores) -> Grade {
     let composite = (s.quality * W_QUALITY + s.valuation * W_VALUATION + s.risk * W_RISK)
         / (W_QUALITY + W_VALUATION + W_RISK);
@@ -1589,11 +1407,8 @@ pub fn grade_from_subscores(s: &SubScores) -> Grade {
 
 /// An engine metric is a finite number or absent — never ±inf or NaN. The
 /// inputs are finite by the parsers, but a ratio over a subnormal denominator
-/// or a difference of overflowed sums is not: `scale` clamps ±inf to a 0 / 100
-/// sub-score and passes NaN through, a crossing's `observed_value` is a bare
-/// `f64`, and the pre-flag's threshold rides the volatility — each a required
-/// persisted float serde writes as `null` and the store cannot read back (the
-/// 2026-08-24 review's Codex I16, ruled 2026-08-29). Filtered once here, so
+/// or a difference of overflowed sums is not, and a required persisted float
+/// serde writes as `null` the store cannot read back. Filtered once here, so
 /// every consumer reads a gap where the arithmetic did not finish.
 pub(crate) fn finite(value: Option<f64>) -> Option<f64> {
     value.filter(|v| v.is_finite())
@@ -1643,9 +1458,8 @@ fn average(parts: &[Option<f64>]) -> Option<f64> {
 }
 
 /// Momentum (higher better): trailing price return over the short undated
-/// `price_history` window — the fund branch's momentum read, over its
-/// [`compute_metrics`] price legs. A stock's momentum is the factor composite's
-/// momentum axis (`docs/portfolio-analysis.md` §Starting parameters).
+/// `price_history` window — the fund branch's read; a stock's momentum is the
+/// factor composite's momentum axis.
 pub(crate) fn momentum_score(m: &ComputedMetrics) -> Option<f64> {
     let (lo, hi) = MOMENTUM_TRAILING_RETURN_BAND;
     m.trailing_return.map(|r| scale(r, lo, hi))
@@ -1674,29 +1488,25 @@ pub(crate) fn return_volatility(history: &[f64]) -> Option<f64> {
     let mean = returns.iter().sum::<f64>() / returns.len() as f64;
     let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64;
     // One subnormal close makes a period return inf and the deviation NaN —
-    // absent, never a NaN σ the fund's risk leg, the dispersion floor and the
-    // pre-flag threshold would carry into the record (Codex I16). Filtered here
-    // because the fund's deep-history read calls this directly, not through
+    // absent, never a NaN σ carried into the record. Filtered here because the
+    // fund's deep-history read calls this directly, not through
     // `compute_metrics`.
     finite(Some(var.sqrt()))
 }
 
-// ---- v2 rate-anchored scenario-target function ---------------------------------
+// ---- The rate-anchored scenario-target function --------------------------------
 //
-// `docs/portfolio-analysis.md` §Starting parameters — the settled shape: per-share
-// driver × scenario multiple, the multiple re-anchoring the driver multiple's own
-// history on the run-level DGS10 through the spread percentiles (inverse mapping),
-// with the documented guards and fallbacks. The fund form (the settled fund-form
-// bullet) shares the core through `spread_anchored_scenarios`.
+// `docs/portfolio-analysis.md` §Starting parameters: per-share driver × scenario
+// multiple, the multiple re-anchoring the driver multiple's own history on the
+// run-level DGS10 through the spread percentiles (inverse mapping). The fund form
+// shares the core through `spread_anchored_scenarios`.
 
 /// One admissible anchor-window observation: the driver-yield spread over the
-/// contemporaneous DGS10, and the raw multiple for the fallback paths. The spread is
-/// `None` when the quarter's dated `DGS10` join found no observation (a failed or
-/// thin history) — the quarter's **raw multiple stays admissible** so the
-/// raw-percentile fallback still reads real history rather than degrading straight
-/// to the current-multiple carry (`docs/portfolio-analysis.md` §Starting parameters:
-/// a failed history request leaves every *spread* observation inadmissible and takes
-/// the documented raw-percentile fallback).
+/// contemporaneous DGS10, and the raw multiple for the fallback paths. The
+/// spread is `None` when the quarter's dated `DGS10` join found no observation;
+/// the quarter's raw multiple stays admissible so the raw-percentile fallback
+/// still reads real history rather than degrading straight to the
+/// current-multiple carry (`docs/portfolio-analysis.md` §Starting parameters).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AnchorObservation {
     pub spread: Option<f64>,
@@ -1738,7 +1548,7 @@ pub struct ScenarioSet {
     pub multiples: [f64; 3],
 }
 
-/// What the v2 wrapper resolved to: a computed bundle, or the named
+/// What the target wrapper resolved to: a computed bundle, or the named
 /// `no-admissible-driver` evidence-floor reason.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TargetOutcome {
@@ -1747,8 +1557,9 @@ pub enum TargetOutcome {
     NoAdmissibleDriver,
 }
 
-/// The v2 function's full output: the persisted targets plus the scenario set (the
-/// hurdle's input), the derivation record, and the stored quick-path basis.
+/// The target function's full output: the persisted targets plus the scenario
+/// set (the hurdle's input), the derivation record, and the stored quick-path
+/// basis.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TargetBundle {
     pub targets: PriceTargets,
@@ -1764,10 +1575,7 @@ pub struct TargetBundle {
 }
 
 /// The stored basis the engine-only quick paths re-anchor against
-/// (`docs/portfolio-analysis.md` §The quick check: the v2 scenario multiples
-/// re-anchored closed-form on the fresh DGS10 against the **stored** anchor-window
-/// percentiles and **stored** drivers from the last full pass — no re-estimation).
-/// Persisted per priced holding on the run's audit record; every field is what the
+/// (`docs/portfolio-analysis.md` §The quick check). Every field is what the
 /// full pass actually computed, never re-derived at quick-check time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuickCheckBasis {
@@ -1818,11 +1626,10 @@ pub fn close_on(series: &[DatedValue], date: &str) -> Option<f64> {
         .map(|d| d.value)
 }
 
-/// Split-bridge detection deadband (drafted — `docs/portfolio-analysis.md`
-/// §Starting parameters): a same-session close ratio within this band of 1.0 is
-/// snapped to exactly 1.0. FMP dated EOD is split-adjusted and
-/// dividend-unadjusted (`docs/verification/2026-08-02-fmp-light-eod-adjustment-basis.md`),
-/// so re-fetching the *same* bar yields the *same* close unless the series was
+/// Split-bridge detection deadband (`docs/portfolio-analysis.md` §Starting
+/// parameters): a same-session close ratio within this band of 1.0 is snapped
+/// to exactly 1.0. FMP dated EOD is split-adjusted and dividend-unadjusted, so
+/// re-fetching the same bar yields the same close unless the series was
 /// re-based — a real split moves it by ≥ ~20% (5:4) while a retroactive data
 /// revision moves it by a fraction of a percent. The band absorbs revisions so
 /// they never masquerade as a re-basis.
@@ -1880,20 +1687,19 @@ fn percentile(values: &[f64], p: f64) -> f64 {
     sorted[lo] + (sorted[hi] - sorted[lo]) * frac
 }
 
-/// The shared v2 core (`docs/portfolio-analysis.md` §Starting parameters): scenario
-/// prices from per-scenario drivers × spread-anchored multiples. With enough anchor
-/// observations the multiples come from the spread percentiles under the **inverse**
-/// mapping (`spread_bear = P75 … spread_bull = P25`, a wider spread being a cheaper
-/// multiple), each scenario guarded against a degenerate reciprocal denominator;
-/// below the observation floor the rate correction drops entirely and the mapping
-/// flips back to **direct** raw-multiple percentiles (the cheap multiple is the bear
-/// multiple in both domains); with no observations at all the current multiple is
-/// carried (recorded — scenario spread then comes from driver dispersion alone).
-/// Scenario identity comes from the mapping, never from sorting the finished prices —
-/// the monotonicity sort is a recorded defensive repair only. `dispersion_floor` is
-/// the minimum half-spread (decimal, around the base price) the finished band is
-/// widened to when the driver and multiple axes both collapse — see
-/// [`dispersion_floor`]; pass `0.0` to disable (a test pinning the raw mapping).
+/// The shared core (`docs/portfolio-analysis.md` §Starting parameters): scenario
+/// prices from per-scenario drivers × spread-anchored multiples. With enough
+/// anchor observations the multiples come from the spread percentiles under the
+/// inverse mapping (`spread_bear = P75 … spread_bull = P25`, a wider spread
+/// being a cheaper multiple), each scenario guarded against a degenerate
+/// reciprocal denominator; below the observation floor the rate correction
+/// drops entirely and the mapping flips back to direct raw-multiple percentiles
+/// (the cheap multiple is the bear multiple in both domains); with no
+/// observations at all the current multiple is carried (recorded). Scenario
+/// identity comes from the mapping, never from sorting the finished prices —
+/// the monotonicity sort is a recorded defensive repair only. `dispersion_floor`
+/// is the minimum half-spread (decimal, around the base price) the finished
+/// band is widened to — see [`dispersion_floor`]; pass `0.0` to disable.
 pub fn spread_anchored_scenarios(
     spot: f64,
     drivers: [f64; 3],
@@ -1902,11 +1708,10 @@ pub fn spread_anchored_scenarios(
     forward_income_per_share: f64,
     dispersion_floor: f64,
 ) -> ScenarioSet {
-    // The ≥ 8 floor reads the dated-rate (spread-admissible) anchors; the raw
-    // multiples of every driver-admissible quarter back the fallback percentiles, so
-    // a failed DGS10 join degrades to real history — never straight to the carry.
-    // A non-finite sample is not an observation: dropped here so the floors
-    // count finite samples only and the percentiles read finite inputs.
+    // The ≥ 8 floor reads the dated-rate anchors; the raw multiples of every
+    // driver-admissible quarter back the fallback percentiles, so a failed DGS10
+    // join degrades to real history, never straight to the carry. A non-finite
+    // sample is not an observation.
     let spreads: Vec<f64> = observations
         .iter()
         .filter_map(|o| o.spread)
@@ -1920,10 +1725,9 @@ pub fn spread_anchored_scenarios(
     let n_spread = spreads.len();
     let n_raw = raws.len();
 
-    // A surface whose interpolation overflowed — two finite samples further
-    // apart than f64::MAX — is no surface: `None`, so the mapping falls to the
-    // next rung (recorded), never a triple with an inf edge the basis would
-    // persist as `null` (Codex I16).
+    // A surface whose interpolation overflowed is no surface: `None`, so the
+    // mapping falls to the next rung (recorded), never a triple with an inf
+    // edge the basis would persist as `null`.
     let finite_triple = |ps: [f64; 3]| ps.iter().all(|p| p.is_finite()).then_some(ps);
     let spread_ps = (n_spread >= MIN_ANCHOR_OBSERVATIONS)
         .then(|| {
@@ -1961,12 +1765,11 @@ pub fn spread_anchored_scenarios(
     set
 }
 
-/// The shared v2 finishing core over the **percentile surfaces** — multiples
-/// (inverse spread map with the degenerate guard; direct raw fallback; the
-/// current-multiple carry), scenario prices, the defensive monotonicity repair, the
-/// dispersion floor, and total returns. Called by [`spread_anchored_scenarios`] on
-/// the live window and by [`reanchor_scenarios`] on a stored basis, so the quick
-/// paths' closed-form re-anchor is the same arithmetic, never a re-implementation.
+/// The shared finishing core over the percentile surfaces: multiples, scenario
+/// prices, the defensive monotonicity repair, the dispersion floor, and total
+/// returns. Called by [`spread_anchored_scenarios`] on the live window and by
+/// [`reanchor_scenarios`] on a stored basis, so the quick paths' closed-form
+/// re-anchor is the same arithmetic, never a re-implementation.
 #[allow(clippy::too_many_arguments)] // each is one leg of the stored basis, documented on `QuickCheckBasis`
 fn scenarios_from_surfaces(
     spot: f64,
@@ -1996,10 +1799,9 @@ fn scenarios_from_surfaces(
     }
 
     // The dispersion floor: widen (never narrow) each side to at least the
-    // half-spread around base, after the repair so base is the middle price. Zero
-    // dispersion turns the three-state hurdle into a point test — even the bull leg
-    // sits at base, so a flat surface reads `fails` with false certainty; the floor
-    // restores the exit-side hysteresis the three-state read is defined by, recorded.
+    // half-spread around base, after the repair so base is the middle price.
+    // Zero dispersion turns the three-state hurdle into a point test; the floor
+    // restores the exit-side hysteresis, recorded.
     let mut dispersion_floor_applied = false;
     if dispersion_floor > 0.0 && prices[1].is_finite() && prices[1] > 0.0 {
         let min_bear = prices[1] * (1.0 - dispersion_floor);
@@ -2086,14 +1888,11 @@ fn scenario_multiples(
 
 /// The implied-expectations range (`docs/portfolio-analysis.md` §Starting
 /// parameters): the scenario math inverted at the live price — the per-share
-/// driver, and its growth against the trailing TTM print, that the spot
-/// **already assumes** at each scenario multiple `M_bear … M_bull`. A
-/// closed-form **range under stated assumptions**, never one solved number:
-/// the surface that produced the multiples and the DGS10 print ride the
-/// record as the assumptions. On the revenue rung the range reads as the
-/// revenue trajectory the price assumes at prevailing margins — the margin
-/// dimension is a stated assumption, not a second solved axis. Conviction /
-/// action evidence only — never a gate, never a sub-score input.
+/// driver, and its growth against the trailing TTM print, the spot already
+/// assumes at each scenario multiple. A range under stated assumptions, never
+/// one solved number. On the revenue rung the margin dimension is a stated
+/// assumption, not a second solved axis. Conviction / action evidence only —
+/// never a gate, never a sub-score input.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImpliedExpectations {
     /// The per-share driver the spot implies at each scenario multiple,
@@ -2145,7 +1944,7 @@ pub fn implied_expectations(
     // The inversion is unbounded where the pricing was not: a vanishing
     // multiple keeps `driver × m` small while `spot / m` overflows, so the
     // target gate never sees it — a non-finite driver or growth is no read,
-    // never an inf the audit would persist as `null` (Codex I16).
+    // never an inf the audit would persist as `null`.
     let implied_drivers = multiples.map(|m| spot / m);
     if implied_drivers.iter().any(|d| !d.is_finite()) {
         return None;
@@ -2164,13 +1963,12 @@ pub fn implied_expectations(
     })
 }
 
-/// The engine-only quick paths' **closed-form re-anchor**
-/// (`docs/portfolio-analysis.md` §The quick check): the stored spread percentiles
-/// and drivers from the last full pass, re-anchored on the fresh `DGS10`, with the
-/// total returns measured from the **fresh** price — one extra FRED print, no
-/// re-estimation, no new heavy retrieval. The band monitor's band is
-/// deliberately **not** derived from this — the re-anchor serves the hurdle read
-/// only.
+/// The engine-only quick paths' closed-form re-anchor
+/// (`docs/portfolio-analysis.md` §The quick check): the stored spread
+/// percentiles and drivers from the last full pass, re-anchored on the fresh
+/// `DGS10`, with the total returns measured from the fresh price. The band
+/// monitor's band is deliberately not derived from this — the re-anchor serves
+/// the hurdle read only.
 pub fn reanchor_scenarios(
     basis: &QuickCheckBasis,
     fresh_spot: f64,
@@ -2218,15 +2016,15 @@ struct AnchorScan {
 }
 
 /// The trailing-twelve-month driver print anchored at each of the newest
-/// [`ANCHOR_WINDOW_QUARTERS`] quarters, joined to the dated closes and DGS10 history
-/// (`docs/portfolio-analysis.md` §Starting parameters — the dated anchor join): each
-/// admissible quarter anchors on its filing date (period end + the filing grace when
-/// absent), reads the latest close on or before that date, and the latest published
-/// DGS10 on or before the same date. A quarter whose trailing print is not finite
-/// and positive is excluded (an economically invalid multiple observation), and —
-/// targets-v4 — one whose raw multiple exceeds `current_multiple ×`
-/// [`ANCHOR_MULTIPLE_SANITY_FACTOR`] is excluded as a sanity-bound artifact, the
-/// count returned beside the survivors for the audit record.
+/// [`ANCHOR_WINDOW_QUARTERS`] quarters, joined to the dated closes and DGS10
+/// history (`docs/portfolio-analysis.md` §Starting parameters): each admissible
+/// quarter anchors on its filing date (period end + the filing grace when
+/// absent), reads the latest close on or before that date, and the latest
+/// published DGS10 on or before the same date. A quarter whose trailing print
+/// is not finite and positive is excluded (an economically invalid multiple
+/// observation), and one whose raw multiple exceeds `current_multiple ×`
+/// [`ANCHOR_MULTIPLE_SANITY_FACTOR`] is excluded as a sanity-bound artifact,
+/// the count returned beside the survivors for the audit record.
 fn stock_anchor_observations(
     fin: &CompanyFinancials,
     rates: &RateAnchors,
@@ -2260,9 +2058,8 @@ fn stock_anchor_observations(
             // anchoring quarter's diluted count, else the nearest within the
             // window — never the newest filing's or today's, which under
             // buybacks or dilution would put a years-old print on a different
-            // basis than its own dated close and skew the multiple history. A
-            // window with no in-window count is inadmissible like any other
-            // (`docs/portfolio-analysis.md` §Starting parameters).
+            // basis than its own dated close. A window with no in-window count
+            // is inadmissible (`docs/portfolio-analysis.md` §Starting parameters).
             let shares = window.iter().find_map(|r| r.diluted_shares);
             match (revenue, shares) {
                 // The mid-cycle rung's history stands on the same normalized
@@ -2300,7 +2097,7 @@ fn stock_anchor_observations(
         if close <= 0.0 {
             continue;
         }
-        // The v4 sanity bound: a multiple far above the name's own current
+        // The sanity bound: a multiple far above the name's own current
         // multiple is a near-zero-denominator artifact or a departed regime,
         // not reversion evidence — dropped and counted.
         if let Some(cap) = multiple_cap {
@@ -2420,11 +2217,11 @@ struct DriverRead {
     /// `[bear, base, bull]` per-share drivers.
     drivers: [f64; 3],
     /// The same drivers with the growth clamp not applied (positivity fallback
-    /// only) — swapped in by the targets-v4 trough clamp release, which is decided
-    /// upstream where the anchor surfaces exist.
+    /// only) — swapped in by the trough clamp release, which is decided upstream
+    /// where the anchor surfaces exist.
     unclamped_drivers: [f64; 3],
     /// The rung-matching trailing TTM print (EPS or revenue per share) — the
-    /// current-multiple denominator for the v4 anchor bound and release signature.
+    /// current-multiple denominator for the anchor bound and release signature.
     trailing_print: Option<f64>,
     rung: DriverRung,
     /// The recorded rung label ([`TargetMeta::driver_rung`]).
@@ -2436,22 +2233,20 @@ struct DriverRead {
     clamp_flattened: bool,
 }
 
-/// The v2 driver ladder (`docs/portfolio-analysis.md` §Starting parameters): pick the
-/// per-share fundamental deterministically — consensus forward EPS where a positive
-/// consensus exists, else consensus forward revenue per share on the latest reported
-/// diluted share count — with each scenario driver's implied growth clamped by the v1
-/// sanity bound against the trailing print, and a missing published spread holding
-/// the driver flat (recorded). `None` when no rung is admissible.
+/// The driver ladder (`docs/portfolio-analysis.md` §Starting parameters): pick
+/// the per-share fundamental deterministically — consensus forward EPS where a
+/// positive consensus exists, else consensus forward revenue per share on the
+/// latest reported diluted share count — with each scenario driver's implied
+/// growth clamped by the sanity bound against the trailing print, and a missing
+/// published spread holding the driver flat (recorded). `None` when no rung is
+/// admissible.
 ///
-/// The archetype's **driver override** (`docs/trade-opportunities.md` §Starting
+/// The archetype's driver override (`docs/trade-opportunities.md` §Starting
 /// parameters) runs ahead of the shared rungs: a commodity cyclical prices
-/// **mid-cycle EPS** — the [`mid_cycle_margin`] over `annual_income` times
-/// consensus forward revenue per share — on P/E, falling back to the shared
-/// ladder, its reason recorded in the rung label, where that rung is not
-/// computable. The compounders, ai-infra and disruptor archetypes resolve to the
-/// shared ladder itself (forward EPS where a positive consensus exists, else
-/// forward revenue per share), and no archetype — Portfolio's case — is the
-/// shared ladder unchanged.
+/// mid-cycle EPS ([`mid_cycle_margin`] times consensus forward revenue per
+/// share) on P/E, falling back to the shared ladder with its reason recorded in
+/// the rung label where that rung is not computable. Every other archetype, and
+/// no archetype, is the shared ladder unchanged.
 fn driver_ladder(
     fin: &CompanyFinancials,
     archetype: Option<Archetype>,
@@ -2506,8 +2301,7 @@ fn driver_ladder(
     };
 
     // The unclamped counterpart: positivity/finiteness fallback only — what the
-    // targets-v4 trough release prices when corroborated consensus disagrees
-    // with a trough-scale trailing print.
+    // trough release prices.
     let sanitize = |driver: f64, base: f64| -> f64 {
         if driver.is_finite() && driver > 0.0 {
             driver
@@ -2516,8 +2310,6 @@ fn driver_ladder(
         }
     };
 
-    // The forward revenue per share consensus mid and the latest diluted count —
-    // the revenue rung's and the mid-cycle rung's shared inputs.
     let revenue_mid = c.and_then(|c| c.revenue_mid).filter(|m| m.is_finite() && *m > 0.0);
     let shares = latest_shares.filter(|s| *s > 0.0);
 
@@ -2577,8 +2369,7 @@ fn driver_ladder(
         // A half-published spread (either leg missing) reads as a missing
         // spread: both legs hold at mid, so `flat_driver` describes the drivers
         // exactly and a clamp collapse stays distinguishable from a
-        // consensus-flat band (`docs/portfolio-analysis.md` §Starting
-        // parameters — "held flat").
+        // consensus-flat band.
         let spread = c.and_then(|c| c.eps_low.zip(c.eps_high));
         let flat = spread.is_none();
         let (low, high) = spread.unwrap_or((mid, mid));
@@ -2627,8 +2418,8 @@ fn driver_ladder(
 }
 
 /// The clamped annual growth two consensus rows imply — `far ÷ near − 1` under
-/// the v1 sanity bound — or `None` where either row is absent or its mid is not
-/// a finite positive value: growth is undefinable there, so the three-year leg
+/// the sanity bound — or `None` where either row is absent or its mid is not a
+/// finite positive value: growth is undefinable there, so the three-year leg
 /// holds flat, recorded (`docs/portfolio-analysis.md` §Starting parameters).
 fn consensus_growth(rows: ConsensusGrowthRows) -> Option<f64> {
     match (rows.near, rows.far) {
@@ -2639,16 +2430,15 @@ fn consensus_growth(rows: ConsensusGrowthRows) -> Option<f64> {
     }
 }
 
-/// The v2 rate-anchored scenario-target function for a **priced stock**
-/// (`docs/portfolio-analysis.md` §Starting parameters): driver ladder → dated anchor
-/// join → spread-percentile multiples (inverse map, guarded) → scenario prices and
-/// total returns. The twelve-month target's bear/bull **are** the scenario prices;
-/// the three-month leg is the near-horizon form (base = spot × (1 + PR_base ⁄ 4),
-/// the price-return leg, dividends excluded; the volatility-scaled band with its
+/// The rate-anchored scenario-target function for a priced stock
+/// (`docs/portfolio-analysis.md` §Starting parameters): driver ladder → dated
+/// anchor join → spread-percentile multiples (inverse map, guarded) → scenario
+/// prices and total returns. The twelve-month target's bear/bull are the
+/// scenario prices; the three-month leg is the near-horizon form (base = spot ×
+/// (1 + PR_base ⁄ 4), dividends excluded; the volatility-scaled band with its
 /// fixed fallback); the three-year leg is the declared extrapolation
 /// ([`ThreeYearLeg::Extrapolated`]). `archetype` and `annual_income` feed the
-/// driver override ([`driver_ladder`]); Portfolio passes no archetype, which
-/// prices the shared ladder unchanged.
+/// driver override ([`driver_ladder`]); Portfolio passes no archetype.
 pub fn scenario_targets_v2(
     spot: f64,
     fin: &CompanyFinancials,
@@ -2661,7 +2451,7 @@ pub fn scenario_targets_v2(
         return TargetOutcome::NoAdmissibleDriver;
     };
 
-    // The current trailing multiple on the rung's own basis — the v4 anchor
+    // The current trailing multiple on the rung's own basis — the anchor
     // bound's cap denominator and one half of the trough release signature.
     let current_multiple = read
         .trailing_print
@@ -2671,8 +2461,8 @@ pub fn scenario_targets_v2(
     let scan = stock_anchor_observations(fin, rates, read.rung, current_multiple);
     let (observations, anchor_bounded) = (scan.observations, scan.bounded);
 
-    // The targets-v4 trough clamp release — three gates, each closing a distinct
-    // false-release path (Codex round 1, findings 1–2):
+    // The trough clamp release — three gates, each closing a distinct
+    // false-release path:
     // 1. Corroboration counts rows CONTRIBUTING to the selected rung's blended
     //    mid — never `periods_used`, and never mere field presence (a
     //    boundary-day near row is present at weight 0) — so a single estimate
@@ -2716,7 +2506,7 @@ pub fn scenario_targets_v2(
     };
 
     // Finite by the FMP shaper's overflow rejection; held here for any other
-    // producer, since the basis persists it as a required float (Codex I16).
+    // producer, since the basis persists it as a required float.
     let forward_dividends = finite(fin.ttm_dividends_per_share).unwrap_or(0.0);
     let floor = dispersion_floor(m.return_volatility);
     let scenario = spread_anchored_scenarios(
@@ -2745,9 +2535,9 @@ pub fn scenario_targets_v2(
 
     // The three-year leg's growth: the annual growth the two coming fiscal-year
     // rows imply on the selected rung — one value from the rows' mids, applied
-    // to every scenario's driver (ruled 2026-10-07) — under the same sanity
-    // clamp; a single forward row, or a row with no positive finite mid, holds
-    // growth flat (recorded).
+    // to every scenario's driver — under the same sanity clamp; a single
+    // forward row, or a row with no positive finite mid, holds growth flat
+    // (recorded).
     let three_year_growth = fin
         .consensus
         .as_ref()
@@ -2842,7 +2632,7 @@ pub struct BuiltTargets {
 /// Render a [`ScenarioSet`] into the persisted [`PriceTargets`]: the twelve-month
 /// target carries the scenario prices; the three-month leg is the near-horizon
 /// form; the three-year leg follows `three_year`. Shared by the stock and fund
-/// forms — the fund form passes the v4 stock-only provenance (`anchor_bounded`,
+/// forms — the fund form passes the stock-only provenance (`anchor_bounded`,
 /// `clamp_released`) as `0` / `false` and [`ThreeYearLeg::HeldFlat`].
 #[allow(clippy::too_many_arguments)] // each is one leg of the recorded derivation
 pub fn build_price_targets(
@@ -2857,9 +2647,8 @@ pub fn build_price_targets(
 ) -> BuiltTargets {
     let pr_base = scenario.base / spot - 1.0;
     let tm_base = spot * (1.0 + pr_base / 4.0);
-    // 2σ of daily realized volatility, √t-scaled to the quarter (targets-v7 —
-    // the one-month leg's √21 and [2%, 15%] clamp, each scaled by √3), under
-    // the [3.5%, 26%] clamp (`docs/portfolio-analysis.md` §Starting parameters).
+    // 2σ of daily realized volatility, √t-scaled to the quarter, under the
+    // [3.5%, 26%] clamp (`docs/portfolio-analysis.md` §Starting parameters).
     let tm_band = m
         .return_volatility
         .map(|v| {
@@ -3022,13 +2811,12 @@ pub fn build_price_targets(
 
 // ---- Risk tier and the capital-efficiency hurdle --------------------------------
 
-/// Deterministic stock risk-tier assignment — Trade Opportunities' canonical
-/// High / Low / else-Medium rule (`docs/trade-opportunities.md` §Starting parameters)
-/// under Portfolio's **stated missing-input rule**: a leg whose input this job's
-/// surface doesn't carry (event exposure; liquidity is enriching here) simply cannot
-/// trigger, and a holding whose tier inputs are wholesale missing reads **Medium with
-/// a logged tier-input gap** — the neutral-imputation stance, never a fabricated
-/// High or Low.
+/// Deterministic stock risk-tier assignment — the High / Low / else-Medium rule
+/// (`docs/trade-opportunities.md` §Starting parameters) under Portfolio's
+/// missing-input rule: a leg whose input this job's surface doesn't carry
+/// (event exposure) cannot trigger, and a holding whose tier inputs are
+/// wholesale missing reads Medium with a logged tier-input gap, never a
+/// fabricated High or Low.
 pub fn assign_stock_tier(
     fin: &CompanyFinancials,
     m: &ComputedMetrics,
@@ -3054,11 +2842,9 @@ pub fn assign_stock_tier(
 
     let high = fin.market_cap.map(|c| c < TIER_HIGH_MAX_MCAP).unwrap_or(false)
         || annual_vol.map(|v| v > TIER_HIGH_MIN_ANNUAL_VOL).unwrap_or(false)
-        // Negative equity is levered beyond the equity base — maximal leverage, not
-        // minimal. The naked `>` read it as passing neither leg, so a negative-book
-        // issuer fell through to the Low conjunction below. Same stance as the
-        // debt / equity factor, which scores it the band's floor
-        // (`portfolio::factors`).
+        // Negative equity is levered beyond the equity base — maximal leverage,
+        // not minimal — so it trips the High leg rather than passing neither
+        // (the same stance as the debt / equity factor, `portfolio::factors`).
         || m.debt_to_equity.map(|d| !(0.0..=TIER_HIGH_MIN_DEBT_EQUITY).contains(&d)).unwrap_or(false)
         || profitable.map(|p| !p).unwrap_or(false)
         || drawdown.map(|d| d > TIER_HIGH_MIN_DRAWDOWN).unwrap_or(false);
@@ -3071,9 +2857,8 @@ pub fn assign_stock_tier(
     // triggers (the missing-input rule).
     let low = fin.market_cap.map(|c| c > TIER_LOW_MIN_MCAP).unwrap_or(false)
         && profitable.unwrap_or(false)
-        // Guarded on both ends: the High leg above already claims a negative
-        // debt/equity, but the bound is stated here too so the Low conjunction reads
-        // correctly on its own and survives any reordering of the legs.
+        // Guarded on both ends so the Low conjunction reads correctly on its own
+        // and survives any reordering of the legs.
         && m.debt_to_equity.map(|d| (0.0..TIER_LOW_MAX_DEBT_EQUITY).contains(&d)).unwrap_or(false)
         && annual_vol.map(|v| v < TIER_LOW_MAX_ANNUAL_VOL).unwrap_or(false);
     if low {
@@ -3166,23 +2951,18 @@ pub fn hurdle_read(
     }
 }
 
-/// Bound the feasible action set from **per-holding** engine inputs only
-/// (`docs/portfolio-analysis.md` §Starting parameters — the feasible-set rule;
-/// conviction is model-authored, so it can't pre-gate). The add family is offered
-/// only when the new-money admission point test passes, the hurdle isn't `fails`
-/// (dead money drops the family a fortiori at any grade), the grade isn't F, no
-/// pre-profit overlay rule bars it (constrained runway / severe deterioration),
-/// and no hard forensic trigger is tripped (a filing-classified restatement /
-/// auditor change — the trip resolving only from the typed producer, never a
-/// bare model assertion); *add aggressively* additionally needs an A/B grade.
-/// Severe deterioration restricts the whole set to the exit family
-/// `{trim, sell all}`. Since `portfolio-v9` the set carries **no book-level
-/// term** — the retired concentration-headroom gate was whole-book context,
-/// which is the future portfolio planner's domain. Rendered into the action
-/// call's prompt as the ENGINE SET — the engine arm's own rung walks into it,
-/// while an outside-the-set model choice persists with an
-/// annotation on the audit, never a schema bar. Every grade test reads the
-/// momentum-free letter.
+/// Bound the feasible action set from per-holding engine inputs only
+/// (`docs/portfolio-analysis.md` §Starting parameters; conviction is
+/// model-authored, so it can't pre-gate). The add family is offered only when
+/// the new-money admission point test passes, the hurdle isn't `fails`, the
+/// grade isn't F, no pre-profit overlay rule bars it, and no hard forensic
+/// trigger is tripped (the trip resolving only from the typed producer, never a
+/// bare model assertion); add aggressively additionally needs an A/B grade.
+/// Severe deterioration restricts the whole set to the exit family. The set
+/// carries no book-level term. Rendered into the action call's prompt as the
+/// ENGINE SET; an outside-the-set model choice persists with an annotation on
+/// the audit, never a schema bar. Every grade test reads the momentum-free
+/// letter.
 pub fn feasible_actions(
     grade: Grade,
     hurdle: &HurdleRead,
@@ -3230,10 +3010,8 @@ pub fn engine_action(
 ) -> Action {
     use crate::portfolio::HurdleState;
     let dead_money = hurdle.state == HurdleState::Fails;
-    // A tripped hard-forensic state reads the exit family first: sell all when
-    // the holding is also dead money or F-graded, else trim — the trip is the
-    // engine's reading, never a bar on the model's (`docs/portfolio-analysis.md`
-    // §Starting parameters, the engine action rung).
+    // A tripped hard-forensic state is the engine's reading, never a bar on the
+    // model's.
     let rule = if hard_forensic {
         if grade == Grade::F || dead_money {
             Action::SellAll
@@ -3286,8 +3064,7 @@ pub const NARRATIVE_MIN_MULTIPLE_EXPANSION: f64 = 0.05;
 pub const NARRATIVE_MIN_ELAPSED_DAYS: i64 = 7;
 
 /// Which form the read took (`docs/trade-opportunities.md` §The two
-/// non-negotiables — the shared definition; Portfolio computes the held-name
-/// form): the primary revisions-vs-multiple pace comparison, or the
+/// non-negotiables): the primary revisions-vs-multiple pace comparison, or the
 /// operating-reality-vs-price fallback where analyst coverage is too thin to
 /// read revisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -3309,15 +3086,12 @@ pub enum NarrativeClass {
 }
 
 /// The narrative-vs-reality read (`docs/portfolio-analysis.md` §Starting
-/// parameters — the conviction-layer caps): revision pace vs multiple change
-/// since the prior run, both legs over the same elapsed interval (the
-/// cadence-honest pace pair — the interval cancels in the ratio), falling back
-/// to the company's own reported operating series against the annualized price
-/// move where coverage is too thin. Conviction / risk evidence only — a
-/// tripped hype read records its matched rule as evidence the model weighs,
-/// never a cap on either arm, and never a letter input. The read fires on the
-/// ratio alone: no leading-metric anchor producer exists in Portfolio, so
-/// every holding reads anchor-absent.
+/// parameters): revision pace vs multiple change since the prior run, both legs
+/// over the same elapsed interval (the interval cancels in the ratio), falling
+/// back to the company's own reported operating series against the annualized
+/// price move where coverage is too thin. Conviction / risk evidence only —
+/// never a cap on either arm, never a letter input. No leading-metric anchor
+/// producer exists in Portfolio, so every holding reads anchor-absent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NarrativeRead {
     pub form: NarrativeForm,
@@ -3517,7 +3291,7 @@ pub fn narrative_vs_reality(
     // Both legs are quotients (the fallback's expansion a `powf`) over
     // positive-only inputs, unbounded above: a feed-extreme print overflows
     // one to inf. The read is then unreadable — a gap with its reason, never a
-    // non-finite leg the audit would persist as `null` (Codex I16).
+    // non-finite leg the audit would persist as `null`.
     if !(expansion.is_finite() && reality.is_finite()) {
         return Err(
             "a pace leg overflowed over a feed-extreme print — no finite read".to_string(),
@@ -3525,8 +3299,7 @@ pub fn narrative_vs_reality(
     }
     // The classification reads the raw quotient: two finite legs can still
     // overflow it, and an infinite ratio is expansion outrunning reality
-    // beyond any finite multiple — hype, never the justified branch a filtered
-    // `None` fell to (Codex I16, round 1). Only the persisted ratio is
+    // beyond any finite multiple — hype. Only the persisted ratio is
     // finite-or-absent.
     let raw_ratio = (reality > 0.0).then(|| expansion / reality);
     let classification = if expansion < NARRATIVE_MIN_MULTIPLE_EXPANSION {
@@ -3628,33 +3401,23 @@ pub struct ToNarrativeRead {
 }
 
 /// The Trade Opportunities narrative read as of `as_of` over the trailing window
-/// that starts at `window_start` — twelve months back, or the date the idea
-/// became an opportunity when it is younger (`docs/trade-opportunities.md`
-/// §Starting parameters). The **revision form** reads the anchor print against
-/// today's consensus over the interval since the print's date
-/// ([`revision_form_legs`]), the print's per-share rows and close carried onto
-/// today's split-adjusted series by the split-adjustment bridge (its stored
-/// close against the same session's close today — [`split_bridge_factor`]).
-/// With no anchor print, no matched fiscal period, or a bridge that cannot be
-/// read, the **fallback** splits the move since the window's start into the
-/// trailing P/S change and TTM revenue per share growth, each TTM the newest
-/// contiguous four quarters filed on or before its date (the latest version
-/// known by then winning a restated period) with the newest quarter's diluted
-/// count, so a debut reads from its statements alone. The fallback's two
-/// per-share prints sit on the as-filed basis and its two prices on today's, so
-/// a split after the newest quarter cancels; a diluted count moving more than
-/// [`super::factors::OWN_HISTORY_SHARE_JUMP`] quarter over quarter between the
-/// two TTMs — a split or a large issuance — leaves no continuous basis, and the
-/// read is `unknown`. The read is `hype` when the expansion carries more than
-/// [`TO_NARRATIVE_HYPE_SHARE`] of a positive price move (the log share — the move
-/// factors exactly into the two legs); `neutral` under
-/// [`TO_NARRATIVE_MIN_MULTIPLE_EXPANSION`] or on a price that did not rise;
-/// otherwise justified-expensive. `Err` is the `unknown` read with its typed
-/// reason: an anchor print more than [`TO_NARRATIVE_ANCHOR_PROXIMITY_DAYS`]
-/// before the window's start, no close near the window's start on the fallback,
-/// no contiguous TTM filed by a date or one without positive revenue or a
-/// diluted count, a share-count break between the fallback's TTMs, an interval
-/// under [`TO_NARRATIVE_MIN_ELAPSED_DAYS`], or a leg that overflows.
+/// that starts at `window_start` (`docs/trade-opportunities.md` §Starting
+/// parameters). The revision form reads the anchor print against today's
+/// consensus over the interval since the print's date ([`revision_form_legs`]),
+/// the print's rows and close carried onto today's split-adjusted series by
+/// [`split_bridge_factor`]. With no anchor print, no matched fiscal period, or
+/// an unreadable bridge, the fallback splits the move since the window's start
+/// into the trailing P/S change and TTM revenue per share growth, each TTM the
+/// newest contiguous four quarters filed on or before its date. The fallback's
+/// two per-share prints sit on the as-filed basis and its two prices on
+/// today's, so a split after the newest quarter cancels; a diluted count moving
+/// more than [`super::factors::OWN_HISTORY_SHARE_JUMP`] between the two TTMs
+/// leaves no continuous basis, and the read is `unknown`. `hype` when the
+/// expansion carries more than [`TO_NARRATIVE_HYPE_SHARE`] of a positive price
+/// move (the log share, so the move factors exactly into the two legs);
+/// `neutral` under [`TO_NARRATIVE_MIN_MULTIPLE_EXPANSION`] or on a price that
+/// did not rise; otherwise justified-expensive. `Err` is the `unknown` read
+/// with its typed reason.
 pub fn to_narrative_read(
     fin: &CompanyFinancials,
     spot: f64,
@@ -3886,13 +3649,12 @@ fn share_basis_continuous(
 /// (drafted, calibratable — `docs/portfolio-analysis.md` §Starting parameters).
 pub const TECH_EVENT_SIGMA: f64 = 2.0;
 
-/// The input delta's **technology-event pre-flag** record — an equity-holding
-/// read flagging a possible third-party repricing event when the holding's
-/// sector-relative move since the prior read exceeds
-/// [`TECH_EVENT_SIGMA`] × its interval-scaled realized volatility (√-of-time
-/// scaling, the suite's cadence-honest convention). The flag only adds the
-/// conditional research topic; it asserts nothing
-/// about the cause (`docs/portfolio-analysis.md` §Starting parameters).
+/// The input delta's technology-event pre-flag record: a possible third-party
+/// repricing event when the holding's sector-relative move since the prior read
+/// exceeds [`TECH_EVENT_SIGMA`] × its interval-scaled realized volatility
+/// (√-of-time scaling). The flag only adds the conditional research topic; it
+/// asserts nothing about the cause (`docs/portfolio-analysis.md` §Starting
+/// parameters).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TechEventPreFlag {
     pub fired: bool,
@@ -3959,7 +3721,7 @@ pub fn tech_event_pre_flag(
     let relative_move = (latest.value / h0.value - 1.0) - (b1 / b0 - 1.0);
     let threshold = TECH_EVENT_SIGMA * vol * (sessions as f64).sqrt();
     // Positive closes bound neither quotient: a subnormal anchor close
-    // overflows the move. Unevaluable, never a persisted inf (Codex I16).
+    // overflows the move. Unevaluable, never a persisted inf.
     if !(relative_move.is_finite() && threshold.is_finite()) {
         return Err("non-finite sector-relative move over a feed-extreme close".to_string());
     }
@@ -4092,8 +3854,8 @@ mod tests {
         }
     }
 
-    /// A healthy large-cap with a full v2 surface: 16 quarterly prints, dated closes,
-    /// and a forward consensus — the driver ladder's rung 1.
+    /// A healthy large-cap with a full target surface: 16 quarterly prints, dated
+    /// closes, and a forward consensus — the driver ladder's rung 1.
     pub(crate) fn strong() -> CompanyFinancials {
         let ends = quarter_ends(16);
         let quarterly_income = ends
@@ -4107,7 +3869,7 @@ mod tests {
                 diluted_shares: Some(1.5e10),
                 // Net income on the market capitalization's scale (an earnings
                 // yield near 3%), gross profit on revenue's — the factor
-                // composite's value and quality legs (grade-v3).
+                // composite's value and quality legs.
                 net_income: Some(2.5e10),
                 gross_profit: Some(45.0),
                 cost_of_revenue: None,
@@ -4209,8 +3971,6 @@ mod tests {
                     assert!((0.0..=100.0).contains(&s), "{s}");
                 }
                 assert!(matches!(out.grade, Grade::A | Grade::B | Grade::C), "{:?}", out.grade);
-                // The twelve-month target is the v2 scenario set: rate-anchored over
-                // the full window, ordered, methodology versioned.
                 let tm = out.price_targets.twelve_month.as_ref().unwrap();
                 assert!(tm.bear <= tm.base && tm.base <= tm.bull, "ordered scenarios");
                 assert!(tm.methodology.contains("spread-anchored"), "{}", tm.methodology);
@@ -4219,7 +3979,6 @@ mod tests {
                 assert_eq!(out.target_meta.anchor_observations, ANCHOR_WINDOW_QUARTERS);
                 assert_eq!(out.target_meta.driver_rung, "consensus forward EPS");
                 assert!(!out.target_meta.flat_driver, "published low/high spread");
-                // The three-month leg is the near-horizon form off the price-return leg.
                 let tm3 = out.price_targets.three_month.as_ref().unwrap();
                 let pr_base = tm.base / 195.0 - 1.0;
                 assert!((tm3.base - 195.0 * (1.0 + pr_base / 4.0)).abs() < 1e-9);
@@ -4232,10 +3991,8 @@ mod tests {
                 assert_eq!(out.target_meta.three_year_growth, None);
                 assert!(ty.methodology.contains("flat growth"), "{}", ty.methodology);
                 assert!(ty.methodology.contains(SCENARIO_TARGET_PARAMETER_VERSION));
-                // The hurdle read is computed off the scenario TRs with the tier premium.
                 assert_ne!(out.hurdle.state, crate::portfolio::HurdleState::Unscorable);
                 assert!(out.hurdle.hurdle_rate.unwrap() > 0.04);
-                // Grade rests on three real letter sub-scores — no low-confidence marker.
                 assert!(!out.low_confidence_grade);
             }
             other => panic!("expected an analysis, got {other:?}"),
@@ -4263,12 +4020,9 @@ mod tests {
 
     #[test]
     fn a_non_positive_or_non_finite_price_abstains_at_the_floor_never_the_target_gate() {
-        // Codex I1 (ruled 2026-08-28): usability, not presence. A zero print
-        // used to fall through to the finite-target gate (0 × inf = NaN on the
-        // one-month leg) under that gate's misdescribed reason; a negative one
-        // priced finite, financially meaningless targets. Both — and a
-        // non-finite one — now exit at the floor under their own reason,
-        // naming the served print.
+        // Usability, not presence: a zero, negative, or non-finite print exits
+        // at the floor under its own reason, naming the served print, never at
+        // the finite-target gate.
         for served in [0.0, -5.0, f64::NAN, f64::INFINITY] {
             let mut fin = strong();
             fin.current_price = Some(served);
@@ -4302,9 +4056,8 @@ mod tests {
 
     #[test]
     fn no_admissible_driver_is_the_named_floor_reason() {
-        // A gradeable surface with no consensus at all: neither ladder rung is
-        // admissible, so the holding abstains under the named reason rather than
-        // pricing off nothing (`docs/portfolio-analysis.md` §Evidence floor).
+        // No consensus at all: neither ladder rung is admissible
+        // (`docs/portfolio-analysis.md` §Evidence floor).
         let mut fin = strong();
         fin.consensus = None;
         match analyze(&fin, &rates(), Default::default()) {
@@ -4477,11 +4230,9 @@ mod tests {
 
     #[test]
     fn engine_metrics_over_feed_extreme_inputs_read_absent_never_non_finite() {
-        // Codex I16 (ruled 2026-08-29): an engine metric is a finite number or
-        // a gap. A subnormal close makes one period return inf and the σ NaN;
-        // a subnormal denominator overflows a ratio; `scale` would have
-        // clamped ±inf to a 0 / 100 sub-score and passed NaN into a required
-        // persisted float, and a crossing's `observed_value` is a bare `f64`.
+        // An engine metric is a finite number or a gap: a subnormal close makes
+        // one period return inf and the σ NaN; a subnormal denominator
+        // overflows a ratio.
         assert_eq!(return_volatility(&[1e-310, 1.0, 1.0, 1.0]), None);
         let fin = CompanyFinancials {
             revenue: Some(f64::MAX),
@@ -4507,7 +4258,7 @@ mod tests {
         // Two finite samples further apart than f64::MAX overflow the
         // interpolation to inf: the surface reads absent and the mapping falls
         // to the recorded carry, never a triple with an inf edge the basis
-        // would persist as `null` (Codex I16).
+        // would persist as `null`.
         let observations = [
             AnchorObservation {
                 spread: None,
@@ -4529,7 +4280,7 @@ mod tests {
     fn implied_expectations_over_a_vanishing_multiple_read_none() {
         // The inversion is unbounded where the pricing was not: driver × m
         // stays small — the target gate passes — while spot / m overflows.
-        // No read, never an inf the audit would persist as `null` (Codex I16).
+        // No read, never an inf the audit would persist as `null`.
         let observations = [AnchorObservation {
             spread: None,
             raw_multiple: 1e-300,
@@ -4541,8 +4292,8 @@ mod tests {
 
     #[test]
     fn narrative_and_pre_flag_over_feed_extreme_prints_are_unreadable_never_non_finite() {
-        // Codex I16: the revision form's expansion leg overflows over a
-        // vanishing consensus mid beside a huge spot — a gap with its reason.
+        // The revision form's expansion leg overflows over a vanishing
+        // consensus mid beside a huge spot — a gap with its reason.
         let mut fin = strong();
         fin.consensus.as_mut().unwrap().eps_mid = Some(1e-300);
         fin.consensus.as_mut().unwrap().eps_periods[0].eps_mid = Some(1e-300);
@@ -4555,9 +4306,9 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("overflowed"), "{err}");
-        // Both legs finite but their quotient not (Codex I16, round 1): a
-        // barely-positive revision beside a huge expansion is hype — the rule
-        // records — with the ratio persisted absent, never the justified branch.
+        // Both legs finite but their quotient not: a barely-positive revision
+        // beside a huge expansion is hype, the rule recorded, with the ratio
+        // persisted absent.
         fin.consensus.as_mut().unwrap().eps_mid = Some(1.0 + f64::EPSILON);
         fin.consensus.as_mut().unwrap().eps_periods[0].eps_mid = Some(1.0 + f64::EPSILON);
         let read = narrative_vs_reality(
@@ -4588,8 +4339,8 @@ mod tests {
         assert!(err.contains("non-finite sector-relative move"), "{err}");
     }
 
-    /// The attempt-2 RKT shape: recovered current earnings against a trail of
-    /// near-zero-EPS quarters whose trailing multiples are astronomical.
+    /// Recovered current earnings against a trail of near-zero-EPS quarters
+    /// whose trailing multiples are astronomical.
     fn trough_artifact_fin() -> CompanyFinancials {
         let mut fin = strong();
         for (i, row) in fin.quarterly_income.iter_mut().enumerate() {
@@ -4607,10 +4358,9 @@ mod tests {
     fn anchor_share_count_stays_inside_the_prints_own_window() {
         // A historical revenue-per-share anchor must sit on a share count from
         // inside its own TTM window — never the newest filing's or today's,
-        // which under buybacks or dilution would put a three-year-old print on
-        // a different share basis than its own dated close and skew the
-        // anchor-multiple history (`docs/portfolio-analysis.md` §Starting
-        // parameters — the anchor carve-out from the latest-count basis).
+        // which under buybacks or dilution would put a years-old print on a
+        // different basis than its own dated close
+        // (`docs/portfolio-analysis.md` §Starting parameters).
         let buyback_profile = || {
             let mut fin = strong();
             for (i, row) in fin.quarterly_income.iter_mut().enumerate() {
@@ -4693,7 +4443,7 @@ mod tests {
             "3 surviving anchors sit below the {MIN_ANCHOR_OBSERVATIONS}-observation floor"
         );
         // The base prices off surviving history (P50 ≈ 62×), not the artifact
-        // percentiles that produced attempt 2's +1503% base.
+        // percentiles.
         let tm = bundle.targets.twelve_month.as_ref().unwrap();
         assert!(
             tm.base < 195.0 * 3.0,
@@ -4709,13 +4459,11 @@ mod tests {
         assert!(!bundle.meta.clamp_released);
     }
 
-    /// The attempt-2 GM shape: a recent earnings trough (current multiple far
-    /// above the anchor window's own normal-era multiples, trailing print
-    /// depressed against the window's earning power) with a recovery consensus
-    /// the growth clamp would otherwise crush. Corroboration is the per-rung
-    /// row count — `periods_used` deliberately stays 2 in every variant, so a
-    /// passing release proves the gate reads `eps_mid_rows`, never the blend
-    /// count (Codex round 1, finding 2).
+    /// A recent earnings trough (current multiple far above the anchor window's
+    /// own normal-era multiples, trailing print depressed against the window's
+    /// earning power) with a recovery consensus the growth clamp would otherwise
+    /// crush. `periods_used` deliberately stays 2 in every variant, so a passing
+    /// release proves the gate reads `eps_mid_rows`, never the blend count.
     fn recent_trough_fin(eps_mid_rows: u8) -> CompanyFinancials {
         let mut fin = strong();
         for (i, row) in fin.quarterly_income.iter_mut().enumerate() {
@@ -4813,10 +4561,10 @@ mod tests {
 
     #[test]
     fn a_downward_rerating_never_releases_the_clamp() {
-        // The attempt-2 CRM shape: current multiple BELOW the anchor window's
-        // rich end (the multiple re-rated down; the trailing print did not
-        // collapse) — corroborated consensus alone must not release, or the
-        // release would compound the anchors' own regime staleness.
+        // Current multiple BELOW the anchor window's rich end (the multiple
+        // re-rated down; the trailing print did not collapse) — corroborated
+        // consensus alone must not release, or the release would compound the
+        // anchors' own regime staleness.
         let mut fin = strong();
         for (i, row) in fin.quarterly_income.iter_mut().enumerate() {
             // Newest four quarters strong (current multiple ≈ 24×); the older
@@ -4925,10 +4673,9 @@ mod tests {
 
     #[test]
     fn a_clamp_flattened_published_spread_is_recorded_distinctly() {
-        // Low/mid/high all above the growth-clamp ceiling collapse to ttm × 1.35 — a
-        // published spread flattened by the clamp, not by the consensus, and the
-        // record must tell the two apart (the calibration-data honesty the flat-target
-        // finding exposed).
+        // Low/mid/high all above the growth-clamp ceiling collapse to ttm × 1.35
+        // — a published spread flattened by the clamp, not by the consensus, and
+        // the record must tell the two apart.
         let mut fin = strong();
         let c = fin.consensus.as_mut().unwrap();
         c.eps_low = Some(18.0);
@@ -4949,7 +4696,7 @@ mod tests {
         // while recording `flat_driver`: the record would misdescribe the band,
         // and a clamp collapse on the published leg could never be recorded
         // (`clamp_collapse` is suppressed on flat reads). Either leg missing →
-        // both hold at mid — the doc's "held flat".
+        // both hold at mid.
         let all_flat = |read: &DriverRead| {
             (read.drivers[0] - read.drivers[1]).abs() < 1e-12
                 && (read.drivers[2] - read.drivers[1]).abs() < 1e-12
@@ -5276,10 +5023,9 @@ mod tests {
 
     #[test]
     fn three_month_band_scales_daily_volatility_to_the_quarter() {
-        // targets-v7: the three-month half-band is daily σ × 2 × √63 — the
-        // suite's √t convention (`dispersion_floor`, `tech_event_pre_flag`) —
-        // under the [3.5%, 26%] clamp, each the retired one-month leg's
-        // constant scaled by √3 (`docs/portfolio-analysis.md` §Starting
+        // The three-month half-band is daily σ × 2 × √63 — the suite's √t
+        // convention (`dispersion_floor`, `tech_event_pre_flag`) — under the
+        // [3.5%, 26%] clamp (`docs/portfolio-analysis.md` §Starting
         // parameters); the base is the twelve-month price return prorated to a
         // quarter.
         let scenario = spread_anchored_scenarios(100.0, [6.0, 6.5, 7.0], &[], 0.045, 2.0, 0.0);
@@ -5371,7 +5117,7 @@ mod tests {
         assert!((ty0.base - scenario.base).abs() < 1e-9);
         assert!(ty0.methodology.contains("flat growth"), "{}", ty0.methodology);
         // Growth holds flat on a single row or an undefinable pair; a wide pair
-        // is clamped to the v1 sanity bound.
+        // is clamped to the sanity bound.
         assert_eq!(consensus_growth(ConsensusGrowthRows { near: Some(6.5), far: None }), None);
         assert_eq!(consensus_growth(ConsensusGrowthRows { near: Some(-1.0), far: Some(2.0) }), None);
         assert_eq!(consensus_growth(ConsensusGrowthRows { near: Some(0.0), far: Some(2.0) }), None);
@@ -5442,8 +5188,8 @@ mod tests {
     fn a_flat_carry_surface_is_widened_to_the_dispersion_floor() {
         // Flat drivers on the carry path: both scenario axes collapsed, so without
         // the floor bear == base == bull and the three-state hurdle degenerates into
-        // a point test (the live-run flat-target syndrome). The floor widens each
-        // side to ± the half-spread around base, recorded.
+        // a point test. The floor widens each side to ± the half-spread around
+        // base, recorded.
         let s = spread_anchored_scenarios(100.0, [5.0, 5.0, 5.0], &[], 0.045, 0.0, 0.08);
         assert!(s.current_multiple_carry);
         assert!(s.dispersion_floor_applied);
@@ -5488,12 +5234,8 @@ mod tests {
     }
 
     /// A stamp boundary is read cumulatively from the history on the prior
-    /// record's branch: the current stamp is no boundary; every earlier stock
-    /// prior crosses the grade-v3 factor rebuild, while a fund at v2.3 sees the
-    /// cutoffs alone and an older fund the complete-exchange correction (which
-    /// dominates the cutoffs and the earlier momentum re-homing); a prior with no
-    /// stamp and an unrecognized stamp assert no cause. The history's last row
-    /// must be the current stamp.
+    /// record's branch; a prior with no stamp and an unrecognized stamp assert
+    /// no cause. The history's last row must be the current stamp.
     #[test]
     fn grade_parameter_change_reads_the_history_per_branch() {
         use GradeBranch::{Fund, Stock};
@@ -5536,11 +5278,9 @@ mod tests {
     }
 
     /// The target stamp reads its own history the same way — per branch,
-    /// cumulatively over the rows after the prior's stamp. The production
-    /// history starts at the pre-run v5 anchor. The v6 complete-exchange rule
-    /// moves both fund horizons and leaves stocks unchanged; current, missing,
-    /// unrecognized, and pre-anchor v4 stamps remain silent. The history's last
-    /// row must be the current stamp.
+    /// cumulatively over the rows after the prior's stamp; current, missing,
+    /// unrecognized, and pre-history stamps stay silent. The history's last row
+    /// must be the current stamp.
     #[test]
     fn target_parameter_change_reads_the_history_per_branch() {
         use GradeBranch::{Fund, Stock};
@@ -5654,12 +5394,12 @@ mod tests {
         assert_eq!(f(50.0, 0.0), Grade::C, "a sector-typical name reads C");
         assert_eq!(f(40.0, 0.0), Grade::D);
         assert_eq!(f(10.0, 0.0), Grade::F);
-        // Momentum no longer moves the letter — the settled ex-momentum re-weight.
+        // Momentum never moves the letter.
         assert_eq!(f(65.0, 0.0), f(65.0, 100.0));
     }
 
     /// The letter cutoffs are ≥-inclusive at exactly A 70 / B 60 / C 45 / D 35
-    /// (`docs/portfolio-analysis.md` §Starting parameters, grade-v3).
+    /// (`docs/portfolio-analysis.md` §Starting parameters).
     #[test]
     fn letter_cutoffs_are_inclusive_at_the_documented_boundaries() {
         let at = |v: f64| {
@@ -5829,9 +5569,8 @@ mod tests {
     }
 
     /// The tier legs read a negative debt/equity as maximal leverage, as the
-    /// debt / equity factor does. The naked `>` / `<` comparisons passed neither
-    /// the High leg nor failed the Low one, so a negative-book large cap landed
-    /// on `Low`: the smallest hurdle premium, admitting the add family on a
+    /// debt / equity factor does: a negative-book large cap must not land on
+    /// `Low`, the smallest hurdle premium, admitting the add family on a
     /// scenario the correct tier leaves indeterminate.
     #[test]
     fn negative_equity_reads_as_maximal_leverage_in_the_tier_not_minimal() {
@@ -5995,7 +5734,7 @@ mod tests {
     #[test]
     fn reanchor_reproduces_the_live_computation_at_the_same_inputs() {
         // The quick paths' closed-form re-anchor over the stored basis must be the
-        // same arithmetic as the live v2 computation — at an unchanged spot and
+        // same arithmetic as the live computation — at an unchanged spot and
         // DGS10 the scenario prices and total returns are identical.
         let fin = strong();
         let rates = rates();
@@ -6570,7 +6309,7 @@ mod tests {
     }
 
     /// Spearman rank correlation between two equal-length score vectors — the
-    /// ordering-preservation check (F4: relative ordering carries real signal).
+    /// ordering-preservation check.
     /// Ties take the average rank and the coefficient is Pearson over the ranks,
     /// so clamped scores that tie (composites pinned at a band edge) don't skew
     /// the statistic the no-ties shortcut would.
@@ -6679,8 +6418,7 @@ mod tests {
     fn metric_series_labels_assert_no_basis() {
         // The holding's statement basis is per holding and per run — the prompt
         // states it beside the metric lines — so no label may claim TTM (or
-        // annual) on its own (large-scale review 2026-08-24, Priority-1 minor:
-        // "TTM net margin" on an annual-basis holding).
+        // annual) on its own.
         for s in MetricSeries::ALL {
             let d = s.describe();
             assert!(

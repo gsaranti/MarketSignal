@@ -1,18 +1,9 @@
 //! The sector and industry reads against their own trailing-year history
 //! (`docs/data-sources.md §Report enrichment`): FMP's paid `historical-*-pe` and
 //! `historical-*-performance` series reduced to two compact reads per (group, exchange).
-//!
-//! This module is the pure half of the enrichment. [`pe_history`] places the newest valid
-//! P/E within the window's valid prints — the inclusive percentile with the min / median /
-//! max band. [`trailing_return`] compounds the daily `averageChange` (percentage points)
-//! into the window's cumulative return, in percent. Both run under one rule set: rows are
-//! sorted date-ascending and deduplicated by date (the last row for a date wins), an
-//! inadmissible value is dropped, and a read needs [`MIN_SAMPLE`] valid points with the
-//! newest no more than [`MAX_STALENESS_DAYS`] old against the ET session date — below
-//! either it is [`NotDerivable`], never a numeric default.
-//!
-//! The wire fetch and the shapers live in `fmp`; the raw series never leave this module's
-//! callers, only the derived reads ride the baseline.
+//! A read needs [`MIN_SAMPLE`] valid points with the newest no more than
+//! [`MAX_STALENESS_DAYS`] old against the ET session date — below either it is
+//! [`NotDerivable`], never a numeric default. The wire fetch and the shapers live in `fmp`.
 
 use chrono::{Duration, NaiveDate};
 

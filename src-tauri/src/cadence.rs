@@ -1,44 +1,20 @@
-//! Report cadence: how long it has been since the previous Market Signal report,
-//! and the qualitative bucket that decision drives.
-//!
-//! Market Signal runs **on demand** — there is no scheduler (`docs/scheduling.md
-//! §Generating a Report`), so the interval between two reports is whatever the user
-//! chooses: intraday, daily, weekly, monthly, or an irregular gap. Two halves of the
-//! pipeline need to treat that interval as a first-class input rather than assuming a
-//! fixed week:
-//!
-//! - **Data collection** sizes its lookback windows to the elapsed interval (the
-//!   GDELT timespan and the Tavily recency window — see `gdelt`/`tavily`), so a daily
-//!   run isn't fed a week of stale news and a monthly run isn't starved of it.
-//! - **The agents** are told the cadence so they write differently for a tight daily
-//!   update versus a full monthly structural refresh (`model_agent`/`analyst_agent`).
-//!
-//! The elapsed interval is computed once in the application layer
-//! (`pipeline::compute_cadence`) from the previous report's snapshot timestamp
-//! (`as_of − prior.captured_at`) and threaded to those consumers; this type is a thin,
-//! pure classification over that number ([`ReportCadence::from_elapsed`]). It is
-//! computed *independently of the change view* (`baseline_delta`): both read the same
-//! prior snapshot, but cadence needs only its `captured_at`, so a prior whose baseline
-//! payload won't decode still yields the true cadence even though the change view
-//! degrades to nothing. `None` elapsed is the first report (no prior snapshot to
-//! measure against), which classifies as the first-report cadence.
+//! Report cadence: how long since the previous report, classified into the
+//! bucket that sizes the data lookback windows and steers the agents. Reports
+//! run on demand (`docs/scheduling.md §Generating a Report`), so the interval
+//! is whatever the user chose. Computed in `pipeline::compute_cadence` from the
+//! prior snapshot's `captured_at` alone, independent of the change view, so a
+//! prior whose baseline payload won't decode still yields the true cadence.
 
-/// Below this many days elapsed, the run is treated as *intraday* — a same-day
-/// regeneration. Above [`MONTHLY_MAX_DAYS`] it is *quarterly+* (a long gap). The
-/// boundaries between are app-layer tunables, not doc-pinned (the docs fix no cadence
-/// vocabulary); they join the pipeline's other calibrated thresholds.
+/// Half-open band edges in days. App-layer tunables, not doc-pinned (the docs
+/// fix no cadence vocabulary).
 const INTRADAY_MAX_DAYS: f64 = 1.0;
 const DAILY_MAX_DAYS: f64 = 3.0;
 const WEEKLY_MAX_DAYS: f64 = 14.0;
 const MONTHLY_MAX_DAYS: f64 = 55.0;
 
-/// The qualitative cadence bucket, derived from the elapsed interval. Each bucket
-/// names how the run should be approached — the prose lives in
-/// [`ReportCadence::main_agent_guidance`] / [`ReportCadence::analyst_cue`], the data
-/// windows in the adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CadenceBucket {
-    /// No prior report — the first run. Nothing to build on or measure against.
+    /// No prior report.
     FirstReport,
     /// Less than a day since the previous report.
     Intraday,
@@ -48,14 +24,11 @@ pub enum CadenceBucket {
     Weekly,
     /// Two weeks to ~two months.
     Monthly,
-    /// A long gap — over ~two months since the previous report.
+    /// Over ~two months.
     Quarterly,
 }
 
-/// How long since the previous report, classified. Construct from the canonical
-/// elapsed interval via [`ReportCadence::from_elapsed`] (`None` on the first report).
-/// `Copy` so it threads through the news-gather and agent calls by value; `Default`
-/// is the first-report cadence (no prior interval), which is what an unset
+/// `Default` is the first-report cadence, which is what an unset
 /// `MainAgentInput.cadence` should mean.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ReportCadence {
@@ -63,21 +36,19 @@ pub struct ReportCadence {
 }
 
 impl ReportCadence {
-    /// Build the cadence from the change view's elapsed interval. `None` is the first
-    /// report (no prior snapshot, so no interval to measure). A negative value (clock
-    /// skew between runs) is floored to the first non-zero bucket by [`Self::bucket`].
+    /// `None` is the first report. A negative value (clock skew between runs)
+    /// is floored to the first non-zero bucket by [`Self::bucket`].
     pub fn from_elapsed(elapsed_days: Option<f64>) -> Self {
         Self { elapsed_days }
     }
 
-    /// The raw elapsed interval in days, or `None` on the first report. The data
-    /// adapters read this to size their lookback windows.
+    /// Days, or `None` on the first report.
     pub fn elapsed_days(&self) -> Option<f64> {
         self.elapsed_days
     }
 
-    /// Classify the elapsed interval into a [`CadenceBucket`]. The bands are
-    /// half-open `[lo, hi)` so each boundary value lands in the longer bucket.
+    /// The bands are half-open `[lo, hi)`, so each boundary value lands in the
+    /// longer bucket.
     pub fn bucket(&self) -> CadenceBucket {
         match self.elapsed_days {
             None => CadenceBucket::FirstReport,
@@ -89,12 +60,9 @@ impl ReportCadence {
         }
     }
 
-    /// The cadence-posture block appended to the main agent's prompt: it tells the
-    /// Head Market Analyst how to pitch *this* report given the interval — a tight
-    /// tactical update on a short gap, a full structural refresh on a long one — so
-    /// the report is "gone about differently" by cadence. Always begins with the
-    /// `Report cadence:` marker so the wiring is assertable. Fires even when the
-    /// change view is absent (the first report), which the delta block cannot do.
+    /// The cadence block appended to the main agent's prompt. Always begins
+    /// with the `Report cadence:` marker so the wiring is assertable, and fires
+    /// even when the change view is absent, which the delta block cannot do.
     pub fn main_agent_guidance(&self) -> String {
         match self.bucket() {
             CadenceBucket::FirstReport => "Report cadence: this is the first Market Signal \
@@ -139,10 +107,8 @@ impl ReportCadence {
         }
     }
 
-    /// The shorter cadence cue prepended to each analyst's prompt. Coarser than the
-    /// main agent's guidance — an analyst only needs to know whether to weight recent
-    /// moves or the structural picture. Always begins with the `Report cadence:`
-    /// marker so the wiring is assertable.
+    /// The coarser cue prepended to each analyst's prompt. Always begins with
+    /// the `Report cadence:` marker so the wiring is assertable.
     pub fn analyst_cue(&self) -> String {
         match self.bucket() {
             CadenceBucket::FirstReport => "Report cadence: this is the first report — there is \
@@ -213,8 +179,6 @@ mod tests {
 
     #[test]
     fn negative_elapsed_from_clock_skew_floors_to_intraday() {
-        // A previous run timestamped slightly ahead of this one must not panic or
-        // mislabel — it lands in the shortest non-first bucket.
         assert_eq!(
             ReportCadence::from_elapsed(Some(-0.5)).bucket(),
             CadenceBucket::Intraday
@@ -248,13 +212,11 @@ mod tests {
 
     #[test]
     fn analyst_cue_collapses_to_three_live_registers_plus_first() {
-        // Intraday and Daily share a cue; Monthly and Quarterly share a cue.
         let short_a = ReportCadence::from_elapsed(Some(0.2)).analyst_cue();
         let short_b = ReportCadence::from_elapsed(Some(2.0)).analyst_cue();
         let long_a = ReportCadence::from_elapsed(Some(30.0)).analyst_cue();
         let long_b = ReportCadence::from_elapsed(Some(90.0)).analyst_cue();
-        // Same register, but the interpolated day count differs, so assert the shared
-        // steer rather than string equality.
+        // The interpolated day count differs, so assert the shared steer, not equality.
         assert!(short_a.contains("changed recently") && short_b.contains("changed recently"));
         assert!(long_a.contains("reassess") && long_b.contains("reassess"));
     }

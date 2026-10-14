@@ -1,19 +1,7 @@
 //! Long-term semantic memory for the main agent (`docs/storage.md §Vector
-//! Memory`), shipped on SQLite rather than LanceDB — a conscious
-//! deviation. At this corpus scale (≤30 retained report summaries plus durable
-//! learnings) an unindexed LanceDB would run the same exact brute-force scan
-//! this module runs; storing the embeddings as BLOBs in the app's existing
-//! database buys identical behavior without the arrow/lance/DataFusion
-//! dependency tree, the `protoc` build requirement, or an async bridge into the
-//! deliberately synchronous pipeline. The seams — these functions plus the
-//! `embedding::Embedder` trait — keep a later engine swap contained to this
-//! module if the corpus ever outgrows brute force (thousands of vectors).
-//!
-//! House style: functions over `&rusqlite::Connection`, like `storage`. The
-//! table is created by `storage::init_schema`. Two kinds share one table:
-//! a report's `summary` row cascades with its report (joined by `report_id` —
-//! `delete_report_summary` is the hook the future retention-cascade slice
-//! calls), while `learning` rows survive report deletion by design.
+//! Memory`), on SQLite by choice: at this corpus scale a brute-force cosine
+//! scan over BLOB embeddings matches an unindexed vector engine without its
+//! dependency tree or an async bridge into the synchronous pipeline.
 
 use anyhow::Result;
 use rusqlite::Connection;
@@ -41,8 +29,8 @@ impl MemoryKind {
         }
     }
 
-    /// Parse a stored `kind` label back, or `None` for a label this build does
-    /// not know (forward-compat: an unknown kind is skipped, not an error).
+    /// `None` for a label this build does not know; the search skips such rows
+    /// rather than failing.
     fn parse(label: &str) -> Option<Self> {
         match label {
             "summary" => Some(MemoryKind::Summary),
@@ -52,8 +40,8 @@ impl MemoryKind {
     }
 }
 
-/// One retrieval result: the stored content plus its cosine similarity to the
-/// query (higher is closer; 1.0 is identical direction).
+/// One retrieval result; `score` is the cosine similarity to the query (higher
+/// is closer; 1.0 is identical direction).
 #[derive(Debug, Clone)]
 pub struct MemoryHit {
     pub kind: MemoryKind,
@@ -64,10 +52,8 @@ pub struct MemoryHit {
 }
 
 impl MemoryHit {
-    /// The prompt form shared by the router input and the condensed packet: the
-    /// kind and date tag the fragment's provenance so the model can weigh recall
-    /// age; the cosine score stays internal (noise to a model). The content keeps
-    /// its own newlines — fragments are blocks, not bullets.
+    /// The kind and date tag the fragment so the model can weigh recall age;
+    /// the cosine score stays internal (noise to a model).
     pub fn prompt_fragment(&self) -> String {
         format!(
             "[{} · {}] {}",
@@ -78,20 +64,14 @@ impl MemoryHit {
     }
 }
 
-/// Insert one memory row. The embedding is stored as little-endian `f32` bytes;
-/// the store is dimension-agnostic — `search_memory` skips rows whose dimension
+/// The store is dimension-agnostic: `search_memory` skips rows whose dimension
 /// does not match the query, so a model change degrades old rows to unmatched
-/// rather than corrupting a search. A non-finite component (NaN/±inf) is a typed
-/// error: it would poison cosine scores downstream, and the one legitimate
-/// writer (a model embedding) never produces one — so it marks a bad response,
-/// not data to keep. A `summary` row without a `report_id` is likewise a typed
-/// error: a summary is definitionally one report's summary, and the
+/// rather than corrupting a search. A non-finite component is refused because
+/// it would poison cosine scores and marks a bad model response, not data to
+/// keep. A `summary` row without a `report_id` is refused because the
 /// summary-kind unique index and `delete_report_summary`'s cascade both key on
-/// the id, so an orphan row would be invisible to both.
-///
-/// Every row is the report's: the `namespace` column holds `report` on every
-/// row (`docs/storage.md §Local Vector Memory` — neither local job writes or
-/// reads a row), and every query reads that partition alone.
+/// the id. Every row's `namespace` is `report` (`docs/storage.md §Local Vector
+/// Memory`), and every query reads that partition alone.
 pub fn insert_memory(
     conn: &Connection,
     kind: MemoryKind,
@@ -120,12 +100,9 @@ pub fn insert_memory(
     Ok(())
 }
 
-/// Exact top-k retrieval: brute-force cosine over every stored row (optionally
-/// one kind), descending by similarity. Brute force is the deliberate choice at
-/// this scale — see the module header. Rows that cannot participate — an
-/// unknown kind label, an undecodable blob, a dimension mismatch with the
-/// query — are skipped with a stderr note rather than failing the search, so
-/// one bad row never blanks retrieval.
+/// Exact top-k retrieval by brute-force cosine, descending. Rows that cannot
+/// participate (unknown kind, undecodable blob, dimension mismatch) are skipped
+/// with a stderr note, so one bad row never blanks retrieval.
 pub fn search_memory(
     conn: &Connection,
     query: &[f32],
@@ -168,9 +145,8 @@ pub fn search_memory(
             );
             continue;
         }
-        // Belt-and-braces against blobs that decode to NaN/±inf (insert refuses
-        // them, but a corrupted blob still decodes): a non-finite score would
-        // sort unpredictably and could displace real hits from the top-k.
+        // Insert refuses non-finite components, but a corrupted blob still
+        // decodes; a non-finite score would sort unpredictably.
         let score = cosine_similarity(query, &embedding);
         if !score.is_finite() {
             eprintln!("vector-memory: skipping row with a non-finite similarity score");
@@ -194,11 +170,9 @@ pub fn search_memory(
     Ok(hits)
 }
 
-/// Delete one report's `summary` row — the vector-memory leg of the 30-report
-/// retention cascade (`docs/storage.md`: a deleted report's vector summary
-/// reference goes with it, durable learnings do not). The `kind` filter is what
-/// guarantees the asymmetry: a `learning` row is never touched, whatever its
-/// `report_id`. Returns how many rows were deleted (0 or 1 in practice).
+/// The vector-memory leg of the report retention cascade (`docs/storage.md`).
+/// The `kind` filter guarantees a `learning` row is never touched, whatever
+/// its `report_id`.
 pub fn delete_report_summary(conn: &Connection, report_id: &str) -> Result<usize> {
     let deleted = conn.execute(
         "DELETE FROM vector_memory
@@ -208,9 +182,8 @@ pub fn delete_report_summary(conn: &Connection, report_id: &str) -> Result<usize
     Ok(deleted)
 }
 
-/// Total rows — the cheap guard the retrieval pull uses to skip a paid
-/// embedding call when there is nothing to search (an empty store on early
-/// runs).
+/// The cheap guard that lets a retrieval pull skip a paid embedding call when
+/// there is nothing to search.
 pub fn count_memory(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row(
         "SELECT COUNT(*) FROM vector_memory WHERE namespace = 'report'",
@@ -219,18 +192,10 @@ pub fn count_memory(conn: &Connection) -> Result<i64> {
     )?)
 }
 
-/// The cosine similarity of the closest existing `learning` row to a candidate
-/// embedding, or `None` when no learning row can participate — an empty learning
-/// corpus, or only rows the search must skip (undecodable blob, dimension
-/// mismatch with the candidate). The Step-17 persist write uses this to drop a
-/// near-restatement of a learning the store already holds before spending a row
-/// on it: learnings are never deleted, so unbounded restatement is permanent
-/// growth that dilutes retrieval. Thin by design — it reuses the same
-/// brute-force cosine scan as retrieval, restricted to `learning` rows and the
-/// single nearest, so the threshold that decides "duplicate" stays an app-layer
-/// policy at the call site rather than being baked in here. The `summary` kind
-/// is excluded: dedup is within the learning corpus, never against a report's
-/// summary.
+/// The similarity of the closest `learning` row to a candidate, or `None` when
+/// no learning row can participate (so a caller can tell "no neighbor" from
+/// "an orthogonal one"). The duplicate threshold stays at the call site;
+/// summaries are excluded because dedup is within the learning corpus only.
 pub fn nearest_learning_similarity(
     conn: &Connection,
     embedding: &[f32],
@@ -239,11 +204,9 @@ pub fn nearest_learning_similarity(
     Ok(hits.first().map(|h| h.score))
 }
 
-/// The deterministic text rendering of a report summary that gets embedded —
-/// the atomic unit `docs/storage.md §Embeddings` names ("the report-summary
-/// metadata is the unit that enters vector memory", never the report Markdown).
-/// Stances first, then each non-empty list section; empty optional sections are
-/// omitted rather than rendered as empty headers.
+/// The deterministic text of a report summary that gets embedded — the unit
+/// that enters vector memory, never the report Markdown (`docs/storage.md
+/// §Embeddings`). Empty sections are omitted, not rendered as bare headers.
 pub fn summary_memory_text(summary: &ReportSummary) -> String {
     let mut out = format!(
         "Risk posture: {}. Market cycle: {}. Thesis stance: {}.\n",
@@ -290,13 +253,9 @@ const QUERY_MAX_TRANSITIONS: usize = 6;
 /// Cap on source titles rendered per finding in the post-research query.
 const QUERY_MAX_SOURCE_TITLES: usize = 3;
 
-/// The deterministic text the Step-4 pre-research pull embeds
-/// (`docs/report-workflow.md §Step 4`): memory is recalled against where
-/// the market actually is this period — the recent report context, the salient
-/// baseline levels (indices + internals, never the full baseline JSON), and the
-/// strongest moves in the change view. Pure and bounded: each section is omitted
-/// when its input is empty, and all-empty inputs render an empty string, which
-/// the pull reads as nothing to recall against.
+/// The deterministic text the pre-research pull embeds
+/// (`docs/report-workflow.md §Step 4`). All-empty inputs render an empty
+/// string, which the pull reads as nothing to recall against.
 pub fn pre_research_query(
     recent: &[ReportSummary],
     baseline: &BaselineMarketData,
@@ -316,10 +275,8 @@ pub fn pre_research_query(
         .iter()
         .chain(&baseline.internals)
         .map(|q| {
-            // The change is a percent for most quotes, but a *point delta* for rate-valued
-            // series — suffixing a point delta with `%` would contradict its unit. The kind
-            // travels on the quote (`change.kind`), so read it there rather than re-deriving
-            // it from the series id; a percent / annualized change keeps its `%`.
+            // A rate-valued series carries a point delta, so suffixing it with `%`
+            // would contradict its unit; read the kind from the quote, never the id.
             match q.change.kind {
                 ChangeKind::PointDelta => {
                     format!(
@@ -387,11 +344,8 @@ fn push_transition_line(out: &mut String, label: &str, transitions: &[SeriesTran
     out.push_str(&format!("{label}: {}\n", names.join(", ")));
 }
 
-/// The deterministic text the Step-10 post-research pull embeds
-/// (`docs/report-workflow.md §Step 10`): memory is recalled against what
-/// the research actually found — each routed topic with its rationale, its
-/// concrete queries, and a bounded slice of the source titles the executor
-/// surfaced. Pure; empty evidence renders an empty string.
+/// The deterministic text the post-research pull embeds
+/// (`docs/report-workflow.md §Step 10`); empty evidence renders an empty string.
 pub fn post_research_query(evidence: &ResearchEvidence) -> String {
     let mut out = String::new();
     for item in &evidence.items {
@@ -416,9 +370,9 @@ pub fn post_research_query(evidence: &ResearchEvidence) -> String {
     out
 }
 
-/// Cosine similarity over equal-length vectors, computed in `f64` for stable
-/// accumulation. A zero-magnitude vector has no direction, so its similarity is
-/// defined as 0.0 rather than NaN — keeping the sort in `search_memory` total.
+/// Computed in `f64` for stable accumulation. A zero-magnitude vector has no
+/// direction, so its similarity is 0.0 rather than NaN, keeping the sort in
+/// `search_memory` total.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     debug_assert_eq!(a.len(), b.len(), "cosine over mismatched dimensions");
     let mut dot = 0.0f64;
@@ -436,7 +390,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     dot / (norm_a.sqrt() * norm_b.sqrt())
 }
 
-/// Encode an embedding as the stored little-endian `f32` byte blob.
+/// The stored form: little-endian `f32` bytes.
 pub fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
     let mut blob = Vec::with_capacity(embedding.len() * 4);
     for v in embedding {
@@ -445,8 +399,7 @@ pub fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
     blob
 }
 
-/// Decode a stored blob back into an embedding, or `None` when the byte length
-/// is not a whole number of `f32`s (a truncated or foreign blob).
+/// `None` when the byte length is not a whole number of `f32`s.
 pub fn blob_to_embedding(blob: &[u8]) -> Option<Vec<f32>> {
     if !blob.len().is_multiple_of(4) {
         return None;
@@ -502,7 +455,6 @@ mod tests {
     fn cosine_handles_identity_orthogonality_and_zero() {
         assert!((cosine_similarity(&[1.0, 2.0], &[1.0, 2.0]) - 1.0).abs() < 1e-12);
         assert!(cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]).abs() < 1e-12);
-        // A zero vector has no direction: similarity is defined 0, never NaN.
         assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 1.0]), 0.0);
     }
 
@@ -584,8 +536,7 @@ mod tests {
             "t",
         )
         .unwrap();
-        // Insert refuses non-finite components, so plant the corrupt row the way it
-        // would really arrive: bytes in the blob that decode to NaN.
+        // Insert refuses non-finite components, so plant the corrupt blob directly.
         conn.execute(
             "INSERT INTO vector_memory (kind, report_id, content, embedding, created_at)
              VALUES ('summary', 'bad', 'corrupt', ?1, 't')",
@@ -602,12 +553,10 @@ mod tests {
     fn duplicate_summary_for_a_report_is_rejected_but_learnings_are_not() {
         let conn = mem();
         insert_memory(&conn, MemoryKind::Summary, Some("rep-1"), "s", &[1.0], "t").unwrap();
-        // Second summary for the same report violates the partial unique index.
         assert!(
             insert_memory(&conn, MemoryKind::Summary, Some("rep-1"), "s2", &[1.0], "t").is_err(),
             "one embedding per report summary is schema-enforced"
         );
-        // Learnings are outside the partial index: same report_id, and several of them.
         insert_memory(
             &conn,
             MemoryKind::Learning,
@@ -626,7 +575,6 @@ mod tests {
             "t",
         )
         .unwrap();
-        // A different report's summary is fine.
         insert_memory(&conn, MemoryKind::Summary, Some("rep-2"), "s", &[1.0], "t").unwrap();
     }
 
@@ -638,7 +586,6 @@ mod tests {
         let err =
             insert_memory(&conn, MemoryKind::Summary, None, "orphan", &[1.0], "t").unwrap_err();
         assert!(err.to_string().contains("without a report_id"), "{err}");
-        // Learnings legitimately carry no report_id.
         insert_memory(&conn, MemoryKind::Learning, None, "learning", &[1.0], "t").unwrap();
     }
 
@@ -673,8 +620,7 @@ mod tests {
         let conn = mem();
         insert_memory(&conn, MemoryKind::Summary, Some("rep-1"), "s1", &[1.0], "t").unwrap();
         insert_memory(&conn, MemoryKind::Summary, Some("rep-2"), "s2", &[1.0], "t").unwrap();
-        // A learning tagged with the same report id must still survive the cascade —
-        // the kind filter, not the report_id, is what protects durable learnings.
+        // Tagged with the deleted report's id: the kind filter alone protects it.
         insert_memory(
             &conn,
             MemoryKind::Learning,
@@ -711,10 +657,8 @@ mod tests {
             text.contains("Key risks:\n- Sticky core inflation."),
             "{text}"
         );
-        // Empty optional sections are omitted entirely, not rendered as bare headers.
         assert!(!text.contains("Unresolved questions"), "{text}");
         assert!(!text.contains("Forward outlook themes"), "{text}");
-        // Deterministic: the same summary always embeds the same text.
         assert_eq!(text, summary_memory_text(&sample_summary()));
     }
 
@@ -729,14 +673,12 @@ mod tests {
     #[test]
     fn nearest_learning_similarity_scores_the_closest_learning() {
         let conn = mem();
-        // Nothing to be near yet: an empty learning corpus returns None, never 0.0
-        // (the call site must be able to tell "no neighbor" from "an orthogonal one").
+        // An empty corpus is None, never 0.0: "no neighbor" differs from "an orthogonal one".
         assert!(nearest_learning_similarity(&conn, &[1.0, 0.0])
             .unwrap()
             .is_none());
 
         insert_memory(&conn, MemoryKind::Learning, None, "l", &[1.0, 0.0], "t").unwrap();
-        // An identical direction scores ~1.0 (a duplicate); an orthogonal one ~0.0.
         let same = nearest_learning_similarity(&conn, &[1.0, 0.0])
             .unwrap()
             .unwrap();
@@ -752,8 +694,6 @@ mod tests {
             "orthogonal embedding scores ~0.0: {orthogonal}"
         );
 
-        // The *closest* learning wins: a second row aligned with a new query
-        // direction is returned over the now-orthogonal first row (top-1, not first).
         insert_memory(&conn, MemoryKind::Learning, None, "l2", &[0.0, 1.0], "t").unwrap();
         let best = nearest_learning_similarity(&conn, &[0.0, 1.0])
             .unwrap()
@@ -767,8 +707,6 @@ mod tests {
     #[test]
     fn nearest_learning_similarity_ignores_summary_rows() {
         let conn = mem();
-        // A summary identical to the query must not register as a near-duplicate
-        // learning — dedup is within the learning corpus only.
         insert_memory(&conn, MemoryKind::Summary, Some("r"), "s", &[1.0, 0.0], "t").unwrap();
         assert!(
             nearest_learning_similarity(&conn, &[1.0, 0.0])
@@ -849,7 +787,6 @@ mod tests {
         };
         let q = pre_research_query(&[sample_summary()], &baseline, Some(&deltas));
 
-        // Recent context, levels, change view, and transitions all render.
         assert!(q.contains("Thesis stance: uncertain."), "{q}");
         assert!(
             q.contains("Current market picture:\n- S&P 500: 5610 index points (+0.40%)"),
@@ -868,7 +805,6 @@ mod tests {
             !q.contains("Series missing this run"),
             "no missing series, no line"
         );
-        // Deterministic: same inputs, same query text.
         assert_eq!(
             q,
             pre_research_query(&[sample_summary()], &baseline, Some(&deltas))
@@ -877,10 +813,6 @@ mod tests {
 
     #[test]
     fn pre_research_query_omits_percent_suffix_for_a_point_delta_quote() {
-        // A rate-valued FRED internal (DGS10) carries a point delta in `change` (kind
-        // PointDelta), not a percent. The current-market-picture line must NOT suffix that
-        // figure with `%` — a `(+0.10%)` would contradict the change's unit. A genuine-percent
-        // quote still keeps its `%`. The name is untagged now; the kind carries the unit.
         let baseline = BaselineMarketData {
             indices: vec![Quote {
                 symbol: "^GSPC".into(),
@@ -900,7 +832,6 @@ mod tests {
         };
         let q = pre_research_query(&[], &baseline, None);
 
-        // The point-delta rate renders its move with no `%`.
         assert!(
             q.contains("- 10-Year Treasury Yield: 4.3 percent (+0.10)"),
             "point-delta quote should render the move without a unit suffix: {q}"
@@ -909,7 +840,6 @@ mod tests {
             !q.contains("(+0.10%)"),
             "a point delta must not be suffixed with a misleading %: {q}"
         );
-        // A genuine-percent quote keeps its `%`.
         assert!(
             q.contains("- S&P 500: 5610 index points (+0.40%)"),
             "a percent quote should keep its %: {q}"
@@ -926,8 +856,6 @@ mod tests {
 
     #[test]
     fn pre_research_query_keeps_the_strongest_moves_within_the_cap() {
-        // More changed series than the cap; the weakest relative moves drop out and
-        // a no-percentage series ranks last rather than fabricating a percentage.
         let changed: Vec<SeriesDelta> = (0..QUERY_MAX_DELTA_LINES + 3)
             .map(|i| {
                 delta(
@@ -950,7 +878,6 @@ mod tests {
             lines, QUERY_MAX_DELTA_LINES,
             "capped at the strongest moves"
         );
-        // The strongest move survived; the weakest did not.
         assert!(
             q.contains(&format!("series-{}", QUERY_MAX_DELTA_LINES + 2)),
             "{q}"

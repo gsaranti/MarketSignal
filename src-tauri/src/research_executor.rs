@@ -1,35 +1,7 @@
-//! Step 9: the bounded research executor (`docs/report-workflow.md §Step 9`).
-//!
-//! The first consumer of the Step-8 `ResearchPlan`. Where routing decides *what*
-//! to investigate, this stage executes it: it walks the plan's topics in priority
-//! order, issues each query against a search backend, and returns the curated
-//! evidence the main agent reasons over (via the Step-11 condensed packet in
-//! [`crate::research_packet`]).
-//!
-//! This is the one stage that may loop or branch, so the three hard bounds live
-//! here, in the application layer, not in any model: at most
-//! [`MAX_RESEARCH_REQUESTS`] requests per job, at most [`MAX_RESEARCH_DURATION`]
-//! of wall-clock, and a dynamic-branching depth of at most [`MAX_RESEARCH_DEPTH`]
-//! (a query may spawn at most one follow-up). The budgets are checked at the
-//! request boundary — the same cooperative-checkpoint pattern
-//! `pipeline::bail_if_cancelled` uses for cancellation — so an in-flight request
-//! is never interrupted, and a too-large plan degrades to a truncated-but-honest
-//! [`ResearchEvidence`] (its `stopped_reason` records *why*) rather than aborting.
-//!
-//! Like the rest of the spine, the executor is synchronous: every backend HTTP
-//! call is `reqwest::blocking`, and the whole stage runs inside the Tauri
-//! command's `spawn_blocking`. The 30-minute bound is an elapsed-time check at
-//! each boundary (the injectable [`Clock`] seam keeps it testable without
-//! sleeping), not an async timeout — no `tokio` is needed here.
-//!
-//! Wired into the report pipeline since the research-half wiring slice:
-//! `pipeline::assemble_research_packet` executes the routed plan here and feeds
-//! the evidence into the Step-11 condensed packet ([`crate::research_packet`]).
-//! The *dynamic branching* runs through the same wiring — [`NoBranch`] is the
-//! trait's no-op default, and [`DeltaBranchPolicy`] is the real follow-up
-//! generator: deterministic delta-rules keyed off the baseline change view (the
-//! §Step 9 "if oil spikes …" triggers). [`select_branch_policy`] resolves which
-//! of the two a run uses from its change view.
+//! Step 9: the bounded research executor (`docs/report-workflow.md §Step 9`). Walks the
+//! Step-8 `ResearchPlan` against a [`SearchBackend`], branches through a [`BranchPolicy`],
+//! and owns the request / wall-clock / depth bounds, checked at request boundaries so an
+//! in-flight request is never interrupted and a too-large plan truncates honestly.
 
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
@@ -42,39 +14,34 @@ use crate::news::RawHeadline;
 use crate::progress::RunContext;
 use crate::research_router::{ResearchItem, ResearchPlan};
 
-/// Hard ceiling on research requests per job (`docs/report-workflow.md
-/// §Step 9`). Counted across every topic and every branching depth; the
-/// `(N+1)`-th request is refused, so exactly this many searches can fire.
+/// Hard ceiling on research requests per job (`docs/report-workflow.md §Step 9`),
+/// counted across every topic and branching depth; the `(N+1)`-th request is refused.
 pub const MAX_RESEARCH_REQUESTS: usize = 50;
 
-/// Hard wall-clock ceiling on the research phase (`§Step 9`). Checked at each
-/// request boundary against the [`Clock`]; an in-flight request is allowed to
-/// finish, so the real ceiling is this plus one backend timeout.
+/// Hard wall-clock ceiling on the research phase (`§Step 9`), checked at each request
+/// boundary; an in-flight request finishes, so the real ceiling is this plus one backend
+/// timeout.
 pub const MAX_RESEARCH_DURATION: Duration = Duration::from_secs(30 * 60);
 
-/// Maximum dynamic-branching depth (`§Step 9`). A plan query runs at depth 1; a
-/// finding below this cap may spawn one follow-up at depth 2; a depth-2 finding
-/// spawns nothing further. The executor owns this cap — a [`BranchPolicy`] cannot
+/// Maximum dynamic-branching depth (`§Step 9`): a plan query runs at depth 1 and may
+/// spawn one follow-up at depth 2. The executor owns this cap; a [`BranchPolicy`] cannot
 /// breach it.
 pub const MAX_RESEARCH_DEPTH: u32 = 2;
 
-/// Why the executor stopped before exhausting the plan. Absent from the evidence
-/// (`stopped_reason == None`) means the whole plan ran within budget.
+/// Why the executor stopped before exhausting the plan; `None` on the evidence means the
+/// whole plan ran within budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StopReason {
-    /// The 50-request budget was reached.
     RequestBudget,
-    /// The 30-minute wall-clock budget was reached.
     TimeBudget,
-    /// The run was cancelled (cooperative flag observed at a boundary).
+    /// The cooperative cancellation flag was observed at a request boundary.
     Cancelled,
 }
 
-/// One executed query and the sources it returned, tagged with its branching
-/// depth (1 for a plan query, 2 for a follow-up). A failed search records an
-/// empty `sources` rather than dropping the finding, so the evidence shows the
-/// query was attempted.
+/// One executed query and the sources it returned; `depth` is 1 for a plan query, 2 for
+/// a follow-up. A failed search records empty `sources` rather than dropping the
+/// finding, so the evidence shows the query was attempted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
     pub query: String,
@@ -82,9 +49,7 @@ pub struct Finding {
     pub sources: Vec<RawHeadline>,
 }
 
-/// The curated evidence gathered for one plan topic: the originating topic and
-/// rationale (carried through from the [`ResearchItem`]) plus every finding the
-/// executor produced for it.
+/// One plan topic's evidence, the topic and rationale carried from its [`ResearchItem`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvidenceItem {
     pub topic: String,
@@ -93,9 +58,7 @@ pub struct EvidenceItem {
     pub findings: Vec<Finding>,
 }
 
-/// The output of Step 9: the per-topic evidence, the total request count spent
-/// against the budget, and the truncation reason (if any). What the Step-11
-/// condensed packet will draw on.
+/// The output of Step 9; `requests_made` is the count spent against the request budget.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ResearchEvidence {
     pub items: Vec<EvidenceItem>,
@@ -103,17 +66,15 @@ pub struct ResearchEvidence {
     pub stopped_reason: Option<StopReason>,
 }
 
-/// The executor's search backend: issue one research query and return its
-/// sources. Sync and pure at the trait boundary, like `NewsSource` — the blocking
-/// HTTP call inside the live (Tavily) adapter is offloaded via `spawn_blocking` at
-/// the Tauri command seam. Distinct from `NewsSource::gather`, which is the fixed
-/// Step-7 topic sweep; this drives arbitrary plan queries.
+/// The executor's search backend. Sync at the trait boundary, like `NewsSource`: the
+/// live adapter's blocking HTTP call is offloaded via `spawn_blocking` at the Tauri
+/// command seam. Distinct from `NewsSource::gather`, the fixed Step-7 topic sweep; this
+/// drives arbitrary plan queries.
 pub trait SearchBackend {
     fn search(&self, query: &str) -> anyhow::Result<Vec<RawHeadline>>;
 }
 
-/// Deterministic offline backend: echoes the query back as a single synthetic
-/// source, so the executor and its tests run without live keys.
+/// Deterministic offline backend: echoes the query back as one synthetic source.
 #[derive(Debug, Default)]
 pub struct StubSearchBackend;
 
@@ -129,22 +90,16 @@ impl SearchBackend for StubSearchBackend {
     }
 }
 
-/// Decides whether a completed finding spawns a follow-up query (the depth-2
-/// dynamic branching of `§Step 9`). Consulted only when the finding's depth is
-/// below [`MAX_RESEARCH_DEPTH`], and the `Option` return type-enforces the spec's
-/// "a research request may spawn at most one follow-up" — the executor owns the
-/// depth cap, the one-per-request fan-out, *and* the request/time budgets, so no
-/// policy can breach any of them. (The 50-request budget math the router relies on
-/// — `research_router.rs`'s "5 topics × 4 × depth-2" — assumes exactly this 1:1
-/// follow-up shape.)
+/// Decides whether a completed finding spawns a follow-up query (`§Step 9`). Consulted
+/// only when the finding's depth is below [`MAX_RESEARCH_DEPTH`]; the `Option` return
+/// type-enforces "at most one follow-up per request", the 1:1 shape the router's
+/// request-budget math ("5 topics × 4 × depth-2") assumes. The executor owns the depth
+/// cap and the budgets, so no policy can breach them.
 pub trait BranchPolicy {
     fn follow_up(&self, item: &ResearchItem, finding: &Finding) -> Option<String>;
 }
 
-/// The trait's no-op default: no dynamic branching. The real follow-up generator is
-/// [`DeltaBranchPolicy`] (deterministic delta-rules keyed off the change view); this
-/// no-op remains the slot the depth machinery is built around and the stand-in
-/// wherever no change view is available.
+/// No dynamic branching: the stand-in wherever no change view is available.
 #[derive(Debug, Default)]
 pub struct NoBranch;
 
@@ -166,15 +121,12 @@ enum Metric {
     Pct,
 }
 
-/// One delta-conditioned branching rule. When any of `series_ids` appears in this run's
-/// change view having moved at least `threshold` (measured by `metric`) **in
-/// `direction`**, the rule fires; it then contributes `follow_up_query` as the depth-2
-/// second-order investigation for a research topic whose label or rationale contains any
-/// of `keywords`. The direction gate keeps the rules faithful to the doc's *directional*
-/// triggers — "if oil **spikes**", "if yields **rise sharply**"
-/// (`docs/report-workflow.md §Step 9`) — so a sharp *decline* (a different thesis:
-/// demand destruction, flight-to-quality) doesn't fire a rise-flavored follow-up. A
-/// future crash rule is a one-row `Direction::Down` entry with its own query.
+/// One delta-conditioned branching rule: fires when any of `series_ids` moved at least
+/// `threshold` (by `metric`) in `direction` this run, and then contributes
+/// `follow_up_query` as the depth-2 follow-up for a topic whose label or rationale
+/// contains any of `keywords`. The direction gate keeps the rules faithful to the doc's
+/// directional triggers ("if oil spikes", `docs/report-workflow.md §Step 9`), so a sharp
+/// decline — a different thesis — doesn't fire a rise-flavored follow-up.
 #[derive(Debug)]
 struct TriggerRule {
     series_ids: &'static [&'static str],
@@ -185,37 +137,26 @@ struct TriggerRule {
     follow_up_query: &'static str,
 }
 
-/// The cadence anchor for the trigger thresholds, in days. Each rule's `threshold` is the
-/// move that fires it over a *weekly* interval; the effective threshold for a given run is
-/// that anchor value scaled by [`cadence_scale`] against the run's actual elapsed interval.
-/// Seven days is one calendar week — the ~weekly cadence the raw thresholds were originally
-/// calibrated to, and which falls inside the cadence module's `Weekly` band (`[3, 14)` days).
+/// The cadence anchor for the trigger thresholds, in days: each rule's `threshold` is
+/// the move that fires over a weekly interval, scaled by [`cadence_scale`] to the run's
+/// actual elapsed interval. Falls inside the cadence module's `Weekly` band.
 const THRESHOLD_ANCHOR_DAYS: f64 = 7.0;
 
-/// Clamp floor on the cadence scale factor (see [`cadence_scale`]). Keeps a near-zero
-/// interval (an intraday regeneration, or clock skew yielding a non-positive elapsed) from
-/// collapsing the threshold onto market noise — over any interval a move must still clear
-/// at least this fraction of the weekly threshold. Robustness-critical; an app-layer
-/// tunable, calibrated against real runs.
+/// Clamp floor on the cadence scale factor: keeps a near-zero interval (an intraday
+/// regeneration, or clock skew yielding a non-positive elapsed) from collapsing the
+/// threshold onto market noise.
 const THRESHOLD_SCALE_MIN: f64 = 0.5;
 
-/// Clamp ceiling on the cadence scale factor (see [`cadence_scale`]). Keeps a long gap from
-/// raising the threshold so far that a rule can effectively never fire. A calibration
-/// nicety (the floor is the load-bearing clamp); an app-layer tunable.
+/// Clamp ceiling on the cadence scale factor: keeps a long gap from raising the threshold
+/// so far that a rule can never fire.
 const THRESHOLD_SCALE_MAX: f64 = 2.5;
 
-/// Time-normalize a rule's weekly-anchored threshold to a run's actual cadence:
-/// `sqrt(elapsed_days / THRESHOLD_ANCHOR_DAYS)`, clamped into
-/// `[THRESHOLD_SCALE_MIN, THRESHOLD_SCALE_MAX]`. The square root is the random-walk law —
-/// a series' expected move grows with the square root of elapsed time — so a move must be
-/// "big for the interval" to fire: a daily gap fires on a smaller move than a weekly one,
-/// a monthly gap demands a larger one. At exactly the weekly anchor the factor is `1.0`, so
-/// the raw thresholds (and every weekly-cadence test) are preserved unchanged.
-///
-/// The function is total: a degenerate interval — non-positive (clock skew between runs) or
-/// non-finite (`NaN`) — floors to `THRESHOLD_SCALE_MIN` rather than zeroing or poisoning the
-/// threshold. The early return is what keeps that honest: `f64::clamp` would propagate a
-/// `NaN` straight through, so the degenerate cases are handled before the clamp.
+/// Time-normalize a weekly-anchored threshold to a run's cadence:
+/// `sqrt(elapsed_days / THRESHOLD_ANCHOR_DAYS)`, clamped. The square root is the
+/// random-walk law (a series' expected move grows with the square root of elapsed time),
+/// so a move must be big for its interval to fire; at the weekly anchor the factor is
+/// `1.0`. A non-positive or non-finite interval floors to `THRESHOLD_SCALE_MIN` before
+/// the clamp, because `f64::clamp` would propagate a `NaN` straight through.
 fn cadence_scale(elapsed_days: f64) -> f64 {
     let ratio = elapsed_days / THRESHOLD_ANCHOR_DAYS;
     if !ratio.is_finite() || ratio <= 0.0 {
@@ -224,17 +165,11 @@ fn cadence_scale(elapsed_days: f64) -> f64 {
     ratio.sqrt().clamp(THRESHOLD_SCALE_MIN, THRESHOLD_SCALE_MAX)
 }
 
-/// The seeded delta-trigger table. Only delta-conditioned triggers over level-bearing
-/// series the change view actually carries are expressible here, so the first cut ships
-/// **oil** and **Treasury yields** — both FRED `internals` series, inside
-/// `baseline_delta::DELTA_GROUPS`. The doc's other examples are deferred: geopolitical
-/// escalation is news-conditioned (no delta signal), a semiconductor *price* level is
-/// not in the delta groups (sector performance is excluded; only sector P/E is carried),
-/// and "rally despite weak macro" is a compound index-vs-macro condition. Adding a clean
-/// single-series trigger (dollar index, natural gas, a credit spread, VIX) is a one-row
-/// edit here. Each `threshold` is the **weekly-anchored** magnitude — the move that fires
-/// over a ~weekly interval; [`rule_fired`] scales it to the run's real cadence via
-/// [`cadence_scale`], so the raw values stay weekly-calibrated and tunable.
+/// The delta-trigger table. Only delta-conditioned triggers over series the change view
+/// carries (`baseline_delta::DELTA_GROUPS`) are expressible here, which is why the doc's
+/// news-conditioned and compound examples (geopolitical escalation, "rally despite weak
+/// macro") are absent; a single-series trigger is a one-row edit. Each `threshold` is the
+/// weekly-anchored magnitude, scaled to the run's cadence by [`rule_fired`].
 const TRIGGER_RULES: &[TriggerRule] = &[
     TriggerRule {
         series_ids: &["DCOILWTICO"],
@@ -269,40 +204,22 @@ const TRIGGER_RULES: &[TriggerRule] = &[
     },
 ];
 
-/// The real follow-up generator (`docs/report-workflow.md §Step 9`): deterministic
-/// delta-rules keyed off this run's baseline change view. Built via
-/// [`DeltaBranchPolicy::from_deltas`], which resolves at construction which
-/// [`TRIGGER_RULES`] fired (a tracked series moved past its threshold in the rule's
-/// direction). During execution each fired rule emits its second-order follow-up query
-/// **at most once**, attached to the first matching topic-finding the executor reaches —
-/// and since the executor walks topics in descending priority, that is the
-/// highest-priority matching topic. With no change view, or no rule fired, it degrades to
-/// the [`NoBranch`] no-op.
-///
-/// One bound is inherited from the trait, not chosen here: `follow_up` returns a single
-/// `Option<String>`, so a finding spawns at most one follow-up (the executor's
-/// per-request budget math depends on this 1:1 shape). When several fired rules match the
-/// *same* finding, their follow-up queries are **merged into one** combined query and all
-/// are marked emitted — so every fired rule with a matching topic contributes exactly
-/// once, without ever spawning a second search for one finding. (A fired rule that no
-/// topic matches simply does not emit; there is nowhere on-thesis to attach it.)
-///
-/// [`select_branch_policy`] picks it over [`NoBranch`] at `generate_report`'s
-/// `execute_research` call site (`pipeline::assemble_research_packet`) whenever a
-/// change view exists for the run.
+/// The follow-up generator (`docs/report-workflow.md §Step 9`): deterministic
+/// delta-rules keyed off this run's change view, the fired [`TRIGGER_RULES`] resolved at
+/// construction. Each fired rule emits its follow-up at most once, attached to the first
+/// matching topic-finding the executor reaches — the highest-priority one, since topics
+/// walk in descending priority. Several fired rules matching the same finding merge into
+/// one combined query, because the trait yields one follow-up per finding; a fired rule
+/// no topic matches never emits.
 pub struct DeltaBranchPolicy {
-    /// Indices into [`TRIGGER_RULES`] that fired for this run's change view.
+    /// Indices into [`TRIGGER_RULES`].
     fired: Vec<usize>,
-    /// Fired rules already emitted, so each contributes at most one follow-up across the
-    /// whole run. Interior mutability because `follow_up` takes `&self`; the executor is
-    /// single-threaded and synchronous, so a `RefCell` is sound here.
+    /// Fired rules already emitted. Interior mutability because `follow_up` takes
+    /// `&self`; the executor is single-threaded and synchronous, so a `RefCell` is sound.
     emitted: RefCell<HashSet<usize>>,
 }
 
 impl DeltaBranchPolicy {
-    /// Resolve the fired triggers from this run's change view. A rule fires when any of
-    /// its `series_ids` appears in `deltas.changed` with a move at or past its `threshold`
-    /// (by the rule's `metric`); a `Pct` rule needs a present `pct_change`.
     pub fn from_deltas(deltas: &BaselineDeltas) -> Self {
         let fired = TRIGGER_RULES
             .iter()
@@ -319,14 +236,10 @@ impl DeltaBranchPolicy {
 
 impl BranchPolicy for DeltaBranchPolicy {
     fn follow_up(&self, item: &ResearchItem, _finding: &Finding) -> Option<String> {
-        // Delta-conditioned, not finding-conditioned: the follow-up content comes from
-        // which series moved (resolved at construction), not what this search returned —
-        // so `_finding` is unused beyond driving the per-finding invocation.
-        //
-        // Every un-emitted fired rule this topic matches is consumed here and its query
-        // merged into the single returned string: the trait yields one follow-up per
-        // finding, so when two rules collide on one finding a merged query carries both
-        // rather than dropping the lower-priority one.
+        // Delta-conditioned, not finding-conditioned: the follow-up comes from which
+        // series moved, so `_finding` only drives the per-finding invocation. Every
+        // un-emitted fired rule this topic matches is consumed here and merged into the
+        // one returned query.
         let mut emitted = self.emitted.borrow_mut();
         let mut queries: Vec<&'static str> = Vec::new();
         for &idx in &self.fired {
@@ -347,12 +260,8 @@ impl BranchPolicy for DeltaBranchPolicy {
     }
 }
 
-/// Pick the branch policy for a run from its baseline change view: the real
-/// [`DeltaBranchPolicy`] when a change view exists, otherwise the [`NoBranch`] no-op
-/// (a first report or an unreadable prior snapshot yields `None`, and a present-but-
-/// no-rule-fired view degrades to no-op inside `DeltaBranchPolicy` anyway). This is the
-/// selection the research phase makes at `generate_report`'s `execute_research` call
-/// site (`pipeline::assemble_research_packet`).
+/// [`DeltaBranchPolicy`] when a change view exists, otherwise [`NoBranch`] (a first
+/// report or an unreadable prior snapshot yields `None`).
 pub fn select_branch_policy(deltas: Option<&BaselineDeltas>) -> Box<dyn BranchPolicy> {
     match deltas {
         Some(deltas) => Box::new(DeltaBranchPolicy::from_deltas(deltas)),
@@ -360,12 +269,8 @@ pub fn select_branch_policy(deltas: Option<&BaselineDeltas>) -> Box<dyn BranchPo
     }
 }
 
-/// Whether `rule` fired against `deltas`: any matching series id that moved in the rule's
-/// `direction` and cleared the **cadence-scaled** threshold by the rule's metric. The
-/// threshold is the rule's weekly anchor scaled to this run's actual interval via
-/// [`cadence_scale`] (so the same move fires over a short gap but not a long one). The
-/// direction gate keeps "oil spikes" / "yields rise sharply" from firing on a sharp
-/// decline.
+/// Any matching series moved in the rule's `direction` past the cadence-scaled threshold
+/// by the rule's metric.
 fn rule_fired(rule: &TriggerRule, deltas: &BaselineDeltas) -> bool {
     let threshold = rule.threshold * cadence_scale(deltas.elapsed_days);
     deltas.changed.iter().any(|d| {
@@ -378,10 +283,8 @@ fn rule_fired(rule: &TriggerRule, deltas: &BaselineDeltas) -> bool {
     })
 }
 
-/// Whether any of `keywords` appears as a whole word in the item's topic or rationale.
-/// Word-boundary (not substring) matching so a domain word like "turmoil" can't trip the
-/// "oil" keyword; the text is split on non-alphanumeric characters so hyphenated labels
-/// tokenize cleanly.
+/// Whole-word (not substring) matching, so "turmoil" can't trip the "oil" keyword; the
+/// text splits on non-alphanumeric characters so hyphenated labels tokenize cleanly.
 fn topic_matches(item: &ResearchItem, keywords: &[&str]) -> bool {
     let text = format!("{} {}", item.topic, item.rationale).to_lowercase();
     let words: HashSet<&str> = text
@@ -391,16 +294,14 @@ fn topic_matches(item: &ResearchItem, keywords: &[&str]) -> bool {
     keywords.iter().any(|kw| words.contains(kw))
 }
 
-/// Elapsed-time source for the 30-minute budget. A seam so the budget is testable
-/// without sleeping: the live [`WallClock`] wraps `Instant`; tests inject a clock
-/// that advances deterministically.
+/// Elapsed-time source for the wall-clock budget: a seam so the budget is testable
+/// without sleeping.
 pub trait Clock {
-    /// Time elapsed since the research phase began.
+    /// Since the research phase began.
     fn elapsed(&self) -> Duration;
 }
 
-/// The live clock: elapsed since construction. Built once, at the start of the
-/// research phase.
+/// Elapsed since construction; built once at the start of the research phase.
 pub struct WallClock {
     start: Instant,
 }
@@ -425,17 +326,12 @@ impl Clock for WallClock {
     }
 }
 
-/// Execute a bounded research plan against `backend`, enforcing the three Step-9
-/// limits, and return the curated evidence.
-///
-/// Topics are taken in descending priority so the request budget is spent on the
-/// most important ones first. Each topic's plan queries seed a work queue at depth
-/// 1; `policy` may push one follow-up per finding (depth 2), bounded by
-/// [`MAX_RESEARCH_DEPTH`]. Before every request the budget is checked — cancel
-/// first, then the request count, then the clock — and the first breach sets
-/// `stopped_reason` and returns what was gathered so far. Every actual search is
-/// bracketed by a `request-started` / `request-finished` progress row, and a
-/// failed search degrades to an empty finding rather than aborting the phase.
+/// Execute a bounded research plan against `backend` under the three Step-9 limits.
+/// Topics are taken in descending priority so the request budget is spent on the most
+/// important ones first. Before every request the budget is checked — cancel first,
+/// then the request count, then the clock — and the first breach sets `stopped_reason`
+/// and returns what was gathered so far. A failed search degrades to an empty finding
+/// rather than aborting the phase.
 pub fn execute_research(
     plan: &ResearchPlan,
     backend: &dyn SearchBackend,
@@ -456,8 +352,6 @@ pub fn execute_research(
             findings: Vec::new(),
         };
 
-        // Per-topic work queue of (query, depth), seeded with the plan's queries at
-        // depth 1. Follow-ups push depth+1 entries until the depth cap.
         let mut queue: VecDeque<(String, u32)> =
             item.queries.iter().map(|q| (q.clone(), 1)).collect();
 
@@ -496,8 +390,7 @@ pub fn execute_research(
                         "failed",
                         Some(e.to_string()),
                     );
-                    // Fail-soft: a single failed search records an empty finding and
-                    // the phase continues.
+                    // Fail-soft: an empty finding, and the phase continues.
                     Finding {
                         query: query.clone(),
                         depth,
@@ -521,9 +414,8 @@ pub fn execute_research(
     evidence
 }
 
-/// The budget gate, evaluated at each request boundary. Cancel is checked first
-/// (most urgent), then the request count, then the clock; the first breach wins.
-/// `None` means another request may fire.
+/// Cancel first (most urgent), then the request count, then the clock; `None` means
+/// another request may fire.
 fn check_budget(
     evidence: &ResearchEvidence,
     clock: &dyn Clock,
@@ -553,7 +445,6 @@ mod tests {
     use crate::baseline_delta::{BaselineDeltas, Direction, SeriesDelta};
     use crate::data_sources::GroupKind;
 
-    /// Build a plan item with `n_queries` deterministic queries.
     fn item(topic: &str, n_queries: usize, priority: f64) -> ResearchItem {
         ResearchItem {
             topic: topic.into(),
@@ -563,8 +454,7 @@ mod tests {
         }
     }
 
-    /// Real wall clock — its elapsed time in a test is microseconds, far under the
-    /// 30-minute budget, so it never trips the time gate.
+    /// The real clock: microseconds elapsed in a test, so it never trips the time gate.
     fn fast_clock() -> WallClock {
         WallClock::new()
     }
@@ -584,8 +474,7 @@ mod tests {
         }
     }
 
-    /// Always spawns exactly one follow-up per finding — the test stand-in for the
-    /// deferred real brancher, so the depth cap is exercisable.
+    /// One follow-up per finding, so the depth cap is exercisable.
     struct AlwaysBranch;
 
     impl BranchPolicy for AlwaysBranch {
@@ -594,9 +483,8 @@ mod tests {
         }
     }
 
-    /// A reporter that flips the shared cancel flag on the first event it sees —
-    /// i.e. during the first request's `request-started` — so the run cancels
-    /// mid-phase, after one in-flight request has been allowed to finish.
+    /// Flips the cancel flag on the first event it sees (the first request's
+    /// `request-started`), so the run cancels after one in-flight request finishes.
     struct CancelOnFirstEvent {
         cancel: Arc<AtomicBool>,
         fired: AtomicBool,
@@ -629,12 +517,10 @@ mod tests {
             "2 + 1 plan queries, no branching"
         );
         assert_eq!(evidence.items.len(), 2);
-        // Higher-priority topic first.
         assert_eq!(evidence.items[0].topic, "oil");
         assert_eq!(evidence.items[0].findings.len(), 2);
         assert_eq!(evidence.items[1].topic, "yields");
         assert_eq!(evidence.items[1].findings.len(), 1);
-        // Every finding carries its query's stub source at depth 1.
         assert!(evidence
             .items
             .iter()
@@ -705,8 +591,7 @@ mod tests {
         let evidence = execute_research(&plan, &StubSearchBackend, &NoBranch, &fast_clock(), &ctx);
 
         assert_eq!(evidence.stopped_reason, Some(StopReason::Cancelled));
-        // The first request fired (cancel flipped during its started-event); the
-        // second boundary observed the cancel before issuing.
+        // Cancel flipped during the first request's started-event; the second boundary saw it.
         assert_eq!(evidence.requests_made, 1);
     }
 
@@ -723,8 +608,6 @@ mod tests {
             &RunContext::noop(),
         );
 
-        // One depth-1 query spawns one depth-2 follow-up; the depth-2 finding spawns
-        // nothing further.
         assert_eq!(evidence.requests_made, 2);
         let depths: Vec<u32> = evidence.items[0].findings.iter().map(|f| f.depth).collect();
         assert_eq!(depths, vec![1, 2]);
@@ -755,9 +638,7 @@ mod tests {
         );
     }
 
-    /// A `SeriesDelta` carrying just the fields a `TriggerRule` reads — its series id and
-    /// move. The level fields are placeholders; the rules key off `id`, `abs_change`, and
-    /// `pct_change` only.
+    /// The level fields are placeholders; the rules never read them.
     fn series_delta(id: &str, abs_change: f64, pct_change: Option<f64>) -> SeriesDelta {
         SeriesDelta {
             group: GroupKind::Internals,
@@ -775,14 +656,12 @@ mod tests {
         }
     }
 
-    /// A change view over a ~weekly interval carrying the given level changes — the
-    /// cadence the raw thresholds are anchored to, so `cadence_scale` is `1.0` here and the
-    /// delta-policy tests see the unscaled thresholds.
+    /// A change view over the weekly anchor, so `cadence_scale` is `1.0` and the tests see
+    /// the unscaled thresholds.
     fn deltas(changed: Vec<SeriesDelta>) -> BaselineDeltas {
         deltas_over(changed, 7.0)
     }
 
-    /// A change view over an explicit elapsed interval, for the cadence-scaling tests.
     fn deltas_over(changed: Vec<SeriesDelta>, elapsed_days: f64) -> BaselineDeltas {
         BaselineDeltas {
             elapsed_days,
@@ -792,8 +671,7 @@ mod tests {
         }
     }
 
-    /// A depth-1 finding stand-in for the direct `follow_up` unit tests — its content is
-    /// irrelevant, since the delta-rules policy ignores it.
+    /// Content irrelevant: the delta-rules policy ignores the finding.
     fn depth1_finding() -> Finding {
         Finding {
             query: "q".into(),
@@ -850,9 +728,7 @@ mod tests {
 
     #[test]
     fn delta_policy_ignores_sharp_declines_for_rise_only_rules() {
-        // An 8% oil *decline* and a 30 bp yield *decline* clear the magnitudes but move
-        // the wrong way — the "spike" / "rise sharply" rules must stay silent rather than
-        // emit a rise-flavored follow-up against a decline thesis.
+        // The magnitudes clear the thresholds but move the wrong way.
         let policy = DeltaBranchPolicy::from_deltas(&deltas(vec![
             series_delta("DCOILWTICO", -6.0, Some(-8.0)),
             series_delta("DGS10", -0.30, Some(-7.1)),
@@ -873,9 +749,6 @@ mod tests {
 
     #[test]
     fn delta_policy_emits_distinct_fired_rules_on_their_own_topics() {
-        // Both oil and yields rose past threshold this week; with a topic matching each,
-        // both follow-ups emit — one per rule, on its own topic (the common case the
-        // single-Option-per-finding bound does not constrain).
         let policy = DeltaBranchPolicy::from_deltas(&deltas(vec![
             series_delta("DCOILWTICO", 6.0, Some(8.0)),
             series_delta("DGS10", 0.30, Some(7.1)),
@@ -895,9 +768,6 @@ mod tests {
 
     #[test]
     fn delta_policy_merges_rules_colliding_on_one_finding() {
-        // Both oil and yields fired; a single-query cross-asset topic matches both keyword
-        // sets. The one-follow-up-per-finding bound means one query must carry both — the
-        // merged query covers each rule and neither is silently lost.
         let policy = DeltaBranchPolicy::from_deltas(&deltas(vec![
             series_delta("DCOILWTICO", 6.0, Some(8.0)),
             series_delta("DGS10", 0.30, Some(7.1)),
@@ -916,7 +786,7 @@ mod tests {
             q.contains("Treasury yields"),
             "merged query covers the yield rule: {q}"
         );
-        // Both rules are consumed — a later topic matching either gets nothing.
+        // Both rules are consumed.
         assert!(policy
             .follow_up(&item("oil supply", 1, 0.8), &depth1_finding())
             .is_none());
@@ -927,7 +797,6 @@ mod tests {
 
     #[test]
     fn delta_policy_no_follow_up_when_topic_is_unrelated() {
-        // Oil fired, but the topic is about labor — no keyword match, no follow-up.
         let policy = DeltaBranchPolicy::from_deltas(&deltas(vec![series_delta(
             "DCOILWTICO",
             6.0,
@@ -945,8 +814,6 @@ mod tests {
             6.0,
             Some(8.0),
         )]));
-        // Two oil-matching topics: the fired trigger attaches to the first, the second
-        // gets nothing.
         assert!(policy
             .follow_up(&item("oil supply", 1, 0.9), &depth1_finding())
             .is_some());
@@ -999,7 +866,6 @@ mod tests {
             &fast_clock(),
             &RunContext::noop(),
         );
-        // One depth-1 plan query spawns one depth-2 follow-up; the depth cap holds.
         assert_eq!(evidence.requests_made, 2);
         let depths: Vec<u32> = evidence.items[0].findings.iter().map(|f| f.depth).collect();
         assert_eq!(depths, vec![1, 2]);
@@ -1011,8 +877,6 @@ mod tests {
 
     #[test]
     fn select_branch_policy_picks_delta_policy_when_a_change_view_is_present() {
-        // A 30 bp rise on the 10y fires the yield rule, so the selected policy must be the
-        // real DeltaBranchPolicy: a matching topic gets its follow-up.
         let view = deltas(vec![series_delta("DGS10", 0.30, Some(7.1))]);
         let policy = select_branch_policy(Some(&view));
         let q = policy
@@ -1039,15 +903,12 @@ mod tests {
 
     #[test]
     fn cadence_scale_is_unity_at_the_weekly_anchor() {
-        // The anchor identity: at exactly the weekly cadence the factor is 1.0, so the raw
-        // thresholds (and every weekly-cadence delta-policy test above) are unchanged.
         assert!((cadence_scale(THRESHOLD_ANCHOR_DAYS) - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn cadence_scale_grows_with_the_interval() {
-        // Monotone increasing between the clamps: a longer gap demands a larger move. A
-        // 4x interval is a 2x factor under the square-root law (still inside the ceiling).
+        // A 4x interval is a 2x factor under the square-root law.
         assert!(cadence_scale(1.75) < cadence_scale(7.0));
         assert!(cadence_scale(7.0) < cadence_scale(28.0));
         assert!((cadence_scale(28.0) - 2.0).abs() < 1e-9);
@@ -1055,8 +916,6 @@ mod tests {
 
     #[test]
     fn cadence_scale_floors_on_degenerate_intervals() {
-        // A near-zero, zero, negative (clock skew), or non-finite interval lands on the
-        // floor rather than collapsing the threshold to ~0 or poisoning it with NaN.
         for bad in [0.01, 0.0, -5.0, f64::NAN] {
             assert_eq!(
                 cadence_scale(bad),
@@ -1068,16 +927,13 @@ mod tests {
 
     #[test]
     fn cadence_scale_caps_on_a_long_gap() {
-        // A multi-month gap is capped so a rule can still fire (sqrt(365/7) ~= 7.2,
-        // clamped to the ceiling).
+        // sqrt(365/7) ~= 7.2, clamped to the ceiling.
         assert_eq!(cadence_scale(365.0), THRESHOLD_SCALE_MAX);
     }
 
     #[test]
     fn delta_policy_suppresses_a_weekly_move_over_a_long_gap() {
-        // An 8% oil move clears the 7% weekly threshold — but over a 30-day gap the
-        // threshold scales up (sqrt(30/7) ~= 2.07 -> ~14.5%), so the same move no longer
-        // fires: a month of drift shouldn't read as a spike.
+        // Over a 30-day gap the 7% threshold scales to ~14.5% (sqrt(30/7) ~= 2.07).
         let weekly = DeltaBranchPolicy::from_deltas(&deltas(vec![series_delta(
             "DCOILWTICO",
             6.0,
@@ -1103,9 +959,8 @@ mod tests {
 
     #[test]
     fn delta_policy_fires_a_sub_weekly_move_over_a_short_gap() {
-        // A 4% oil move is below the 7% weekly threshold — but over a 1-day gap the
-        // threshold scales down (sqrt(1/7) ~= 0.38, clamped to the 0.5 floor -> 3.5%), so
-        // a move that's small for a week is a real spike for a day.
+        // Over a 1-day gap the 7% threshold scales to 3.5% (sqrt(1/7) ~= 0.38, clamped
+        // to the 0.5 floor).
         let weekly = DeltaBranchPolicy::from_deltas(&deltas(vec![series_delta(
             "DCOILWTICO",
             3.0,
@@ -1131,9 +986,8 @@ mod tests {
 
     #[test]
     fn delta_policy_scales_the_absolute_yield_threshold_too() {
-        // The Abs metric scales identically: 20 bp on the 10y clears the 25 bp weekly
-        // threshold over a 1-day gap (floor 0.5 -> 12.5 bp) but not over a 30-day gap
-        // (~2.07x -> ~51.7 bp).
+        // 25 bp scales to 12.5 bp over a 1-day gap (the 0.5 floor) and ~51.7 bp over 30
+        // days.
         let daily = DeltaBranchPolicy::from_deltas(&deltas_over(
             vec![series_delta("DGS10", 0.20, Some(4.5))],
             1.0,

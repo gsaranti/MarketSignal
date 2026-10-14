@@ -1,14 +1,8 @@
-//! The fund path (`docs/portfolio-analysis.md` §Asset eligibility): strategy
-//! classification at loop time from `etf/info` + weightings, the reduced fund
-//! computation — expense drag, exposure tilt, and the **exposure-priced valuation**
-//! (a covered-weight-renormalized harmonic composite over the per-sector aggregate
-//! P/E, read against its own constant-current-mix history) — and the **fund-form v2
-//! scenario targets** (the settled fund-form bullet in §Starting parameters: the
-//! shared spread-anchored core over the composite, driver flat, distributions in the
-//! total return). Every class the pipeline is structurally unable to price returns
-//! the typed `role_risk_only` readout; genuinely missing data abstains under the
-//! evidence floor's fund analog. The classification is deterministic and a class the
-//! engine can't price honestly degrades — never a fabricated number.
+//! The fund path (`docs/portfolio-analysis.md` §Asset eligibility): loop-time
+//! strategy classification from `etf/info` + weightings, the reduced fund
+//! computation (expense drag, exposure tilt, the exposure-priced valuation) and
+//! the fund-form scenario targets. A class the engine can't price takes the typed
+//! `role_risk_only` readout, never a fabricated number.
 
 use std::collections::HashMap;
 
@@ -21,15 +15,15 @@ use crate::portfolio::engine::{
 };
 use crate::portfolio::SubScores;
 
-// ---- Calibration surface (drafted starting values, shadow-tuned) ---------------
+// ---- Calibration surface -------------------------------------------------------
 
-/// An equity fund's exposure must be substantially in the composite's market for the
-/// exposure-priced valuation to be an honest read (`docs/portfolio-analysis.md`
-/// §Asset eligibility, drafted ≥ 70% US by country weightings).
+/// Minimum US share by country weightings for the exposure-priced valuation to be
+/// an honest read of the composite's market (`docs/portfolio-analysis.md` §Asset
+/// eligibility).
 pub const US_EXPOSURE_GUARD: f64 = 0.70;
 
 /// Minimum share of fund weight in P/E-usable sectors below which the valuation is
-/// recorded as a gap rather than lettered off a sliver (drafted ≥ 70%).
+/// recorded as a gap rather than lettered off a sliver.
 pub const PE_COVERAGE_GUARD: f64 = 0.70;
 
 /// Minimum constant-mix history samples for the vs-own-history valuation read and
@@ -43,26 +37,20 @@ const HISTORY_SAMPLE_QUARTERS: usize = 12;
 /// Country labels counted as US exposure in `etf/country-weightings` payloads.
 const US_LABELS: &[&str] = &["united states", "united states of america", "usa", "u.s.", "us"];
 
-/// Name / mandate fragments that deterministically flag a structurally
-/// path-dependent vehicle (leveraged / inverse daily-reset products) — the same
-/// screen the report's movers list applies. A leveraged / inverse match routes the
-/// fund to `role_risk_only`.
+/// Name / mandate fragments that flag a leveraged / inverse daily-reset vehicle —
+/// the same screen the report's movers list applies.
 const STRUCTURAL_FLAG_FRAGMENTS: &[&str] = &[
     "2x", "3x", "-1x", "-2x", "-3x", "inverse", "leveraged", "daily bear", "daily bull",
 ];
 
-/// Duration PHRASES that disqualify the ambiguous fragments ("short", "ultra")
-/// from reading as an inverse / leveraged vehicle — the suppression must be
-/// phrase-shaped, not vocabulary-shaped: a word veto anywhere in the name
-/// ("treasury", "bond") would also suppress genuine inverse bond funds
-/// ("ProShares Short 20+ Year Treasury"), while an unconditional "ultra"
-/// fragment misread "Ultra Short-Term Bond" duration funds as daily-reset
-/// vehicles. A hyphenated / spaced "ultra short" is also a duration phrase only
-/// when `assetClass` independently says fixed income; that keeps an equity
-/// "Ultra Short S&P 500" directional name from receiving the exemption.
-/// Known cost (ruled 2026-08-05, piece-3 Codex round): "iShares Short Treasury
-/// Bond"-style duration names flag as leveraged/inverse — still
-/// `role_risk_only` either way, a wrong class label only; a big-run watch.
+/// Duration PHRASES that stop the ambiguous fragments ("short", "ultra") from
+/// reading as an inverse / leveraged vehicle. The suppression is phrase-shaped,
+/// not vocabulary-shaped: a word veto ("treasury", "bond") would also suppress
+/// genuine inverse bond funds ("ProShares Short 20+ Year Treasury"). A
+/// hyphenated / spaced "ultra short" is a duration phrase only when `assetClass`
+/// independently says fixed income, so an equity "Ultra Short S&P 500" keeps
+/// its flag. Known cost: "iShares Short Treasury Bond"-style duration names flag
+/// as leveraged / inverse — `role_risk_only` either way, a wrong class label only.
 const SHORT_DURATION_PHRASES: &[&str] = &[
     "short-term",
     "short term",
@@ -70,10 +58,9 @@ const SHORT_DURATION_PHRASES: &[&str] = &[
     "short maturity",
 ];
 
-/// Name / mandate fragments that deterministically flag an **option-overlay** vehicle
-/// (covered-call / buy-write / put-write / defined-outcome buffer funds).
-/// These route to role/risk: sector exposure cannot price an option payoff.
-/// The screen runs on fund names only and can miss unnamed strategies.
+/// Name / mandate fragments that flag an option-overlay vehicle; these route to
+/// role / risk because sector exposure cannot price an option payoff. The screen
+/// runs on fund names only and can miss unnamed strategies.
 const OPTION_OVERLAY_FRAGMENTS: &[&str] = &[
     "covered call",
     "covered-call",
@@ -130,9 +117,8 @@ pub struct SectorPe {
 
 // ---- Strategy classification -----------------------------------------------------
 
-/// The deterministic loop-time strategy class (`docs/portfolio-analysis.md` §Asset
-/// eligibility): the asset class routes the computation because one generic fund
-/// valuation cannot grade every vehicle.
+/// The loop-time strategy class that routes the fund computation
+/// (`docs/portfolio-analysis.md` §Asset eligibility).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FundStrategyClass {
@@ -143,17 +129,15 @@ pub enum FundStrategyClass {
     Unknown,
 }
 
-/// The exact structural-path flag the deterministic name / mandate screen found.
-/// Kept typed inside the engine so an option-overlay vehicle can never be described
-/// to the role-risk model as a leveraged / inverse daily-reset product.
+/// The structural flag the name / mandate screen found, kept typed so an
+/// option-overlay vehicle is never described to the role-risk model as a
+/// leveraged / inverse daily-reset product.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FundStructuralKind {
     LeveragedInverse,
     OptionOverlay,
 }
 
-/// The classification result: the class, the structural flag, the US share where
-/// readable, and — where the class is unpriceable — the typed role reason.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FundClassification {
     pub class: FundStrategyClass,
@@ -164,10 +148,9 @@ pub struct FundClassification {
     /// `None` when the exposure-priced path applies; `Some(reason)` when the class
     /// routes to `role_risk_only`.
     pub role_reason: Option<String>,
-    /// The closed-end structure marker (the CEF leg) — orthogonal to the strategy
-    /// class the way the overlay flag is: a bond CEF still routes bond. Detection
-    /// is [`is_closed_end`]; the marker gates the price-vs-NAV read's rendering
-    /// (`docs/portfolio-analysis.md` §Asset eligibility).
+    /// The closed-end structure marker ([`is_closed_end`]), orthogonal to the
+    /// strategy class: a bond CEF still routes bond. Gates the price-vs-NAV
+    /// read's rendering (`docs/portfolio-analysis.md` §Asset eligibility).
     pub is_cef: bool,
 }
 
@@ -177,17 +160,13 @@ impl FundClassification {
     }
 }
 
-/// The closed-end fragments the detection screens the profile description for.
-/// Substring matching covers the served variants — "closed-end", "closed-ended",
-/// "closed end", "closed ended" (probe-verified 2026-08-21 on PDI / GAB / BST).
+/// Substring matching covers the served variants ("closed-end", "closed-ended",
+/// "closed end", "closed ended").
 const CLOSED_END_FRAGMENTS: &[&str] = &["closed-end", "closed end"];
 
-/// Deterministic closed-end detection: the profile's `isFund` flag AND a
-/// closed-end fragment in its description — both legs required, so a missing or
-/// ambiguous profile never guesses a CEF. `isFund` alone is FMP's flag for
-/// mutual funds and CEFs alike, and the description fragment alone could ride a
-/// manager's boilerplate; the conjunction is the drafted rule (probe-verified
-/// 2026-08-21: PDI / GAB / BST carry both, `etf/info` serves them `[]`).
+/// Both legs required, so a missing or ambiguous profile never guesses a CEF:
+/// `isFund` alone is FMP's flag for mutual funds and CEFs alike, and the
+/// description fragment alone could ride a manager's boilerplate.
 pub fn is_closed_end(fund: &FundData) -> bool {
     fund.profile_is_fund == Some(true)
         && fund
@@ -200,16 +179,12 @@ pub fn is_closed_end(fund: &FundData) -> bool {
             .unwrap_or(false)
 }
 
-/// The price-vs-NAV read: the **market price** against the reported NAV — never
-/// the engine's NAV-fallback spot, which would fabricate an exact 0% premium
-/// precisely when no market quote exists. Positive is a premium
-/// (`docs/portfolio-analysis.md` §Asset eligibility — signal on the closed-end
-/// form only; the caller gates rendering on [`is_closed_end`]). Both legs read
-/// through the floor's usability test (`engine::usable_price`) and the read
-/// itself must be finite — the raw quote reaches here beside the NAV-fallback
-/// spot, so a non-finite print a producer other than the FMP parser handed the
-/// fund must not re-enter as a premium the audit could not persist faithfully
-/// (Codex I1, round 1).
+/// The market price against the reported NAV — never the engine's NAV-fallback
+/// spot, which would fabricate an exact 0% premium precisely when no market quote
+/// exists. Positive is a premium; the caller gates rendering on [`is_closed_end`]
+/// (`docs/portfolio-analysis.md` §Asset eligibility). Both legs read through
+/// `engine::usable_price` and the read itself must be finite, so a non-finite
+/// print never re-enters as a premium the audit could not persist.
 pub fn nav_premium_read(current_price: Option<f64>, nav: Option<f64>) -> Option<f64> {
     match (engine::usable_price(current_price), engine::usable_price(nav)) {
         (Some(price), Some(nav)) => Some(price / nav - 1.0).filter(|p| p.is_finite()),
@@ -217,14 +192,13 @@ pub fn nav_premium_read(current_price: Option<f64>, nav: Option<f64>) -> Option<
     }
 }
 
-/// Classify a fund's strategy deterministically from its `etf/info` metadata and
-/// weightings. Made at loop time — Step 3's eligibility used only Schwab instrument
-/// identity (`docs/portfolio-workflow.md` §Step 3).
+/// Made at loop time: Step 3's eligibility used only Schwab instrument identity
+/// (`docs/portfolio-workflow.md` §Step 3).
 pub fn classify(fund: &FundData) -> FundClassification {
     let is_cef = is_closed_end(fund);
-    // The marker rides the label so the card states the structure wherever the
-    // class routes; the Unknown branch below replaces its label outright — for a
-    // real CEF (empty `etf/info`) the structure is the one thing that IS known.
+    // The marker rides the label wherever the class routes; the Unknown branch
+    // below replaces its label outright, since for a real CEF (empty `etf/info`)
+    // the structure is the one thing known.
     let cef_suffix = |label: &str| -> String {
         if is_cef {
             format!("{label} (closed-end)")
@@ -245,10 +219,9 @@ pub fn classify(fund: &FundData) -> FundClassification {
     let leveraged_inverse = STRUCTURAL_FLAG_FRAGMENTS
         .iter()
         .any(|f| name_blob.contains(f))
-        // The ambiguous fragments — bare "short" (SH-style inverse names carry
-        // neither "-1x" nor "inverse") and "ultra" (UltraPro/UltraShort
-        // leverage vs "Ultra Short-Term" duration) — count only outside a
-        // duration phrase.
+        // Bare "short" (SH-style inverse names carry neither "-1x" nor
+        // "inverse") and "ultra" (UltraPro / UltraShort leverage vs "Ultra
+        // Short-Term" duration) count only outside a duration phrase.
         || ((name_blob.contains("short") || name_blob.contains("ultra"))
             && !SHORT_DURATION_PHRASES.iter().any(|f| name_blob.contains(f))
             && !ultra_short_duration);
@@ -259,9 +232,8 @@ pub fn classify(fund: &FundData) -> FundClassification {
             us_share: us_share(fund),
             class_label: cef_suffix("leveraged / inverse vehicle"),
             // Every role reason is a data statement — what is absent or what
-            // the structure is — never the app explaining its own routing
-            // (`portfolio-v42`, ruled 2026-09-17): the strings render on the
-            // interpretation packet, the action packet and the card.
+            // the structure is — never the app explaining its own routing; the
+            // strings render on the model packets and the card.
             role_reason: Some("leveraged / inverse exposure with a daily reset".to_string()),
             is_cef,
         };
@@ -282,11 +254,9 @@ pub fn classify(fund: &FundData) -> FundClassification {
     } else if class_str.contains("commodity") {
         FundStrategyClass::Commodity
     } else if fund.asset_class.is_none() && !fund.sector_weights.is_empty() {
-        // With no class string at all, sector weightings are the only available
-        // mandate evidence and can supply the last-resort equity inference. An
-        // explicit but unsupported class never reaches this branch: allocation /
-        // multi-asset sector rows describe only one sleeve and cannot establish an
-        // equity-only mandate.
+        // The last-resort equity inference applies only with no class string at
+        // all: an explicit but unsupported class (allocation / multi-asset) has
+        // sector rows that describe one sleeve, not an equity-only mandate.
         FundStrategyClass::Equity
     } else {
         FundStrategyClass::Unknown
@@ -321,10 +291,9 @@ pub fn classify(fund: &FundData) -> FundClassification {
             role_reason: Some("no exposure-priced valuation for a commodity fund".to_string()),
             is_cef,
         },
-        // The one branch a real CEF reaches today: `etf/info` serves closed-end
-        // funds an empty body (probe 2026-08-21), so no class string or weighting
-        // exists — but the profile-detected structure is known, and the card
-        // should say "closed-end fund", not "unresolved strategy class".
+        // `etf/info` serves closed-end funds an empty body, so no class string or
+        // weighting exists, but the profile-detected structure is known and the
+        // card should say so rather than "unresolved strategy class".
         FundStrategyClass::Unknown if is_cef => FundClassification {
             class,
             structural_kind,
@@ -371,9 +340,7 @@ pub fn classify(fund: &FundData) -> FundClassification {
                     structural_kind,
                     us_share: us,
                     // The label describes the measurement, not a nationality claim:
-                    // a 67%-US fund is not "ex-US", and attempt 2's model flagged
-                    // exactly that (ruled 2026-08-13 — relabel, guard pinned;
-                    // `docs/verification/2026-08-13-big-run-attempt-2.md`).
+                    // a 67%-US fund is not "ex-US".
                     class_label: cef_suffix("equity fund below the US-exposure guard"),
                     role_reason: Some(format!(
                         "US exposure {:.0}%, below the {:.0}% floor for a US sector read",
@@ -397,18 +364,16 @@ pub fn classify(fund: &FundData) -> FundClassification {
     }
 }
 
-/// The fund's US share from its country weightings, `None` when none are reported.
-/// This is the ≥ 70% US-exposure guard's own read — every alias in
-/// `US_LABELS` summed, capped at 1 — and the one the priced-fund prompt
-/// renders, so the model never sees a share the guard did not (the 2026-08-24
-/// review's Codex I8; `docs/portfolio-analysis.md` §Asset eligibility).
+/// Every `US_LABELS` alias summed, capped at 1; `None` when no country weightings
+/// are reported. This is the US-exposure guard's own read and the one the
+/// priced-fund prompt renders, so the model never sees a share the guard did not
+/// (`docs/portfolio-analysis.md` §Asset eligibility).
 pub fn us_share(fund: &FundData) -> Option<f64> {
     if fund.country_weights.is_empty() {
         return None;
     }
-    // Capped at 1: a share above 100% is only reachable through a
-    // percent-served set misread as fractions, and this value feeds the
-    // ≥70%-US pricing guard — the cap bounds that misread's blast radius.
+    // A share above 100% is only reachable through a percent-served set misread
+    // as fractions; the cap bounds that misread's blast radius on the guard.
     Some(
         fund.country_weights
             .iter()
@@ -421,9 +386,8 @@ pub fn us_share(fund: &FundData) -> Option<f64> {
 
 // ---- The exposure-priced composite ------------------------------------------------
 
-/// Blend the exchange-tagged per-sector P/Es into one per-sector read: the NYSE and
-/// NASDAQ sector **earnings yields** averaged per sector (`docs/portfolio-analysis.md`
-/// §Asset eligibility — the defined exchange blend), with a non-positive P/E excluded
+/// The NYSE and NASDAQ sector earnings yields averaged per sector
+/// (`docs/portfolio-analysis.md` §Asset eligibility), a non-positive P/E excluded
 /// as unusable rather than averaged in.
 pub fn blend_sector_pes(rows: &[SectorPe]) -> HashMap<String, f64> {
     let mut yields: HashMap<String, Vec<f64>> = HashMap::new();
@@ -463,9 +427,8 @@ pub fn composite_yield(
     let mut covered = 0.0;
     let mut sum = 0.0;
     for (sector, w) in weights {
-        // A non-finite weight is not a weight (a drifted string the adapter
-        // parsed as NaN / inf): skipped, so it neither poisons `covered` nor
-        // rides a NaN composite into the flat driver and the anchor sorts.
+        // A non-finite weight (a drifted string parsed as NaN / inf) is skipped
+        // so it neither poisons `covered` nor rides into the anchor sorts.
         if !w.is_finite() {
             continue;
         }
@@ -478,19 +441,15 @@ pub fn composite_yield(
         return None;
     }
     let yield_value = sum / covered;
-    // The finiteness / zero guard: a composite that is not a finite non-zero
-    // yield prices no flat driver, and its reciprocal history sample would be
-    // inf — read as absent rather than handed to the sorts.
+    // A composite that is not a finite non-zero yield prices no flat driver, and
+    // its reciprocal history sample would be inf — absent, never a sample.
     if !yield_value.is_finite() || yield_value == 0.0 {
         return None;
     }
-    // The coverage-guard input is ABSOLUTE — the priced share of the whole
-    // fund, not of whatever rows the feed happened to serve. Weights are
-    // fund fractions by the adapter contract, so `covered` is that share
-    // directly; renormalizing over the served rows' sum let a sparse response
-    // (one 1.4% sector row) report 100% coverage and price the entire fund
-    // off a sliver. The yield itself stays renormalized over covered weight —
-    // uncovered weight neither reads as zero earnings nor extrapolates.
+    // The coverage-guard input is ABSOLUTE — the priced share of the whole fund,
+    // not of the served rows: renormalizing over the served rows' sum would let
+    // one 1.4% sector row report 100% coverage. The yield itself stays
+    // renormalized over covered weight.
     Some(CompositeYield {
         yield_value,
         covered_share: covered.min(1.0),
@@ -498,27 +457,22 @@ pub fn composite_yield(
 }
 
 /// The constant-current-mix composite yield history (`docs/portfolio-analysis.md`
-/// §Asset eligibility): today's weights over the historical sector multiples, sampled
-/// at the trailing quarter ends, under the same blend / renormalization / coverage
-/// convention as the snapshot — so the vs-own-history read compares like to like. A
-/// sample date whose coverage falls below the guard is skipped rather than composed
-/// off a sliver.
+/// §Asset eligibility): today's weights over the historical sector multiples at
+/// the trailing quarter ends, under the same blend / renormalization / coverage
+/// convention as the snapshot. A sample whose coverage falls below the guard is
+/// skipped.
 ///
-/// Each sample admits, per sector per exchange, only the latest print dated WITHIN
-/// its own quarter — after the prior quarter end, on or before its own — so one
-/// print backs at most one sample and the floor's count is a count of distinct
-/// in-quarter observations (the 2026-08-24 review's Codex I2, ruled 2026-08-28: the
-/// on-or-before select with no age bound let one stale print stand in for all
-/// twelve samples, pass the eight-observation floor, and anchor twelve targets).
-/// Dates compare as parsed calendar dates, never as strings; a print whose date
-/// does not parse is inadmissible to every sample — the adapter drops such rows at
-/// its shaper, and the parse here is the belt behind that brace.
+/// Each sample admits, per sector per exchange, only the latest print dated within
+/// its own quarter (after the prior quarter end, on or before its own), so one
+/// print backs at most one sample and the floor counts distinct in-quarter
+/// observations. Dates compare as parsed calendar dates, never as strings; a
+/// print whose date does not parse is inadmissible to every sample (the adapter
+/// drops such rows, and the parse here is the belt behind that brace).
 pub fn composite_yield_history(
     weights: &[(String, f64)],
     history: &HashMap<String, Vec<SectorPe>>,
     as_of: NaiveDate,
 ) -> Vec<DatedValue> {
-    // Parse once: each sector's datable prints, an undatable row dropped.
     let dated: Vec<(&String, Vec<(NaiveDate, &SectorPe)>)> = history
         .iter()
         .map(|(sector, prints)| {
@@ -538,8 +492,6 @@ pub fn composite_yield_history(
         let sample_date = quarter_end_before(as_of, q);
         let prior_quarter_end = quarter_end_before(as_of, q + 1);
         let date_str = sample_date.format("%Y-%m-%d").to_string();
-        // Per sector: the latest print within the sample's own quarter, per
-        // exchange, then the same blend as the snapshot.
         let mut rows: Vec<SectorPe> = Vec::new();
         for (sector, prints) in &dated {
             let mut latest_by_exchange: HashMap<&str, (NaiveDate, &SectorPe)> = HashMap::new();
@@ -581,7 +533,6 @@ pub fn composite_yield_history(
 fn quarter_end_before(as_of: NaiveDate, q: usize) -> NaiveDate {
     use chrono::Datelike;
     let mut year = as_of.year();
-    // The most recent completed quarter end ≤ as_of.
     let mut month_end = match as_of.month() {
         1..=3 => {
             year -= 1;
@@ -608,10 +559,9 @@ fn quarter_end_before(as_of: NaiveDate, q: usize) -> NaiveDate {
     NaiveDate::from_ymd_opt(year, month_end, day).expect("valid quarter end")
 }
 
-/// The fund half of a holding's dossier: the per-fund metadata plus the run-level
-/// sector-P/E surface the fund engine reads. Assembled by the job (which memoizes
-/// the sector-P/E snapshot and per-sector histories across funds —
-/// `docs/portfolio-workflow.md` §Step 6a) so the engine stays pure.
+/// The fund half of a holding's dossier, assembled by the job (which memoizes the
+/// sector-P/E surface across funds — `docs/portfolio-workflow.md` §Step 6a) so
+/// the engine stays pure.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FundContext {
     pub fund: FundData,
@@ -619,21 +569,17 @@ pub struct FundContext {
     /// Keyed by lowercase sector label.
     pub sector_pe_history: HashMap<String, Vec<SectorPe>>,
     pub as_of: NaiveDate,
-    /// The CFTC underlying-positioning read for a commodity / macro fund — the
-    /// run-level COT pull mapped onto this fund's underlying by
-    /// [`cot_contract_for_fund`] (`docs/data-sources.md §CFTC`; positioning is
-    /// layer-(c) evidence, held out of every sub-score). `None` = no mapping,
-    /// or the mapped contract's row didn't land this run (fail-soft).
+    /// The run-level COT pull mapped onto this fund's underlying by
+    /// [`cot_contract_for_fund`] (`docs/data-sources.md §CFTC`), held out of
+    /// every sub-score. `None` = no mapping, or the mapped contract's row didn't
+    /// land this run (fail-soft).
     pub positioning: Option<crate::data_sources::CotPositioning>,
 }
 
-/// Map a commodity / macro fund onto one of the run-level COT bellwether
-/// contracts (by CFTC contract code) for the underlying-positioning read — a
-/// deterministic keyword match over the fund's `etf/info` name + asset-class
-/// strings (drafted, calibratable). A fund whose underlying isn't among the
-/// tracked contracts returns `None` — the doc-sanctioned fail-soft
-/// (`docs/data-sources.md §CFTC`: "A fund whose underlying isn't among these
-/// contracts fail-softs to no positioning read").
+/// Map a commodity / macro fund onto a run-level COT bellwether contract (by
+/// CFTC contract code) through a keyword match over its `etf/info` name and
+/// asset class. `None` when the underlying isn't tracked — the fail-soft
+/// (`docs/data-sources.md §CFTC`).
 pub fn cot_contract_for_fund(fund: &FundData) -> Option<&'static str> {
     let hay = format!(
         "{} {}",
@@ -665,13 +611,11 @@ pub fn cot_contract_for_fund(fund: &FundData) -> Option<&'static str> {
         return Some("098662");
     }
     if hay.contains("treasury") {
-        // Two real name shapes collide on the word "short": a duration name
-        // ("iShares Short Treasury Bond", "Short-Term US Treasury") and an
-        // inverse fund's direction ("ProShares Short 20+ Year Treasury"). A
-        // long-maturity phrase settles it — it overrides a directional
-        // "short", since an inverse long-duration fund's underlying is still
-        // the long end; otherwise any short / 1-3 signal reads short-duration.
-        // The 10-Year note is the bellwether default.
+        // A duration name ("Short-Term US Treasury") and an inverse fund's
+        // direction ("ProShares Short 20+ Year Treasury") collide on "short". A
+        // long-maturity phrase overrides a directional "short", since an inverse
+        // long-duration fund's underlying is still the long end; the 10-Year
+        // note is the bellwether default.
         let long_maturity = ["20+", "10-year", "10 year", "7-10", "long-term", "long term", "long duration", "extended duration"]
             .iter()
             .any(|k| hay.contains(k));
@@ -699,13 +643,10 @@ pub struct RoleRiskReadout {
     /// Annualized realized volatility, where computable.
     pub observable_risk: Option<f64>,
     pub structural_kind: Option<FundStructuralKind>,
-    /// The closed-end structure marker ([`is_closed_end`]) — gates the
-    /// price-vs-NAV rendering to the closed-end form.
+    /// Gates the price-vs-NAV rendering to the closed-end form.
     pub is_cef: bool,
     /// Price vs NAV ([`nav_premium_read`]), populated on the closed-end form
-    /// only — `None` on a CEF is the named gap (a missing NAV, or a missing
-    /// market quote against a present NAV — the gap text names which), pushed
-    /// into `evidence_gaps` rather than rendered as a number.
+    /// only; `None` on a CEF is the named gap pushed into `evidence_gaps`.
     pub nav_premium: Option<f64>,
     pub evidence_gaps: Vec<String>,
 }
@@ -740,20 +681,17 @@ pub struct FundEngineInputs<'a> {
     pub as_of: NaiveDate,
 }
 
-/// Analyze a fund holding down the reduced path (`docs/portfolio-analysis.md` §Asset
-/// eligibility): classify, then either the exposure-priced equity-fund computation —
-/// real valuation / risk, neutral-imputed quality, the fund-form v2 targets, the fund
-/// tier, the hurdle — or the typed `role_risk_only` readout; genuinely missing
-/// floor-bearing data abstains instead.
+/// The reduced path (`docs/portfolio-analysis.md` §Asset eligibility): classify,
+/// then either the exposure-priced equity-fund computation or the typed
+/// `role_risk_only` readout; genuinely missing floor-bearing data abstains.
 pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
     let fund = inp.fund;
     let fin = inp.financials;
 
-    // The evidence floor's fund analog, floor-bearing legs first: a usable current
-    // quote / NAV — finite and strictly positive (`engine::usable_price`), never
-    // mere presence, so a served zero or negative quote is no price and falls to
-    // a usable NAV rather than masking it (Codex I1, ruled 2026-08-28) — and the
-    // `etf/info` surface.
+    // The evidence floor's fund analog, floor-bearing legs first: a usable
+    // current quote / NAV — finite and strictly positive, never mere presence,
+    // so a served zero or negative quote falls to a usable NAV rather than
+    // masking it — and the `etf/info` surface.
     let Some(spot) =
         engine::usable_price(fin.current_price).or(engine::usable_price(fund.nav))
     else {
@@ -763,9 +701,9 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         );
     };
     // Classification runs before the metadata floor: a detected closed-end fund
-    // with an empty `etf/info` (the surface serves CEFs `[]` — probe 2026-08-21)
-    // is a *structural* thin-surface class, not deficient evidence, so it takes
-    // the typed role / risk readout below instead of abstaining every run.
+    // with an empty `etf/info` (the surface serves CEFs `[]`) is a structural
+    // thin-surface class, not deficient evidence, so it takes the role / risk
+    // readout instead of abstaining every run.
     let classification = classify(fund);
     let info_present = fund.asset_class.is_some()
         || fund.expense_ratio.is_some()
@@ -781,8 +719,8 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
 
     let vol = per_period_volatility(fin);
     let annual_vol = vol.map(|v| v * 15.87);
-    // Finite-or-absent like every engine metric (Codex I16): the risk leg
-    // scales it into a required sub-score.
+    // Finite-or-absent like every engine metric: the risk leg scales it into a
+    // required sub-score.
     let drawdown = engine::finite(engine::max_drawdown(&fin.daily_closes, &fin.price_history));
 
     // A structurally unpriceable class takes the typed role / risk readout — never
@@ -793,10 +731,9 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         } else {
             top_weights(&fund.country_weights)
         };
-        // The closed-end read (`docs/portfolio-analysis.md` §Asset eligibility):
-        // computed from the market price only, absent reads as the named gap —
-        // and populated only on the closed-end form, so a non-CEF fund's
-        // transient premium never rides the verdict, prompts, or audit metrics.
+        // Populated only on the closed-end form, so a non-CEF fund's transient
+        // premium never rides the verdict, prompts, or audit metrics
+        // (`docs/portfolio-analysis.md` §Asset eligibility).
         let nav_premium = if classification.is_cef {
             nav_premium_read(fin.current_price, fund.nav)
         } else {
@@ -812,22 +749,17 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
                 );
             }
             if nav_premium.is_none() {
-                // The gap names what is actually absent, keyed on USABILITY
-                // on both legs, not presence: the spot floor accepts NAV as
-                // the price fallback, and a producer other than the FMP parser
-                // (which drops a zero or negative print at the parse — Codex
-                // I1) can still hand this branch one, so a presence test would
-                // misstate both the quote-missing and the quote-unusable cases
-                // (Codex 2026-08-21 rounds 3–4, finding 2; the NAV leg and the
-                // non-finite read off I1's round 2).
+                // The gap names what is actually absent, keyed on USABILITY on
+                // both legs, not presence: the spot floor accepts NAV as the
+                // price fallback, and a producer other than the FMP parser can
+                // still hand this branch an unusable quote.
                 let cause = match (
                     engine::usable_price(fund.nav),
                     engine::usable_price(fin.current_price),
                 ) {
                     (None, _) => "no usable NAV for the closed-end fund",
                     (Some(_), None) => "no usable market quote to read against the reported NAV",
-                    // Both legs usable, yet no read: the quotient did not come
-                    // out finite — neither leg is the thing missing.
+                    // Both legs usable: the quotient itself did not come out finite.
                     (Some(_), Some(_)) => "the price-vs-NAV read did not come out finite",
                 };
                 gaps.push(format!("price-vs-NAV unavailable: {cause}"));
@@ -846,11 +778,9 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         }));
     }
 
-    // The remaining floor-bearing fund-analog legs, enforced on the exposure-priced
-    // branch (`docs/portfolio-analysis.md` §Evidence floor: quote / NAV, `etf/info`,
-    // the expense ratio, and enough weighting coverage to read exposure). The
-    // structural routing above takes precedence — a `role_risk_only` class is never
-    // an abstention, so these checks sit after it.
+    // The remaining floor-bearing legs (`docs/portfolio-analysis.md` §Evidence
+    // floor) sit after the structural routing: a `role_risk_only` class is never
+    // an abstention.
     if fund.expense_ratio.is_none() {
         return FundEngineVerdict::InsufficientEvidence(
             "expense ratio missing — a floor-bearing fund-analog input (etf/info)"
@@ -865,8 +795,6 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         );
     }
 
-    // The priced equity-fund path: the exposure-priced valuation under its coverage
-    // guard, read against its own constant-current-mix history.
     let blended_now = blend_sector_pes(inp.sector_pe);
     let Some(composite) = composite_yield(&fund.sector_weights, &blended_now) else {
         return FundEngineVerdict::InsufficientEvidence(
@@ -892,10 +820,10 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         ));
     }
 
-    // Valuation: what the mix costs now versus what it has cost — the percentile rank
-    // of the current composite yield in its own history (a higher yield is cheaper).
-    // `<=` counts exact ties as cheap, so a degenerate flat history scores 100
-    // rather than neutral — accepted as cosmetic (ruled 2026-08-05, piece-3 walk).
+    // Valuation: the percentile rank of the current composite yield in its own
+    // history (a higher yield is cheaper). `<=` counts exact ties as cheap, so a
+    // degenerate flat history scores 100 rather than neutral — accepted as
+    // cosmetic.
     let below = history
         .iter()
         .filter(|h| h.value <= composite.yield_value)
@@ -920,17 +848,15 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
     };
 
     // Momentum rides as context (outside the letter): `engine::momentum_score`
-    // over `base_metrics`' 180-day `price_history` leg, one window and one band.
-    // Scoring the ~1,600-day `daily_closes` here pinned nearly every fund at
-    // 0 / 100: a multi-year cumulative return against a band tuned to 180 days
-    // (the 2026-08-24 review's fund-momentum finding; introduced at
-    // `grade-v2.2`). A stock's momentum is its factor composite's momentum axis
-    // (`portfolio::factors`), never this read.
+    // over `base_metrics`' 180-day `price_history` leg. Scoring the ~1,600-day
+    // `daily_closes` here would pin nearly every fund at 0 / 100 — a multi-year
+    // cumulative return against a band tuned to 180 days. A stock's momentum is
+    // its factor composite's momentum axis (`portfolio::factors`), never this read.
     let mut metrics = base_metrics(fin);
     let momentum = engine::momentum_score(&metrics);
 
-    // The letter: real valuation / risk + the neutral-imputed absent quality axis —
-    // the priced-fund grade contract, with the visible low-confidence marker.
+    // Real valuation / risk plus the neutral-imputed absent quality axis — the
+    // priced-fund grade contract, with the visible low-confidence marker.
     let sub_scores = SubScores {
         quality: 50.0,
         valuation,
@@ -939,7 +865,7 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
     };
     let grade = engine::grade_from_subscores(&sub_scores);
 
-    // The fund-form v2 targets: driver = spot × composite yield (flat), the anchor
+    // The fund-form targets: driver = spot × composite yield (flat), the anchor
     // spreads from the constant-mix history against the dated DGS10 join, TTM
     // distributions in the total return.
     let implied_eps = spot * composite.yield_value;
@@ -956,7 +882,7 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         })
         .collect();
     // Finite by the FMP shaper's overflow rejection; held here for any other
-    // producer, since the basis persists it as a required float (Codex I16).
+    // producer, since the basis persists it as a required float.
     let distributions = engine::finite(fin.ttm_dividends_per_share).unwrap_or(0.0);
     let floor = engine::dispersion_floor(vol);
     let scenario = engine::spread_anchored_scenarios(
@@ -1005,11 +931,9 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         engine::ThreeYearLeg::HeldFlat,
     )
     .targets;
-    // The engine's output gate (`engine::price_targets_finite`): a non-finite
-    // composite prices every scenario non-finite — the fund exits as
+    // A non-finite composite prices every scenario non-finite; the fund exits as
     // insufficient evidence, never a `null` target the store cannot read back.
-    // (A non-finite quote never reaches here: the usability floor above stops
-    // it.)
+    // (A non-finite quote never reaches here: the usability floor above stops it.)
     if !engine::price_targets_finite(&targets) {
         return FundEngineVerdict::InsufficientEvidence(
             "non-finite scenario pricing: a feed extreme overflowed the composite driver \
@@ -1048,11 +972,9 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         tier_gaps: engine_notes,
         hurdle,
         target_meta: meta,
-        // The quality axis is structurally absent and neutral-imputed — the letter
-        // always carries the visible low-confidence marker on this branch.
+        // The quality axis is structurally absent and neutral-imputed.
         low_confidence_grade: true,
-        // The deterministic classification is shown on the card — the priced branch
-        // included; structural vehicles have already routed to role/risk.
+        // The classification is shown on the card on the priced branch too.
         fund_class_label: Some(classification.class_label),
         quick_basis: Some(engine::QuickCheckBasis {
             spot,
@@ -1064,8 +986,7 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
             consensus_eps_mid: None,
             consensus_eps_periods: Vec::new(),
         }),
-        // The fund form prices a deliberately flat synthetic driver over the
-        // exposure composite (the settled design, ruled 2026-08-21) — no driver
+        // The fund form prices a deliberately flat synthetic driver — no driver
         // trajectory exists to invert.
         implied_expectations: None,
         // A fund's sub-scores are its own reads, not a factor composite.
@@ -1075,39 +996,34 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
 }
 
 /// The fund exposure comparators the quick check's fund evidence-event legs read
-/// (`docs/portfolio-analysis.md` §Starting parameters — a material `etf/info`
-/// change; the US share crossing the ≥ 70% guard; a top-sector shift), computed at
-/// full-pass time on **either** verdict branch and persisted on the holding's audit
-/// so the engine-only sweep has a stored side to compare a fresh print against.
+/// (`docs/portfolio-analysis.md` §Starting parameters), computed on either
+/// verdict branch and persisted on the holding's audit so the engine-only sweep
+/// has a stored side to compare a fresh print against.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FundExposureBasis {
-    /// The deterministic strategy-classification label the pass computed.
     pub class_label: String,
     pub expense_ratio: Option<f64>,
-    /// The US country-weight share the ≥ 70% guard read.
+    /// The US country-weight share the guard read.
     pub us_share: Option<f64>,
     /// The largest sector weight `(label, weight)`.
     pub top_sector: Option<(String, f64)>,
-    /// The structural path-dependency flag the classification carried — persisted
-    /// so the sweep can see a strategy transition alongside the class label
-    /// (`docs/portfolio-analysis.md` §Starting parameters, the every-fund
-    /// asset-class-change leg: a structural-flag reclassification counts).
+    /// Persisted so the sweep can see a structural-flag reclassification
+    /// alongside the class label (`docs/portfolio-analysis.md` §Starting
+    /// parameters).
     pub structural_flag: bool,
-    /// The fund's net asset value per share as the pass read it (`etf/info`),
-    /// where served — the self-review's NAV-then on a `role_risk_only`
-    /// holding's next pass (`docs/portfolio-workflow.md` §Step 6e). Never a
-    /// quick-check comparator.
+    /// NAV per share as the pass read it (`etf/info`) — the self-review's
+    /// NAV-then on a `role_risk_only` holding's next pass
+    /// (`docs/portfolio-workflow.md` §Step 6e). Never a quick-check comparator.
     pub nav: Option<f64>,
 }
 
-/// Build the [`FundExposureBasis`] from a fund's fresh metadata — shared by the
-/// full pass (persisting the stored side) and the quick check (computing the fresh
-/// side), so the two compare like with like.
+/// Shared by the full pass (persisting the stored side) and the quick check
+/// (computing the fresh side), so the two compare like with like.
 pub fn exposure_basis(fund: &FundData) -> FundExposureBasis {
     let classification = classify(fund);
     // A non-finite weight is not a weight (the adapter drops such rows; this
-    // holds for any other producer) — it persists on the basis as a required
-    // float, so it never enters the comparison (Codex I7 / I16).
+    // holds for any other producer): it persists as a required float, so it
+    // never enters the comparison.
     let top_sector = fund
         .sector_weights
         .iter()
@@ -1127,7 +1043,7 @@ pub fn exposure_basis(fund: &FundData) -> FundExposureBasis {
 /// The top exposure weights for the readout's tilt line, largest first, capped at 5.
 fn top_weights(weights: &[(String, f64)]) -> Vec<(String, f64)> {
     // Same rule as `exposure_basis`: a non-finite weight never reaches the
-    // readout's persisted tilt (Codex I7 / I16).
+    // readout's persisted tilt.
     let mut sorted: Vec<(String, f64)> =
         weights.iter().filter(|(_, w)| w.is_finite()).cloned().collect();
     sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -1145,19 +1061,12 @@ fn per_period_volatility(fin: &CompanyFinancials) -> Option<f64> {
     engine::return_volatility(&closes)
 }
 
-/// The fund's base metrics (price-derived legs only; the statement legs stay `None`).
-///
-/// The two price legs come from [`engine::compute_metrics`] — the 180-day
-/// `price_history` — **not** the ~1,600-day dated `daily_closes` the volatility
-/// helper above prefers. A stock's computed metric lines and the role-risk
-/// branch's read the same window, so every holding's trailing return and
-/// volatility lines stand on one window.
-///
-/// The momentum sub-score reads the same `trailing_return` leg through
-/// `engine::momentum_score` (`analyze_fund`). The deep history backs the volatility
-/// and drawdown reads — the risk sub-score's two legs, the dispersion floor, and the
-/// tier — never momentum; each is authored once per run and never re-evaluated by a
-/// sweep.
+/// Price-derived legs only; the statement legs stay `None`. The two price legs
+/// come from [`engine::compute_metrics`] — the 180-day `price_history`, not the
+/// ~1,600-day `daily_closes` the volatility helper above prefers — so every
+/// holding's trailing return and volatility lines stand on one window. The deep
+/// history backs the volatility, drawdown, dispersion-floor and tier reads,
+/// never momentum.
 fn base_metrics(fin: &CompanyFinancials) -> ComputedMetrics {
     let price_legs = engine::compute_metrics(fin);
     ComputedMetrics {
@@ -1203,9 +1112,8 @@ mod tests {
     }
 
     fn history() -> HashMap<String, Vec<SectorPe>> {
-        // Quarterly prints back through 2022 for each sector, both exchanges —
-        // one mid-quarter-end-month print per quarter, so every sampled quarter
-        // finds a print within it.
+        // One mid-quarter-end-month print per quarter back through 2022, so
+        // every sampled quarter finds a print within it.
         let mut map: HashMap<String, Vec<SectorPe>> = HashMap::new();
         let dates = [
             "2022-09-15", "2022-12-15", "2023-03-15", "2023-06-15", "2023-09-15",
@@ -1307,31 +1215,24 @@ mod tests {
         assert_eq!(code("iShares 20+ Year Treasury Bond", "Fixed Income"), Some("043602"));
         assert_eq!(code("Schwab Short-Term US Treasury", "Fixed Income"), Some("042601"));
         assert_eq!(code("SPDR 1-3 Month Treasury Bill? 1-3", "Fixed Income"), Some("042601"));
-        // An inverse long-duration fund: "Short" is direction, not maturity —
-        // the long-maturity phrase overrides it and the underlying stays the
-        // long-end note (Codex 2026-08-20, finding 3).
+        // An inverse long-duration fund: "Short" is direction, not maturity, so
+        // the long-maturity phrase overrides it.
         assert_eq!(
             code("ProShares Short 20+ Year Treasury", "Fixed Income"),
             Some("043602")
         );
-        // A bare-"short" duration name with no long-maturity phrase reads
-        // short-duration (Codex round 2: the SHV-style shape).
+        // A bare-"short" duration name with no long-maturity phrase reads short-duration.
         assert_eq!(
             code("iShares Short Treasury Bond", "Fixed Income"),
             Some("042601")
         );
-        // No tracked underlying — or no identity at all — fail-softs to no read.
         assert_eq!(code("Vanguard Total Stock Market", "Equity"), None);
         assert_eq!(code("", ""), None);
     }
 
-    /// A fund's trailing-return and volatility metric lines read the 180-day
-    /// `price_history`, the window every holding's metric lines read — never the
-    /// ~1,600-day `daily_closes`.
     #[test]
     fn base_metrics_price_legs_read_the_180_day_window() {
-        // The two histories disagree sharply: the deep series has tripled, the
-        // 180-day window is flat. The metric lines must read the flat one.
+        // The deep series has tripled; the 180-day window is flat.
         let fin = CompanyFinancials {
             symbol: "VTI".to_string(),
             current_price: Some(300.0),
@@ -1352,24 +1253,16 @@ mod tests {
         );
         assert_eq!(m.return_volatility, sweep.return_volatility);
 
-        // Concretely: ~1% off the 180-day window, not the ~200% the deep series
-        // would have authored.
+        // ~1% off the 180-day window, not the ~200% the deep series would have authored.
         let tr = m.trailing_return.expect("both closes present");
         assert!(tr < 0.05, "trailing return {tr} came from the deep history");
 
-        // The deep history still backs the volatility and drawdown reads (risk
-        // legs, dispersion floor, tier) — never momentum — authored once per run,
-        // never re-evaluated, so no second window disagrees.
         assert!(
             per_period_volatility(&fin) != m.return_volatility,
             "fixture sanity: the two windows genuinely differ"
         );
     }
 
-    /// The fund's momentum sub-score is `engine::momentum_score` over the
-    /// 180-day `price_history` leg. Scoring the ~1,600-day `daily_closes`
-    /// pinned nearly every fund at 0 / 100: a multi-year cumulative return against
-    /// a band tuned to 180 days (the 2026-08-24 review's fund-momentum finding).
     #[test]
     fn fund_momentum_reads_the_short_window() {
         // The deep series has tripled; the 180-day window is up ~1%.
@@ -1411,7 +1304,7 @@ mod tests {
             out.sub_scores.momentum, short_read,
             "fund momentum must be the short-window read and its band"
         );
-        // Concretely: ~1% maps just above neutral, nowhere near the band's ceiling.
+        // ~1% maps just above neutral, nowhere near the band's ceiling.
         assert!(
             out.sub_scores.momentum < 60.0,
             "momentum {} was scored off the deep history",
@@ -1419,8 +1312,6 @@ mod tests {
         );
     }
 
-    /// No short window → momentum imputes to the neutral 50, the stock path's own
-    /// posture — the deep history never substitutes as the momentum input.
     #[test]
     fn fund_momentum_imputes_neutral_without_the_short_window() {
         let fin = CompanyFinancials {
@@ -1460,15 +1351,14 @@ mod tests {
 
     #[test]
     fn bare_short_flags_inverse_names_but_not_duration_phrases() {
-        // "ProShares Short S&P500" carries neither "-1x" nor "inverse" — bare
-        // "short" must catch it; duration PHRASES ("Short-Term Bond", "Short
-        // Duration") are maturity reads, not daily-reset vehicles.
+        // "ProShares Short S&P500" carries neither "-1x" nor "inverse", so bare
+        // "short" must catch it.
         let mut sh = fund();
         sh.name = Some("ProShares Short S&P500".to_string());
         assert_eq!(classify(&sh).class, FundStrategyClass::LeveragedInverse);
         assert!(classify(&sh).structural_flag());
-        // An inverse BOND fund must flag too — the suppression is phrase-shaped,
-        // never a vocabulary veto ("treasury" anywhere must not excuse it).
+        // An inverse BOND fund must flag too: the suppression is phrase-shaped,
+        // never a vocabulary veto on "treasury".
         let mut tbf = fund();
         tbf.name = Some("ProShares Short 20+ Year Treasury".to_string());
         tbf.asset_class = Some("Fixed Income".to_string());
@@ -1481,8 +1371,7 @@ mod tests {
         duration.name = Some("PIMCO Short Duration Municipal Income".to_string());
         duration.asset_class = Some("Fixed Income".to_string());
         assert_eq!(classify(&duration).class, FundStrategyClass::Bond);
-        // "ultra" is ambiguous the same way: leverage (UltraPro / UltraShort)
-        // flags, a duration phrase ("Ultra Short-Term Bond") suppresses.
+        // "ultra" is ambiguous the same way: leverage flags, a duration phrase suppresses.
         for name in [
             "iShares Ultra Short-Term Bond ETF",
             "JPMorgan Ultra-Short Income ETF",
@@ -1507,9 +1396,8 @@ mod tests {
 
     #[test]
     fn a_non_finite_weight_never_reaches_the_tilt_or_the_exposure_basis() {
-        // Codex I7 / I16: the adapter drops such rows; the engine holds the
-        // same line for any other producer, since both the readout's tilt and
-        // the exposure basis persist the weight as a required float.
+        // The adapter drops such rows; the engine holds the same line for any
+        // other producer, since both persist the weight as a required float.
         let mut f = fund();
         f.sector_weights = vec![
             ("Technology".into(), f64::NAN),
@@ -1522,9 +1410,7 @@ mod tests {
 
     #[test]
     fn us_share_caps_at_one() {
-        // A percent-served country set misread as fractions would report a
-        // >100% US share straight into the ≥70% pricing guard — the cap bounds
-        // the guard input at full-US.
+        // A percent-served country set misread as fractions.
         let mut misread = fund();
         misread.country_weights = vec![("United States".to_string(), 99.4)];
         let c = classify(&misread);
@@ -1545,8 +1431,6 @@ mod tests {
         blended.remove("energy"); // 20% of weight now uncovered
         let c = composite_yield(&weights(), &blended).unwrap();
         assert!((c.covered_share - 0.80).abs() < 1e-9);
-        // The composite is over the covered weight, renormalized by it — the
-        // uncovered slice neither reads as zero earnings nor extrapolates.
         let tech_pe = 2.0 / (1.0 / 30.0 + 1.0 / 34.0);
         let fin_pe = 2.0 / (1.0 / 14.0 + 1.0 / 16.0);
         let expected = (0.5 / tech_pe + 0.3 / fin_pe) / 0.8;
@@ -1557,9 +1441,7 @@ mod tests {
 
     #[test]
     fn composite_skips_non_finite_weight_rows() {
-        // A drifted string weight parses as NaN (or inf) at the adapter: the
-        // row is not a weight — skipped, so the composite and its coverage read
-        // exactly as over the finite rows.
+        // A drifted string weight parses as NaN (or inf) at the adapter.
         let blended = blend_sector_pes(&snapshot());
         let clean = composite_yield(&weights(), &blended).unwrap();
         let mut w = weights();
@@ -1574,28 +1456,24 @@ mod tests {
     #[test]
     fn a_non_finite_or_zero_composite_reads_as_no_composite() {
         let blended = blend_sector_pes(&snapshot());
-        // Every weight non-finite: nothing covered — None, never NaN.
+        // Every weight non-finite: nothing covered.
         let all_nan = vec![("Technology".to_string(), f64::NAN)];
         assert!(composite_yield(&all_nan, &blended).is_none());
-        // Finite weights whose sum overflows: the yield collapses to zero — a
-        // flat driver of zero prices nothing and its reciprocal sample is inf,
-        // so the composite reads as absent.
+        // Finite weights whose sum overflows: the yield collapses to zero.
         let overflow = vec![
             ("Technology".to_string(), f64::MAX),
             ("Financial Services".to_string(), f64::MAX),
         ];
         assert!(composite_yield(&overflow, &blended).is_none());
         // A blended P/E of zero (a subnormal print blown up by the yield
-        // average): the composite is inf — absent, never a sample.
+        // average): the composite is inf.
         let zero_pe: HashMap<String, f64> = [("technology".to_string(), 0.0)].into();
         assert!(composite_yield(&weights(), &zero_pe).is_none());
     }
 
     #[test]
     fn composite_history_over_non_finite_weights_keeps_finite_samples_only() {
-        // The quarterly fixture backs every sample; a NaN weight row rides along
-        // and changes nothing — every sample is finite and equals the clean
-        // composite over the same prints.
+        // A NaN weight row rides along and changes nothing.
         let clean = composite_yield_history(&weights(), &history(), as_of());
         assert_eq!(clean.len(), HISTORY_SAMPLE_QUARTERS);
         let mut w = weights();
@@ -1645,12 +1523,8 @@ mod tests {
 
     #[test]
     fn one_stale_print_backs_no_history_sample_and_the_fund_abstains() {
-        // Codex I2 (ruled 2026-08-28): the on-or-before select with no age bound
-        // let a lone old print stand in for all twelve quarterly samples, pass the
-        // eight-observation floor as twelve independent observations, score a
-        // 0-or-100 percentile, and anchor twelve targets. A print backs only its
-        // own quarter's sample, so one print is zero samples and the floor names
-        // the count.
+        // A print backs only its own quarter's sample, so one stale print is zero
+        // samples and the floor names the count.
         let stale = prints_at(&[("2020-01-01", 20.0)]);
         assert!(composite_yield_history(&weights(), &stale, as_of()).is_empty());
         let reason = history_floor_reason(&stale).expect("abstains");
@@ -1663,10 +1537,9 @@ mod tests {
 
     #[test]
     fn a_sample_admits_only_prints_dated_within_its_own_quarter() {
-        // The window is exclusive at the prior quarter end and inclusive at the
-        // sample's own: a print ON a quarter end backs that quarter alone, the
-        // next day's print backs the following quarter alone, and the same print
-        // never backs two samples.
+        // Exclusive at the prior quarter end, inclusive at the sample's own: a
+        // print ON a quarter end backs that quarter alone, the next day's print
+        // the following quarter alone.
         let q6 = quarter_end_before(as_of(), 6);
         let q5 = quarter_end_before(as_of(), 5);
         let day_after_q6 = q6.succ_opt().unwrap();
@@ -1685,11 +1558,8 @@ mod tests {
 
     #[test]
     fn a_dateless_print_never_qualifies_for_any_sample() {
-        // Stored as served, a dateless row read as `""` — before every sample
-        // date — and held an exchange's slot wherever no dated print qualified
-        // (Codex I14). The sampler parses, so it is inadmissible everywhere: alone
-        // it yields nothing, and beside the quarterly fixture it moves nothing
-        // even at a wild P/E.
+        // Alone it yields nothing, and beside the quarterly fixture it moves
+        // nothing even at a wild P/E.
         let dateless = prints_at(&[("", 20.0)]);
         assert!(composite_yield_history(&weights(), &dateless, as_of()).is_empty());
         let clean = composite_yield_history(&weights(), &history(), as_of());
@@ -1703,10 +1573,8 @@ mod tests {
 
     #[test]
     fn a_non_padded_in_quarter_print_is_admitted_chronologically() {
-        // The feed family's documented wire quirk: as source text "2026-6-15"
-        // sorted after "2026-12-31", so the lexicographic sampler excluded it in
-        // its own quarter and misselected it for later ones (Codex I14). Parsed,
-        // it is the same print.
+        // The feed family's wire quirk: as source text "2026-6-15" sorts after
+        // "2026-12-31"; parsed, it is the same print.
         let clean = composite_yield_history(&weights(), &history(), as_of());
         let mut unpadded = history();
         for prints in unpadded.values_mut() {
@@ -1742,10 +1610,7 @@ mod tests {
 
     #[test]
     fn the_snapshot_blend_reads_no_date() {
-        // The other sector-P/E consumer (Codex I14's separate pin): the snapshot
-        // blend keys on sector alone, averaging the exchange prints, so the
-        // shaper's canonical date render — or any date at all — changes nothing
-        // there.
+        // The snapshot blend keys on sector alone, so any date — or none — changes nothing.
         let clean = blend_sector_pes(&snapshot());
         let redated: Vec<SectorPe> = snapshot()
             .into_iter()
@@ -1760,11 +1625,8 @@ mod tests {
 
     #[test]
     fn an_unusable_quote_falls_to_a_usable_nav_never_masks_it() {
-        // Codex I1 (ruled 2026-08-28): a served zero, negative, or non-finite
-        // quote is no price. Beside a usable NAV the fund prices off the NAV —
-        // the floor's `or(nav)` design keyed on usability — where a zero spot
-        // used to abstain under the finite-target gate's misdescribed reason
-        // and a negative one priced meaningless targets.
+        // A served zero, negative, or non-finite quote is no price; beside a
+        // usable NAV the fund prices off the NAV.
         for served in [0.0, -3.0, f64::INFINITY] {
             let mut fin = financials(282.0);
             fin.current_price = Some(served);
@@ -1784,10 +1646,8 @@ mod tests {
                         .expect("the priced fund records its basis");
                     assert_eq!(basis.spot, 280.0, "{served}: the NAV is the spot");
                     assert!(engine::price_targets_finite(&out.price_targets), "{served}");
-                    // The rejected quote never re-enters as a premium — the
-                    // read is absent (never the NAV-fallback's fabricated 0%,
-                    // never a non-finite value the audit would persist as
-                    // `null`) — Codex I1, round 1.
+                    // The rejected quote never re-enters as a premium: the read
+                    // is absent, never the NAV-fallback's fabricated 0%.
                     assert_eq!(out.metrics.nav_premium, None, "{served}");
                 }
                 other => panic!("{served}: expected pricing off the NAV, got {other:?}"),
@@ -1797,9 +1657,8 @@ mod tests {
 
     #[test]
     fn no_usable_quote_or_nav_abstains_under_the_fund_floor() {
-        // Neither leg usable — a negative or zero quote beside a zero NAV, or
-        // no quote at all beside it — abstains under the fund analog's own
-        // reason, never the finite-target gate's.
+        // Neither leg usable: the fund analog's own reason, never the
+        // finite-target gate's.
         let mut zero_nav = fund();
         zero_nav.nav = Some(0.0);
         for served in [Some(-3.0), Some(0.0), None] {
@@ -1827,12 +1686,9 @@ mod tests {
 
     #[test]
     fn a_feed_extreme_quote_passes_the_floor_and_exits_at_the_finite_target_gate() {
-        // The gate's fund-path pin, now that a non-finite quote lands at the
-        // usability floor instead: `f64::MAX` is finite and positive, so it
-        // passes the floor, and the flat driver (spot × composite yield) times
-        // the anchored multiples overflows the scenario prices — the fund exits
-        // as insufficient evidence under the gate's reason, never a `null`
-        // target the store could not read back.
+        // `f64::MAX` is finite and positive, so it passes the usability floor;
+        // the flat driver times the anchored multiples overflows the scenario
+        // prices.
         let mut fin = financials(282.0);
         fin.current_price = Some(f64::MAX);
         let inputs = FundEngineInputs {
@@ -1853,9 +1709,8 @@ mod tests {
 
     #[test]
     fn a_sparse_served_weighting_reads_absolute_coverage_never_renormalized() {
-        // One 1.4% sector row: renormalizing over the served rows' sum reported
-        // 100% coverage and priced the whole fund off the sliver — absolute
-        // coverage reads 1.4% and the ≥70% guard abstains downstream.
+        // One 1.4% sector row: renormalizing over the served rows' sum would
+        // report 100% coverage.
         let sparse = vec![("Technology".to_string(), 0.014)];
         let c = composite_yield(&sparse, &blend_sector_pes(&snapshot())).unwrap();
         assert!((c.covered_share - 0.014).abs() < 1e-12, "{c:?}");
@@ -1895,8 +1750,7 @@ mod tests {
         let c = classify(&allocation);
         assert_eq!(c.class, FundStrategyClass::Unknown);
         assert_eq!(c.class_label, "fund with unsupported strategy class");
-        // The reason is a data statement (`portfolio-v42`): the reported class
-        // and what the sector rows are, never the app's routing rule.
+        // The reason is a data statement, never the app's routing rule.
         assert_eq!(
             c.role_reason.as_deref(),
             Some(
@@ -1920,8 +1774,7 @@ mod tests {
             other => panic!("allocation fund must not price as pure equity: {other:?}"),
         }
 
-        // The old last-resort inference remains limited to a genuinely absent
-        // class, where sector rows are the only mandate evidence available.
+        // The last-resort equity inference is limited to a genuinely absent class.
         let mut absent_class = fund();
         absent_class.asset_class = None;
         assert_eq!(classify(&absent_class).class, FundStrategyClass::Equity);
@@ -1942,28 +1795,21 @@ mod tests {
         };
         match analyze_fund(&inputs) {
             FundEngineVerdict::Priced(out) => {
-                // The absent quality axis is neutral-imputed and the letter carries
-                // the visible low-confidence marker.
                 assert_eq!(out.sub_scores.quality, 50.0);
                 assert!(out.low_confidence_grade);
-                // Real valuation (vs-own-history percentile) and risk.
                 assert!((0.0..=100.0).contains(&out.sub_scores.valuation));
                 assert!((0.0..=100.0).contains(&out.sub_scores.risk));
-                // Fund-form v2 targets: flat composite driver, versioned methodology.
                 let tm = out.price_targets.twelve_month.as_ref().unwrap();
                 assert!(tm.methodology.contains("fund exposure composite"), "{}", tm.methodology);
                 assert!(out.target_meta.flat_driver);
                 assert!(out.target_meta.rate_anchored, "12 history samples anchor");
                 assert!(tm.bear <= tm.base && tm.base <= tm.bull);
-                // Tier + hurdle exist on the priced branch.
                 assert_ne!(
                     out.hurdle.state,
                     crate::portfolio::HurdleState::Unscorable
                 );
-                // Full coverage: recorded on the metrics, and no uncovered-share note.
                 assert_eq!(out.metrics.composite_coverage, Some(1.0));
                 assert!(out.tier_gaps.is_empty(), "{:?}", out.tier_gaps);
-                // NAV premium is computed as context (282 / 280 − 1).
                 assert!((out.metrics.nav_premium.unwrap() - (282.0 / 280.0 - 1.0)).abs() < 1e-9);
                 assert_eq!(out.metrics.expense_ratio, Some(0.0003));
             }
@@ -1973,9 +1819,7 @@ mod tests {
 
     #[test]
     fn partial_coverage_grades_with_the_uncovered_share_reported() {
-        // 80% of weight is P/E-usable (above the ≥70% guard): the fund grades, the
-        // coverage rides the metrics, and the uncovered slice is a recorded note —
-        // reported beside the read, never averaged in.
+        // 80% of weight is P/E-usable, above the guard.
         let mut partial = fund();
         partial.sector_weights = vec![
             ("Technology".to_string(), 0.50),
@@ -2007,8 +1851,7 @@ mod tests {
 
     #[test]
     fn missing_floor_bearing_fund_inputs_abstain_on_the_priced_branch() {
-        // The expense ratio is a floor-bearing fund-analog input — absent, the fund
-        // abstains rather than pricing without it (`docs/portfolio-analysis.md`
+        // The expense ratio is floor-bearing (`docs/portfolio-analysis.md`
         // §Evidence floor).
         let mut no_er = fund();
         no_er.expense_ratio = None;
@@ -2028,9 +1871,7 @@ mod tests {
             other => panic!("expected the floor abstention, got {other:?}"),
         }
 
-        // Missing country weightings leave the ≥ 70% US-exposure guard unverifiable —
-        // floor-bearing weighting coverage on the exposure-priced branch, so the fund
-        // abstains rather than pricing on an assumed premise.
+        // Missing country weightings leave the US-exposure guard unverifiable.
         let mut no_countries = fund();
         no_countries.country_weights = vec![];
         let fin = financials(282.0);
@@ -2049,8 +1890,7 @@ mod tests {
             other => panic!("expected the floor abstention, got {other:?}"),
         }
 
-        // The floor checks never pre-empt the structural routing: a bond fund missing
-        // its expense ratio is still `role_risk_only`, not an abstention.
+        // The floor checks never pre-empt the structural routing.
         let mut bond = fund();
         bond.asset_class = Some("Fixed Income".to_string());
         bond.expense_ratio = None;
@@ -2217,9 +2057,9 @@ mod tests {
         assert_eq!(quarter_end_before(jan, 1).to_string(), "2025-12-31");
     }
 
-    /// The real closed-end arrival shape (probe 2026-08-21): `etf/info` serves
-    /// `[]`, so every fund-metadata field is `None` and only the profile carries
-    /// the structure signal.
+    /// The real closed-end arrival shape: `etf/info` serves `[]`, so every
+    /// fund-metadata field is `None` and only the profile carries the structure
+    /// signal.
     fn cef_fund() -> FundData {
         FundData {
             symbol: "PDI".to_string(),
@@ -2241,16 +2081,14 @@ mod tests {
         gab.profile_description =
             Some("a closed ended equity mutual fund launched by GAMCO".to_string());
         assert!(is_closed_end(&gab));
-        // The flag without the text never guesses a CEF — `isFund` is FMP's flag
-        // for open-end mutual funds too.
+        // `isFund` is FMP's flag for open-end mutual funds too.
         let mut open_end = cef_fund();
         open_end.profile_description = Some("an open-end index mutual fund".to_string());
         assert!(!is_closed_end(&open_end));
-        // The text without the flag never guesses either (manager boilerplate).
+        // The text without the flag could be manager boilerplate.
         let mut unflagged = cef_fund();
         unflagged.profile_is_fund = Some(false);
         assert!(!is_closed_end(&unflagged));
-        // No profile at all reads not-a-CEF, never a guess.
         assert!(!is_closed_end(&FundData::default()));
     }
 
@@ -2258,15 +2096,12 @@ mod tests {
     fn nav_premium_reads_the_market_price_only() {
         let prem = nav_premium_read(Some(282.0), Some(280.0)).unwrap();
         assert!((prem - (282.0 / 280.0 - 1.0)).abs() < 1e-12);
-        // No market quote is a gap — never a fabricated 0% off the NAV-fallback
-        // spot the engine floor otherwise substitutes.
+        // No market quote is a gap, never a fabricated 0% off the NAV-fallback spot.
         assert_eq!(nav_premium_read(None, Some(280.0)), None);
         assert_eq!(nav_premium_read(Some(282.0), None), None);
         assert_eq!(nav_premium_read(Some(282.0), Some(0.0)), None);
-        // Both legs read through the usability test, and the read itself must
-        // be finite: an unusable quote (zero, negative, non-finite) or NAV is
-        // no premium, and a finite pair whose quotient overflows is none either
-        // — never an `inf` the audit would persist as `null` (Codex I1, round 1).
+        // Both legs read through the usability test, and the read itself must be
+        // finite — never an `inf` the audit would persist as `null`.
         assert_eq!(nav_premium_read(Some(0.0), Some(280.0)), None);
         assert_eq!(nav_premium_read(Some(-3.0), Some(280.0)), None);
         assert_eq!(nav_premium_read(Some(f64::INFINITY), Some(280.0)), None);
@@ -2278,15 +2113,13 @@ mod tests {
 
     #[test]
     fn classify_marks_the_closed_end_structure_orthogonally() {
-        // Empty `etf/info` + the profile signal: the one branch a real CEF
-        // reaches — the card says what IS known, not "unresolved strategy class".
+        // Empty `etf/info` + the profile signal: the card says what IS known.
         let c = classify(&cef_fund());
         assert!(c.is_cef);
         assert_eq!(c.class, FundStrategyClass::Unknown);
         assert_eq!(c.class_label, "closed-end fund");
         assert!(c.role_reason.as_deref().is_some_and(|r| r.contains("closed-end")));
-        // A CEF whose surface someday serves a class string keeps its routing —
-        // the structure rides the label, orthogonal like the overlay flag.
+        // A CEF whose surface someday serves a class string keeps its routing.
         let mut bond_cef = cef_fund();
         bond_cef.asset_class = Some("Fixed Income".to_string());
         let c = classify(&bond_cef);
@@ -2330,11 +2163,9 @@ mod tests {
 
     #[test]
     fn a_cef_missing_or_unusable_quote_names_the_quote_not_the_nav() {
-        // The spot floor accepts the NAV as the price fallback — a zero quote
-        // is unusable and falls to it (Codex I1) — so the run proceeds; but
-        // the premium is honestly absent, and the gap must name the unusable
-        // market quote rather than claim the present NAV is absent
-        // (Codex 2026-08-21 rounds 3–4, finding 2).
+        // The spot floor accepts the NAV as the price fallback, so the run
+        // proceeds; the premium is absent, and the gap must name the unusable
+        // market quote rather than claim the present NAV is absent.
         let run = |current_price: Option<f64>| {
             let mut cef = cef_fund();
             cef.name = Some("PIMCO Dynamic Income Fund".to_string());
@@ -2369,10 +2200,9 @@ mod tests {
 
     #[test]
     fn a_cef_gap_cause_reads_usability_on_both_legs_and_names_a_non_finite_read() {
-        // Codex I1, round 2: an unusable NAV beside a usable quote names the
-        // NAV (a raw `nav > 0` test called an infinite NAV present and blamed
-        // the quote), and a usable pair whose quotient overflows names the
-        // read rather than a leg that is not missing.
+        // An unusable NAV beside a usable quote names the NAV, and a usable pair
+        // whose quotient overflows names the read rather than a leg that is not
+        // missing.
         let run = |price: Option<f64>, nav: Option<f64>| {
             let mut cef = cef_fund();
             cef.name = Some("PIMCO Dynamic Income Fund".to_string());
@@ -2412,8 +2242,8 @@ mod tests {
 
     #[test]
     fn a_cef_with_a_served_nav_carries_the_premium_and_drops_the_gap() {
-        // The seam's live shape if the surface ever serves a CEF NAV: the read
-        // renders, and neither CEF gap is pushed.
+        // If the surface ever serves a CEF NAV: the read renders and neither CEF
+        // gap is pushed.
         let mut cef = cef_fund();
         cef.name = Some("PIMCO Dynamic Income Fund".to_string());
         cef.nav = Some(14.0);
