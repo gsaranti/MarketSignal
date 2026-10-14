@@ -60,6 +60,10 @@ default, no "a record persisted before the field reads as X" branch, no
 archive rung for a format no shipped build wrote. Only model-written and
 provider-written JSON stays lenient; shipped-report compat and the loud skip
 stay. The refused pre-release archive rungs are at `docs/data-portability.md`.
+A new `Option` field decodes through `required_option` (`portfolio/mod.rs`),
+so an absent key fails and `null` reads as none. This ends at release: a
+field added after it must read an absent key as its default, so earlier
+releases' records still load.
 
 ## Code disciplines
 
