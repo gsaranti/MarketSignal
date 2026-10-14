@@ -59,6 +59,20 @@ releases' records still load.
   re-pin both case tables.
 - `run-finished` is emitted before any job-history write error can propagate.
 
+## Comments
+
+Only add a comment that explains a non-obvious why: a deliberate choice, an
+invariant, an ordering constraint, a fail-soft posture, a trap, or a unit or
+semantics the name and type don't carry — plus, at most, a bare
+`docs/x.md §Section` pointer on the item that implements that contract.
+Never narrate what the code does, restate what the docs say, or record how
+the code came to be: no review attributions, ruling dates, run ids, slice or
+task names, "formerly / no longer" history, and no per-version changelog on a
+stamp constant (its doc states what the current value means and the rule for
+bumping it; git holds the history). Rustdoc on a public item is held to the
+same bar: what the signature doesn't say, or nothing. Tests too: a fixture
+comment explains a non-obvious value, never what the test covers.
+
 ## Design system
 
 This project has a design package at `./market-signal-design-system/`.
