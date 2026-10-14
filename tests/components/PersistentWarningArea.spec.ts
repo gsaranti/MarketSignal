@@ -156,3 +156,38 @@ test("stays collapsed when the signature changes but introduces no NEW warning k
   await nextTick();
   expect(wrapper.find(".warning-toggle").attributes("aria-expanded")).toBe("false");
 });
+
+// A long failed-job error must not grow the band over the view below it
+// (`.warning-list` is height-bounded and scrolls). happy-dom has no layout, so the
+// overflow is stubbed on the element; the contract pinned here is that the list
+// takes a tab stop — keyboard scrolling — only while it overflows.
+test("the bounded list takes a tab stop only while it overflows", async () => {
+  const failed: ValidationReport = deepFreeze({
+    is_blocked: false,
+    categories: [
+      {
+        kind: "failed-job",
+        title: "Last run failed",
+        items: ["Portfolio Analysis failed: " + "a long error chain; ".repeat(40)],
+        dismiss_id: "run-1",
+      },
+    ],
+  });
+  const wrapper = mount(PersistentWarningArea, { props: { report: null, error: "x" } });
+  const list = wrapper.get("#warning-list").element as HTMLElement;
+  expect(list.hasAttribute("tabindex")).toBe(false);
+
+  Object.defineProperty(list, "scrollHeight", { configurable: true, value: 600 });
+  Object.defineProperty(list, "clientHeight", { configurable: true, value: 162 });
+  await wrapper.setProps({ report: failed, error: null });
+  await nextTick();
+  await nextTick();
+  expect(list.getAttribute("tabindex")).toBe("0");
+
+  Object.defineProperty(list, "scrollHeight", { configurable: true, value: 40 });
+  Object.defineProperty(list, "clientHeight", { configurable: true, value: 40 });
+  await wrapper.setProps({ report: oneCategoryReport });
+  await nextTick();
+  await nextTick();
+  expect(list.hasAttribute("tabindex")).toBe(false);
+});

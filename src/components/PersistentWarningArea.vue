@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import Icon from "./Icon.vue";
 import type { ValidationReport, WarningCategory } from "../types";
 
@@ -67,6 +67,31 @@ watch(signature, (now, before) => {
 function formatItems(items: string[]): string {
   return items.join("; ");
 }
+
+// The list scrolls inside a bounded height, so a long failed-job error can't push
+// the view below the band out of sight. Only while it actually overflows does it
+// take a tab stop (so it scrolls by keyboard); a short list adds no stop to the
+// global chrome. A resize re-measures through the observer, a content change
+// through the watch.
+const list = ref<HTMLUListElement | null>(null);
+const overflowing = ref(false);
+function measure(): void {
+  const el = list.value;
+  overflowing.value = el !== null && el.scrollHeight > el.clientHeight + 1;
+}
+const observer =
+  typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+watch(list, (el, prev) => {
+  if (prev) observer?.unobserve(prev);
+  if (el) observer?.observe(el);
+  measure();
+});
+watch(
+  () => [props.report, props.error, collapsed.value],
+  () => nextTick(measure),
+  { deep: true }
+);
+onBeforeUnmount(() => observer?.disconnect());
 </script>
 
 <template>
@@ -98,7 +123,13 @@ function formatItems(items: string[]): string {
         :class="{ 'is-open': !collapsed }"
       />
     </button>
-    <ul v-show="!collapsed" id="warning-list" class="warning-list">
+    <ul
+      v-show="!collapsed"
+      id="warning-list"
+      ref="list"
+      class="warning-list"
+      :tabindex="overflowing ? 0 : undefined"
+    >
       <li v-if="error" class="warning-row">
         <span class="warning-label">Configuration</span>
         <span class="warning-body">
@@ -143,7 +174,8 @@ function formatItems(items: string[]): string {
   padding: var(--s-4) var(--s-8);
   /* Collapsed, this matches the sidebar header's height so the two bottom seams
      line up across the column gutter; centered so the single summary line sits
-     mid-band. Expanded, the content exceeds the min and the band simply grows. */
+     mid-band. Expanded, the content exceeds the min and the band grows up to the
+     list's bound (.warning-list). */
   min-height: 44px;
   display: flex;
   flex-direction: column;
@@ -212,14 +244,29 @@ function formatItems(items: string[]): string {
 }
 
 /* One block: the categories are a single list grouped by spacing, with no
-   inter-row hairlines (those made one warning area look like three sections). */
+   inter-row hairlines (those made one warning area look like three sections).
+   The bound: about eight lines of the body type plus the list's own padding
+   (box-sizing is border-box app-wide), derived like the run tracker's reasoning
+   wells, so a long error scrolls inside the band instead of growing it over the
+   view below. The --s-3 padding gutter keeps the dismiss control's negative-margin
+   hit area and its focus outline inside the scroll box, and the matching negative
+   margins hold the text where it sat before the bound. */
 .warning-list {
   list-style: none;
-  margin: var(--s-3) 0 0;
-  padding: 0;
+  margin: 0 calc(-1 * var(--s-3)) calc(-1 * var(--s-3));
+  padding: var(--s-3);
   display: flex;
   flex-direction: column;
   gap: var(--s-2);
+  max-height: calc(8 * var(--lh-ui) * var(--t-ui-sm) + 2 * var(--s-3));
+  overflow-y: auto;
+}
+
+/* Keyboard focus on the list while it scrolls — the same quiet inset ring as the
+   run tracker's scroll region. */
+.warning-list:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* Default to a stacked label-over-body row: this never crushes the body, and it
