@@ -38,10 +38,9 @@ The offscreen card-render recipe lives in session memory, not the repo.
 
 ## Open questions
 
-The factor-distribution store's INDEX row (and a Market-cap bands row) under "Shared across both jobs" — proposed at this session's end, unwritten until the user says go.
+None.
 
 ## Where to start
 
-`/metis-session-start`; if the INDEX rows are still unruled, settle them first.
-Then `/metis-plan-task` for the Trade Opportunities job spine: read its BUILD entry's docs (TO-workflow §Steps 1, 2, 5a–5c, 5h, 6, 9; trade-opportunities.md §Evidence floor, §The opportunity space, §Archetype, §Starting parameters, §Failure posture), decide its task breakdown, then put every flag and assumption through the selector.
+`/metis-session-start`, then `/metis-plan-task` for the Trade Opportunities job spine: read its BUILD entry's docs (TO-workflow §Steps 1, 2, 5a–5c, 5h, 6, 9; trade-opportunities.md §Evidence floor, §The opportunity space, §Archetype, §Starting parameters, §Failure posture), decide its task breakdown, then put every flag and assumption through the selector.
 Never propose the run.
