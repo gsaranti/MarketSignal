@@ -12,6 +12,7 @@ The statement pulls widened: the balance sheet and cash flow to sixteen quarters
 `portfolio/factors.rs` carries 16 factors over seven axes, the sector and market-wide bands, the own-history percentile, imputation, the archetype tilt and the thin-history flag.
 The sector anchors follow Damodaran's January 2026 industry tables by one stated rule; the GP/A, D/E and volatility anchors are drafted, and Financial Services' unfillable columns are placeholders.
 The Metis reviewer rejected once (the anchor sourcing and the docs), then approved with nits; Codex's three P2s were fixed.
+INDEX gained the quant-composite and value-creation-read rows under the shared section, every citation verified against the docs' headings.
 Every ruling is in the commit message.
 
 ## Current state
@@ -19,7 +20,7 @@ Every ruling is in the commit message.
 The factor-machinery item stays under To build; the user ruled four tasks, and task 1 is done.
 Task 2: Portfolio's letter inherits the factor scores — quality, valuation and risk re-sourced from the factors with sector-appropriate selection (P/B family and no D/E for banks, FFO-style for REITs, replacing the Financial Services placeholders); the weights and cutoffs re-drafted to the new score's semantics, shadow-tuned after the dev-run batch; `grade-v3` with its history row and boundary line; the SCORES / GRADE prompt sections and stamp; fixtures, the card and the `BandSet` harness; `portfolio-analysis.md`'s grade bullets; and the data-sources.md Portfolio rows' beta and statement-line consumers, held back from task 1.
 Task 3: the Trade Opportunities–side reads — the price-action confirmer, the tradability flag with its banded haircut (EOD volume kept, the Amihud and days-to-cover bands drafted), the 70% narrative trip, and the archetype driver overrides (a driver-ladder hook, mid-cycle EPS).
-Task 4: the factor-distribution store — one current observation per issuer per factor, the 24-month age-out and 20-issuer floor, Portfolio's engine pass contributing fail-soft from `job::run_analysis`, the portability archive at format v23.
+Task 4: the factor-distribution store — one current observation per issuer per factor, the 24-month age-out and 20-issuer floor, Portfolio's engine pass contributing fail-soft from `job::run_analysis`, the portability archive at format v23; its INDEX row lands with it.
 "Runway years" (the TO horizon rule's input) stays undefined; the TO spine item drafts it.
 The dev-run batch (every Portfolio item's dev run) and the big run are the user's call.
 The prompt review can resume at file 18 (the review examples are 18–20, the thesis, appendix, role/risk and action files 21–30); the stamp is `portfolio-v76`, the next `portfolio-v77`.
