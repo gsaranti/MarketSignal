@@ -36,7 +36,7 @@ The offscreen card-render recipe lives in session memory, not the repo.
 
 ## Open questions
 
-- Should CLAUDE.md and AGENTS.md §Pre-release data posture gain one sentence naming the `required_option` convention for new persisted `Option` fields (offered 2026-10-13, unanswered)?
+None.
 
 ## Where to start
 
