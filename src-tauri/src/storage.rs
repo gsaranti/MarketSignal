@@ -51,7 +51,8 @@ pub fn open(db_path: &std::path::Path) -> Result<Connection> {
 /// transaction, so an unmirrored constraint firing mid-transaction would
 /// strand rolled-back rows pointing at already-replaced files. Today's mirror:
 /// `reports.report_id` PK, the `ux_vector_memory_summary` partial index below,
-/// and `portfolio_runs`/`holdings_pulls` in `portfolio::store`.
+/// `portfolio_runs`/`holdings_pulls` in `portfolio::store`, and
+/// `factor_observations` in `portfolio::factor_store`.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS reports (
@@ -228,6 +229,9 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     // kept beside the module that owns them (`docs/storage.md §Local Analysis
     // Suite Storage`).
     crate::web_research::store::init_schema(conn)?;
+    // The shared engine's factor-distribution store, likewise kept beside the
+    // module that owns it (`docs/storage.md §Local Analysis Suite Storage`).
+    crate::portfolio::factor_store::init_schema(conn)?;
     Ok(())
 }
 

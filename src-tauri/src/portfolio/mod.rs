@@ -53,6 +53,7 @@ pub mod distill;
 pub mod dossier;
 pub mod engine;
 pub mod evidence;
+pub mod factor_store;
 pub mod factors;
 pub mod fund;
 pub mod job;

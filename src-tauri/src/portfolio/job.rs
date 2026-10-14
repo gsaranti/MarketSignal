@@ -2042,6 +2042,28 @@ fn run_analysis(
         verdicts.push(verdict);
         audits.push(audit);
 
+        // The engine pass's factor readings join the shared factor-distribution
+        // store (`docs/storage.md §Local Analysis Suite Storage`) under the
+        // sector the composite read. Only a fresh pass reaches this seam, so a
+        // carried or failed holding never contributes, and a resumed one did in
+        // its first process. Fail-soft (`docs/portfolio-analysis.md` §Failure
+        // posture): the store is diagnostic and Portfolio never reads it.
+        if let Some(composite) = audits.last().and_then(|a| a.factors.as_ref()) {
+            if let Err(e) = crate::portfolio::factor_store::contribute(
+                conn,
+                &position.symbol,
+                dossier.issuer.as_ref().and_then(|i| i.sector.as_deref()),
+                dossier.financials.market_cap,
+                composite,
+                today,
+            ) {
+                eprintln!(
+                    "factor-distribution store: write failed for {} ({e}) — run continues",
+                    position.symbol
+                );
+            }
+        }
+
         // Mid-run checkpoint (`docs/portfolio-analysis.md` §Failure posture):
         // the completed holding — an insufficient-evidence exit included —
         // persists so a cancellation or a crash resumes the
@@ -4812,6 +4834,10 @@ mod tests {
             }
             other => panic!("expected a priced fund verdict, got {other:?}"),
         }
+        // A fund grades on no factor composite, so its pass contributes nothing
+        // to the factor-distribution store.
+        assert!(run.audit[0].factors.is_none());
+        assert!(factor_observations(&paths).is_empty());
     }
 
     /// [`FundCompanyData`] with a tripwired SEC leg — the fund path must never reach
@@ -6992,6 +7018,182 @@ mod tests {
         assert!(scores["MSFT"].three_month.engine.is_some(), "the carried holding is scored");
         let opened: Vec<&str> = second.accuracy.opened.iter().map(|e| e.record.symbol.as_str()).collect();
         assert_eq!(opened, vec!["AAPL"], "a carried verdict opens no episode");
+    }
+
+    // ---- The factor-distribution store (`docs/storage.md` §Local Analysis Suite
+    // Storage) ----
+
+    /// [`StubCompanyData`] behind a resolved Technology profile, so the
+    /// composite reads a sector and the store can bucket the name.
+    struct TechProfileData;
+    impl CompanyDataSource for TechProfileData {
+        fn financials(&self, symbol: &str) -> CompanyFinancials {
+            StubCompanyData.financials(symbol)
+        }
+        fn facts(&self, symbol: &str) -> SecData {
+            StubCompanyData.facts(symbol)
+        }
+        fn profile_identity(&self, symbol: &str) -> crate::portfolio::listing::ProfileLookup {
+            use crate::portfolio::listing::{ProfileIdentity, ProfileLookup};
+            ProfileLookup::Resolved(ProfileIdentity {
+                website: None,
+                currency: Some("USD".into()),
+                is_adr: Some(false),
+                company_name: Some(format!("{symbol} Inc.")),
+                exchange: Some("NASDAQ".into()),
+                sector: Some("Technology".into()),
+                industry: None,
+                beta: None,
+            })
+        }
+    }
+
+    /// One stored factor observation: issuer, factor, sector, cap band, value,
+    /// floored, observed on.
+    type ObservationRow = (String, String, String, String, Option<f64>, bool, String);
+
+    /// Every stored factor observation, ordered.
+    fn factor_observations(paths: &ReportPaths) -> Vec<ObservationRow> {
+        let conn = storage::open(&paths.db_path).unwrap();
+        storage::init_schema(&conn).unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT issuer, factor, sector, cap_band, value, floored, observed_on
+                 FROM factor_observations ORDER BY issuer, factor",
+            )
+            .unwrap();
+        stmt.query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+            ))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+    }
+
+    /// The observations a run's fresh passes should have written: each audit's
+    /// resolved readings in the Technology mega-cap bucket on `on`.
+    fn expected_observations(audits: &[&HoldingAudit], on: &str) -> Vec<ObservationRow> {
+        use crate::portfolio::factor_store::{factor_key, resolved_readings, FactorReading};
+        let mut rows: Vec<ObservationRow> = audits
+            .iter()
+            .flat_map(|audit| {
+                let composite = audit.factors.as_ref().expect("a priced stock's composite");
+                resolved_readings(composite).into_iter().map(|(factor, reading)| {
+                    let (value, floored) = match reading {
+                        FactorReading::Level(v) => (Some(v), false),
+                        FactorReading::Floored => (None, true),
+                    };
+                    (
+                        audit.symbol.clone(),
+                        factor_key(factor).unwrap(),
+                        "Technology".to_string(),
+                        "mega".to_string(),
+                        value,
+                        floored,
+                        on.to_string(),
+                    )
+                })
+            })
+            .collect();
+        rows.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        rows
+    }
+
+    #[test]
+    fn a_fresh_pass_contributes_its_factor_readings_to_the_shared_store() {
+        let (_dir, paths) = paths();
+        let prices = AnchoredPrices::at(200.0);
+        let run = run_with(
+            &paths,
+            two_stocks(),
+            "2026-07-06T15:00:00Z",
+            &prices,
+            None,
+            &TechProfileData,
+            &StubAnalyst,
+        );
+        let audits: Vec<&HoldingAudit> = run.audit.iter().collect();
+        assert_eq!(audits.len(), 2);
+        let expected = expected_observations(&audits, "2026-07-06");
+        assert!(!expected.is_empty());
+        assert_eq!(factor_observations(&paths), expected);
+    }
+
+    #[test]
+    fn a_failed_factor_store_write_never_fails_the_run() {
+        let (_dir, paths) = paths();
+        {
+            let conn = storage::open(&paths.db_path).unwrap();
+            storage::init_schema(&conn).unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER factor_store_offline BEFORE INSERT ON factor_observations
+                 BEGIN SELECT RAISE(ABORT, 'store offline'); END;",
+            )
+            .unwrap();
+        }
+        let prices = AnchoredPrices::at(200.0);
+        let run = run_with(
+            &paths,
+            two_stocks(),
+            "2026-07-06T15:00:00Z",
+            &prices,
+            None,
+            &TechProfileData,
+            &StubAnalyst,
+        );
+        assert_eq!(run.verdicts.len(), 2);
+        assert!(run.failed_holdings.is_empty());
+        let conn = storage::open(&paths.db_path).unwrap();
+        assert_eq!(store::latest_run(&conn).unwrap().unwrap().run_id, run.run_id);
+        assert!(factor_observations(&paths).is_empty());
+    }
+
+    #[test]
+    fn a_selective_run_contributes_only_its_fresh_passes() {
+        let (_dir, paths) = paths();
+        let prices = AnchoredPrices::at(200.0);
+        run_with(
+            &paths,
+            two_stocks(),
+            "2026-07-06T15:00:00Z",
+            &prices,
+            None,
+            &TechProfileData,
+            &StubAnalyst,
+        );
+        storage::open(&paths.db_path)
+            .unwrap()
+            .execute("DELETE FROM factor_observations", [])
+            .unwrap();
+        let quick = SelectiveQuickData::default();
+        let second = run_with(
+            &paths,
+            two_stocks(),
+            "2026-10-09T15:00:00Z",
+            &prices,
+            Some(SelectiveRun {
+                selected: vec!["AAPL".to_string()],
+                quick_data: &quick,
+            }),
+            &TechProfileData,
+            &StubAnalyst,
+        );
+        let aapl: Vec<&HoldingAudit> =
+            second.audit.iter().filter(|a| a.symbol == "AAPL").collect();
+        assert_eq!(aapl.len(), 1);
+        assert_eq!(
+            factor_observations(&paths),
+            expected_observations(&aapl, "2026-10-09"),
+            "the carried MSFT contributes nothing"
+        );
     }
 
     fn accuracy_store() -> Connection {

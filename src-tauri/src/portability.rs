@@ -2,7 +2,7 @@
 //! durable analytical stores into one structured, versioned zip archive, and
 //! import such an archive back into a store. The load-bearing line is that
 //! durable analytical data moves while secrets and machine-local operational
-//! state stay behind: the eleven exported tables ([`TABLES`]) plus the
+//! state stay behind: the twelve exported tables ([`TABLES`]) plus the
 //! report/research files are serialized row-by-row, and `app_settings`
 //! (every plaintext credential), the Keychain, `job_runs`, and the telemetry
 //! tables are never read — so nothing sensitive can enter the archive.
@@ -69,7 +69,7 @@ use crate::storage;
 /// statement (`checkpoint-v12`), so a v7 archive's runs would not decode under
 /// the current condition shape.
 /// v9: complete physical-attempt telemetry in run data health (checkpoint-v13).
-/// Every pre-release shape below the current one — v2 through v22, none of which
+/// Every pre-release shape below the current one — v2 through v23, none of which
 /// a shipped build wrote — is refused outright, as is a v0 stamp no build wrote
 /// (`check_format_version`, the 2026-08-29 no-compat ruling).
 /// v10: explicit dates in persisted research claims, including topic seeds.
@@ -116,16 +116,19 @@ use crate::storage;
 /// v23: a priced stock's audit inside `portfolio_runs.run_json` carries its
 /// factor composite and its verdict the grade basis; every earlier pre-release
 /// format is refused (checkpoint-v26).
-pub const FORMAT_VERSION: u32 = 23;
+/// v24: the shared engine's factor-distribution store joins —
+/// `factor_observations`, one current observation per issuer per factor;
+/// every earlier pre-release format is refused.
+pub const FORMAT_VERSION: u32 = 24;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
 const ENC_MAGIC: &[u8; 8] = b"MSDPENC1";
 
-/// The eleven exported tables, in insert dependency order (reports first, so
+/// The twelve exported tables, in insert dependency order (reports first, so
 /// the vector summaries and snapshots that join on `report_id` land after them;
 /// episodes before the checks that reference them).
-const TABLES: [&str; 11] = [
+const TABLES: [&str; 12] = [
     "reports",
     "baseline_snapshots",
     "vector_memory",
@@ -137,11 +140,12 @@ const TABLES: [&str; 11] = [
     "price_bars",
     "web_documents",
     "web_source_state",
+    "factor_observations",
 ];
 
 /// The tables' zip entry names, same order — what export writes and import
 /// consumes, shared so the two sides can never drift.
-const DB_ENTRY_NAMES: [&str; 11] = [
+const DB_ENTRY_NAMES: [&str; 12] = [
     "db/reports.ndjson",
     "db/baseline_snapshots.ndjson",
     "db/vector_memory.ndjson",
@@ -153,13 +157,14 @@ const DB_ENTRY_NAMES: [&str; 11] = [
     "db/price_bars.ndjson",
     "db/web_documents.ndjson",
     "db/web_source_state.ndjson",
+    "db/factor_observations.ndjson",
 ];
 
 /// The db entries an archive's own format version requires — the versioned
 /// closed set (`docs/data-portability.md` §Import flow): a v1 archive — the
 /// shipped build's format — predates the quick-check store, so it is complete
 /// at five entries; requiring the current format's entries of it would refuse
-/// it as truncated. The v2 through v22 shapes were pre-release dev formats no
+/// it as truncated. The v2 through v23 shapes were pre-release dev formats no
 /// shipped build wrote and are refused at [`check_format_version`] with a v0
 /// stamp (ruled 2026-08-29 — no data compat pre-release).
 fn required_db_entries(format_version: u32) -> &'static [&'static str] {
@@ -331,6 +336,21 @@ struct WebSourceStateRow {
     updated_at: String,
 }
 
+/// One factor-distribution store row on the wire (`docs/storage.md §Local
+/// Analysis Suite Storage`): an issuer's current reading on one factor, its
+/// bucket and its date — `value` absent exactly when the reading is floored.
+#[derive(Debug, Serialize, Deserialize)]
+struct FactorObservationRow {
+    issuer: String,
+    factor: String,
+    sector: String,
+    cap_band: String,
+    #[serde(deserialize_with = "crate::portfolio::required_option")]
+    value: Option<f64>,
+    floored: bool,
+    observed_on: String,
+}
+
 // ---------------------------------------------------------------------------
 // Command-facing results
 // ---------------------------------------------------------------------------
@@ -404,6 +424,7 @@ pub fn export_archive(
     let price_bars = read_price_bar_rows(&conn)?;
     let web_documents = read_web_document_rows(&conn)?;
     let web_source_states = read_web_source_state_rows(&conn)?;
+    let factor_observations = read_factor_observation_rows(&conn)?;
     let learnings = vectors.iter().filter(|v| v.kind == "learning").count() as u64;
 
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
@@ -435,6 +456,10 @@ pub fn export_archive(
         "web_source_state".to_string(),
         web_source_states.len() as u64,
     );
+    row_counts.insert(
+        "factor_observations".to_string(),
+        factor_observations.len() as u64,
+    );
 
     let mut embedders = BTreeMap::new();
     embedders.insert(
@@ -445,7 +470,7 @@ pub fn export_archive(
     // The db/*.ndjson entries join the manifest's checksum inventory alongside
     // the store files, so import can verify every entry — table rows included —
     // before its destructive phase.
-    let db_payloads: [Vec<u8>; 11] = [
+    let db_payloads: [Vec<u8>; 12] = [
         ndjson(&reports)?,
         ndjson(&snapshots)?,
         ndjson(&vectors)?,
@@ -457,6 +482,7 @@ pub fn export_archive(
         ndjson(&price_bars)?,
         ndjson(&web_documents)?,
         ndjson(&web_source_states)?,
+        ndjson(&factor_observations)?,
     ];
 
     let manifest = Manifest {
@@ -631,6 +657,15 @@ pub fn import_archive(
             bail!("archive entry {name} is missing or not listed in the manifest — it cannot be verified");
         }
     }
+    // Every table entry present is manifest-vouched too, whatever the version
+    // requires: an older archive's version needs fewer entries, but a later
+    // format's entry riding it unlisted was never checksummed, so it is
+    // refused rather than parsed.
+    for name in DB_ENTRY_NAMES {
+        if entries.contains_key(name) && !verified.contains(name) {
+            bail!("archive entry {name} is not listed in the manifest — it cannot be verified");
+        }
+    }
 
     let report_rows: Vec<ReportRow> = parse_ndjson(&entries, "db/reports.ndjson")?;
     let snapshot_rows: Vec<SnapshotRow> = parse_ndjson(&entries, "db/baseline_snapshots.ndjson")?;
@@ -645,6 +680,8 @@ pub fn import_archive(
     let web_document_rows: Vec<WebDocumentRow> = parse_ndjson(&entries, "db/web_documents.ndjson")?;
     let web_source_state_rows: Vec<WebSourceStateRow> =
         parse_ndjson(&entries, "db/web_source_state.ndjson")?;
+    let factor_observation_rows: Vec<FactorObservationRow> =
+        parse_ndjson(&entries, "db/factor_observations.ndjson")?;
 
     // Everything the load will need is decoded and checked HERE, before the
     // destructive phase, so a malformed row can only ever abort an import while
@@ -753,6 +790,25 @@ pub fn import_archive(
     for row in &web_source_state_rows {
         if !seen_state_hosts.insert(row.host.as_str()) {
             bail!("archive carries a duplicate source state for {:?}", row.host);
+        }
+    }
+    // The factor-distribution store's (issuer, factor) primary key and its
+    // value-or-floored check, mirrored pre-destructively.
+    let mut seen_observation_keys = BTreeSet::new();
+    for row in &factor_observation_rows {
+        if !seen_observation_keys.insert((row.issuer.as_str(), row.factor.as_str())) {
+            bail!(
+                "archive carries a duplicate {} observation for {}",
+                row.factor,
+                row.issuer
+            );
+        }
+        if row.value.is_some() == row.floored {
+            bail!(
+                "archive carries a {} observation for {} that is both or neither a value and floored",
+                row.factor,
+                row.issuer
+            );
         }
     }
     let mut seen_summary_ids = BTreeSet::new();
@@ -961,6 +1017,22 @@ pub fn import_archive(
                 row.profile,
                 row.render_first as i64,
                 row.updated_at
+            ],
+        )?;
+    }
+    for row in &factor_observation_rows {
+        tx.execute(
+            "INSERT INTO factor_observations (issuer, factor, sector, cap_band, value,
+                                              floored, observed_on)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                row.issuer,
+                row.factor,
+                row.sector,
+                row.cap_band,
+                row.value,
+                row.floored as i64,
+                row.observed_on
             ],
         )?;
     }
@@ -1184,6 +1256,27 @@ fn read_web_source_state_rows(conn: &Connection) -> Result<Vec<WebSourceStateRow
     Ok(rows)
 }
 
+fn read_factor_observation_rows(conn: &Connection) -> Result<Vec<FactorObservationRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT issuer, factor, sector, cap_band, value, floored, observed_on
+         FROM factor_observations ORDER BY issuer, factor",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(FactorObservationRow {
+                issuer: r.get(0)?,
+                factor: r.get(1)?,
+                sector: r.get(2)?,
+                cap_band: r.get(3)?,
+                value: r.get(4)?,
+                floored: r.get(5)?,
+                observed_on: r.get(6)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 fn read_price_bar_rows(conn: &Connection) -> Result<Vec<PriceBarRow>> {
     let mut stmt =
         conn.prepare("SELECT symbol, date, close FROM price_bars ORDER BY symbol, date")?;
@@ -1256,7 +1349,7 @@ fn check_format_version(manifest: &Manifest) -> Result<()> {
             FORMAT_VERSION
         );
     }
-    if matches!(manifest.format_version, 0 | 2..=22) {
+    if matches!(manifest.format_version, 0 | 2..=23) {
         bail!(
             "this archive uses format v{} — a pre-release format no shipped build wrote, which this build no longer reads",
             manifest.format_version
@@ -1599,6 +1692,15 @@ mod tests {
                                            updated_at)
              VALUES ('bloomberg.com', 0, 3, 2, 1, 'js_required', 1,
                      '2026-07-06T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        // A finite reading and a floored one, so both shapes travel.
+        conn.execute(
+            "INSERT INTO factor_observations (issuer, factor, sector, cap_band, value,
+                                              floored, observed_on)
+             VALUES ('AAPL', 'earnings-yield', 'Technology', 'mega', 0.031, 0, '2026-07-06'),
+                    ('AAPL', 'debt-to-equity', 'Technology', 'mega', NULL, 1, '2026-07-06')",
             [],
         )
         .unwrap();
@@ -2303,6 +2405,49 @@ mod tests {
     }
 
     #[test]
+    fn an_archive_missing_the_factor_store_entry_is_refused() {
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let dest = source.db_path.parent().unwrap().join("export.zip");
+        export_archive(&source, &dest, None).unwrap();
+
+        // A format-24 archive without the factor-distribution store's entry and
+        // its listing is truncated, never a store with no observations.
+        let mut entries = read_archive_entries(&dest);
+        entries.remove("db/factor_observations.ndjson");
+        let mut manifest: Manifest =
+            serde_json::from_slice(&entries["manifest.json"]).unwrap();
+        manifest.files.retain(|f| f.path != "db/factor_observations.ndjson");
+        entries.insert(
+            "manifest.json".to_string(),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        );
+        let missing_path = source.db_path.parent().unwrap().join("missing-factors.zip");
+        rebuild_zip(&entries, &missing_path);
+
+        let (_b, target) = temp_store();
+        let err = import_archive(&target, &missing_path, None, false).unwrap_err();
+        assert!(err.to_string().contains("db/factor_observations.ndjson"), "{err}");
+        assert!(err.to_string().contains("missing or not listed"), "{err}");
+        assert_eq!(table_count(&target, "reports"), 0, "nothing imported");
+    }
+
+    #[test]
+    fn store_is_empty_counts_the_factor_store() {
+        let (_a, paths) = temp_store();
+        let conn = storage::open(&paths.db_path).unwrap();
+        assert!(store_is_empty(&conn).unwrap());
+        conn.execute(
+            "INSERT INTO factor_observations (issuer, factor, sector, cap_band, value,
+                                              floored, observed_on)
+             VALUES ('AAPL', 'earnings-yield', 'Technology', 'mega', 0.031, 0, '2026-07-06')",
+            [],
+        )
+        .unwrap();
+        assert!(!store_is_empty(&conn).unwrap(), "an observation alone is analytical data");
+    }
+
+    #[test]
     fn a_v1_archive_without_the_quick_check_entry_imports_complete() {
         let (_a, source) = temp_store();
         seed_store(&source);
@@ -2343,6 +2488,38 @@ mod tests {
         let loaded = import_archive(&target, &v1_path, None, false).unwrap();
         assert_eq!(loaded.reports, 2);
         assert_eq!(table_count(&target, "portfolio_quick_checks"), 0);
+    }
+
+    #[test]
+    fn a_v1_archive_never_consumes_an_unlisted_later_entry() {
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let dest = source.db_path.parent().unwrap().join("export.zip");
+        export_archive(&source, &dest, None).unwrap();
+
+        // A v1 archive needs only its five entries listed, but a later
+        // format's entry present without a listing was never checksummed: it
+        // is refused, never imported unverified — the factor store's entry and
+        // an older later entry alike.
+        for unlisted in ["db/factor_observations.ndjson", "db/portfolio_quick_checks.ndjson"] {
+            let mut entries = read_archive_entries(&dest);
+            let mut manifest: Manifest =
+                serde_json::from_slice(&entries["manifest.json"]).unwrap();
+            manifest.format_version = 1;
+            manifest.files.retain(|f| f.path != unlisted);
+            entries.insert(
+                "manifest.json".to_string(),
+                serde_json::to_vec_pretty(&manifest).unwrap(),
+            );
+            let path = source.db_path.parent().unwrap().join("v1-unlisted.zip");
+            rebuild_zip(&entries, &path);
+            let (_t, target) = temp_store();
+            let err = import_archive(&target, &path, None, false).unwrap_err();
+            assert!(err.to_string().contains(unlisted), "{err}");
+            assert!(err.to_string().contains("not listed in the manifest"), "{err}");
+            assert_eq!(table_count(&target, "reports"), 0, "nothing imported");
+            assert_eq!(table_count(&target, "factor_observations"), 0);
+        }
     }
 
     #[test]
@@ -2439,7 +2616,7 @@ mod tests {
 
     #[test]
     fn every_pre_release_format_stamp_is_refused() {
-        // v2 through v22 were pre-release formats no shipped build wrote
+        // v2 through v23 were pre-release formats no shipped build wrote
         // (ruled 2026-08-29), and no build wrote v0: a complete current export
         // re-stamped any of these ways is refused outright, never read through
         // a compat rung.
@@ -2524,6 +2701,48 @@ mod tests {
         let err = import_archive(&target, &dup_path, None, false).unwrap_err();
         assert!(err.to_string().contains("duplicate price bar"), "{err}");
         assert_eq!(table_count(&target, "price_bars"), 0);
+    }
+
+    #[test]
+    fn malformed_factor_observations_are_refused_pre_destructively() {
+        let (_a, source) = temp_store();
+        seed_store(&source);
+        let dest = source.db_path.parent().unwrap().join("export.zip");
+        export_archive(&source, &dest, None).unwrap();
+        let text =
+            String::from_utf8(read_archive_entries(&dest)["db/factor_observations.ndjson"].clone())
+                .unwrap();
+        let row = |value: &str, floored: bool| {
+            format!(
+                "{{\"issuer\":\"MSFT\",\"factor\":\"momentum\",\"sector\":\"Technology\",\"cap_band\":\"mega\",\"value\":{value},\"floored\":{floored},\"observed_on\":\"2026-07-06\"}}\n"
+            )
+        };
+        for (tampered, needle) in [
+            // A doubled (issuer, factor) key — the primary-key mirror.
+            (format!("{text}{text}"), "duplicate debt-to-equity observation for AAPL"),
+            // A value that is also floored, and neither — the check mirror.
+            (format!("{text}{}", row("0.1", true)), "both or neither"),
+            (format!("{text}{}", row("null", false)), "both or neither"),
+            // An absent value key is refused, never read as floored.
+            (
+                format!("{text}{}", row("null", true).replace("\"value\":null,", "")),
+                "missing field `value`",
+            ),
+        ] {
+            let mut entries = read_archive_entries(&dest);
+            replace_entry_rechecksummed(
+                &mut entries,
+                "db/factor_observations.ndjson",
+                tampered.into_bytes(),
+            );
+            let path = source.db_path.parent().unwrap().join("bad-observation.zip");
+            rebuild_zip(&entries, &path);
+            let (_t, target) = temp_store();
+            let err = import_archive(&target, &path, None, false).unwrap_err();
+            assert!(format!("{err:#}").contains(needle), "{err:#}");
+            assert_eq!(table_count(&target, "factor_observations"), 0);
+            assert_eq!(table_count(&target, "reports"), 0, "nothing imported");
+        }
     }
 
     #[test]

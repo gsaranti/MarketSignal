@@ -36,6 +36,7 @@ Concretely, mapping onto the actual stores ([storage.md](storage.md)):
 | `price_bars` | The shared price-bar cache — public price data: Trade Opportunities' render-time read and both jobs' accuracy checks' refresh target, carried so an imported store keeps its series and their as-of dates; a check still waits for a successful refresh ([portfolio-analysis.md §Outcome learning](portfolio-analysis.md#outcome-learning-calibration)). |
 | `web_documents` | The shared web-research document cache, including each normalized requested-URL key and its separate post-redirect final URL so imported repeat fetches preserve both cache hits and provenance. |
 | `web_source_state` | The shared web-research extraction telemetry — learned full/thin counts, the failed and denied attempt counts, extraction profile, and render-first state. |
+| `factor_observations` | The shared engine's factor-distribution store — each issuer's current reading on each factor with its bucket and date ([storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage)). It accumulates across both jobs' analyses and regenerates only by re-analyzing every issuer. |
 
 **Exported — filesystem stores:**
 
@@ -82,6 +83,7 @@ market-signal-export-YYYY-MM-DD.zip
     price_bars.ndjson
     web_documents.ndjson
     web_source_state.ndjson
+    factor_observations.ndjson
   reports/                   the canonical Markdown bodies
   research-archive/          processed source documents
   research-inbox/            pending source documents
@@ -140,7 +142,7 @@ The **Import** action in the same Settings section:
 2. If the container is encrypted, it decrypts with the Data section's shared passphrase field; absent or wrong, import stops with a typed error asking for it (no dedicated prompt dialog — retrying reopens the picker).
 3. Read and validate the manifest: reject a format version newer than this build understands; verify every entry's size + checksum, and never consume bytes the manifest doesn't list.
    Every table entry **the archive's own format version requires** (five in format v1 — the shipped build's format; the current set otherwise) must be **present and manifest-listed** — a truncated archive is refused, never imported as a sparse store, while a v1 archive imports complete under its own five-entry set (backward compatibility by version, never sparse tolerance).
-   The pre-release v2 through v22 shapes, which no shipped build wrote, and a v0 stamp are refused outright (no local-suite data compat pre-release).
+   The pre-release v2 through v23 shapes, which no shipped build wrote, and a v0 stamp are refused outright (no local-suite data compat pre-release).
    All row-level validation — NDJSON parse, embedding decode, each vector row's report namespace, the schema's uniqueness/cardinality — also runs here, **before any destructive step**, so a bad archive can only abort while the store is untouched.
    Reading the archive is itself bounded: entries unpack under a total-size ceiling (4 GiB — generous by orders of magnitude over a real corpus), and `manifest.json` — which is read before that ceiling can apply — carries its own smaller bound (16 MiB), so a crafted zip can't demand unbounded memory through either read.
 4. Determine whether the target store is **empty** (no row in any exported table):
@@ -196,6 +198,6 @@ The Settings surface follows the existing Settings patterns and the design packa
 
 This is **independent of the local suite** — it moves whatever the store holds, so it works today against the cloud report corpus.
 It landed (PR #53) **before** the M5 transition, so the accumulated report history and learnings survive the move.
-Local-suite coverage is a **format-extension rule, not an automatic property**: every new durable local-suite store — the [storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage) set (the Portfolio episode store; the opportunity matrix / run, opportunity graph, discovery-coverage ledger, departed archive, and Trade Opportunities' episode store) — **joins the archive as part of the slice that lands it**: a new required manifest entry and a format-version bump, with regenerable caches staying excluded under the what-moves rule above.
+Local-suite coverage is a **format-extension rule, not an automatic property**: every new durable local-suite store — the [storage.md §Local Analysis Suite Storage](storage.md#local-analysis-suite-storage) set (the Portfolio episode store; the shared factor-distribution store; the opportunity matrix / run, opportunity graph, discovery-coverage ledger, departed archive, and Trade Opportunities' episode store) — **joins the archive as part of the slice that lands it**: a new required manifest entry and a format-version bump, with regenerable caches staying excluded under the what-moves rule above.
 The one exception to that cache exclusion: the shared **price-bar cache rides with the episode stores** (the table above), because both jobs' accuracy checks read their closes from it — regenerable in principle, but carrying it keeps an imported store's series and as-of dates, so a pending horizon needs only a refresh, never a cold rebuild.
 The import's closed-set validation is versioned to match (§Import flow), so an archive is always complete *for its own format version*.

@@ -8385,12 +8385,14 @@ pub(crate) mod tests {
         // rebuild and the redrawn cutoffs — v77; the audit's composite and the
         // verdict's grade basis move the trail to checkpoint-v26 and the archive
         // to format 23.
+        // The factor machinery's task 4 (2026-10-14): no prompt or trail moves;
+        // the shared factor-distribution store joins the archive at format 24.
         assert_eq!(PROMPT_VERSION, "portfolio-v77");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v26"
         );
-        assert_eq!(crate::portability::FORMAT_VERSION, 23);
+        assert_eq!(crate::portability::FORMAT_VERSION, 24);
     }
 
     #[test]
