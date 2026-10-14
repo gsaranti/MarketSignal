@@ -1,13 +1,7 @@
-// Reusable test doubles for the four `@tauri-apps/api` modules `App.vue` imports
-// (core / event / window / app). App.vue is the only SFC that touches Tauri, so
-// this is the single home for the mock surface.
-//
-// Deliberately pure — no `vi.*` here. `vi.mock` factories are hoisted above a
-// spec's imports, so the mock *functions* must be declared in the spec (via
-// `vi.hoisted`); this module only supplies their *implementations* — the invoke
-// command-router and the default response shapes — applied in the spec's
-// `beforeEach`. Keeping `vi` out means the helper is import-order-agnostic and
-// reusable from any spec without fighting hoist ordering.
+// Test doubles for the `@tauri-apps/api` modules App.vue imports. Deliberately
+// `vi`-free: `vi.mock` factories are hoisted above a spec's imports, so the mock
+// functions are declared in the spec via `vi.hoisted` and this module supplies
+// only their implementations, keeping it import-order-agnostic.
 
 import type {
   HoldingsPull,
@@ -22,9 +16,8 @@ import type {
   ValidationReport,
 } from "../../src/types";
 
-// Minimal valid shapes for the commands App's `onMounted` cascade calls, so a
-// full App mount completes without a hand-rolled fixture per spec. A clean,
-// unblocked config with one enabled-but-idle job and nothing yet generated.
+// Minimal valid shapes for App's `onMounted` reads: a clean, unblocked, idle
+// install with nothing yet generated.
 export const defaultValidation: ValidationReport = {
   categories: [],
   is_blocked: false,
@@ -63,8 +56,6 @@ export const defaultSettings: SettingsView = {
   available_models: [],
 };
 
-// Read alongside settings (refreshSettings); a clean install has no Schwab
-// credentials and no connection.
 export const defaultSchwabStatus: SchwabStatus = {
   client_id: "",
   secret_configured: false,
@@ -72,17 +63,12 @@ export const defaultSchwabStatus: SchwabStatus = {
   refresh_expires_at: null,
 };
 
-// The local-suite presence gate (check_local_configuration). The default keeps
-// the fixture "clean and unblocked" like the cloud validation above — specs
-// that exercise the local warning band override with categories.
 export const defaultLocalValidation: ValidationReport = {
   categories: [],
   is_blocked: false,
 };
 
-// A minimal persisted Portfolio run (one graded stock + one not-rated cash-like
-// position + one exited name) for specs that render the Portfolio page through
-// App. Kept small — PortfolioView's own spec builds richer fixtures.
+// Kept minimal; PortfolioView's own spec builds the richer fixtures.
 export const samplePortfolioRun: PortfolioRun = {
   run_id: "prun-1",
   created_at: "2026-07-01T12:00:00Z",
@@ -190,8 +176,6 @@ export const sampleHoldingsPull: HoldingsPull = {
   holdings: samplePortfolioRun.holdings,
 };
 
-// Loaded alongside settings when the Settings view opens; a clean install has
-// recorded no truncations.
 export const defaultTruncationStats: TruncationStats = {
   total_truncations: 0,
   total_docs_parsed: 0,
@@ -204,8 +188,7 @@ export const defaultTruncationStats: TruncationStats = {
   latest_captured_at: null,
 };
 
-// The fixed investor-profile preset the read-only Settings block renders —
-// mirrors the Rust `InvestorProfile::default_fixture().display()` strings
+// Mirrors the Rust `InvestorProfile::default_fixture().display()` strings
 // (pinned backend-side by `investor_profile_display_pins_preset_rows`).
 export const defaultInvestorProfile: InvestorProfileDisplay = {
   objective:
@@ -218,9 +201,8 @@ export const defaultInvestorProfile: InvestorProfileDisplay = {
 
 export type InvokeHandler = (args?: Record<string, unknown>) => unknown;
 
-// The command → response map. Any command absent here throws when invoked, so a
-// new `onMounted` call — or a typo — surfaces loudly instead of resolving
-// `undefined` and silently passing a half-wired mount.
+// A command absent here throws when invoked, so a new `onMounted` read or a
+// typo surfaces loudly instead of resolving `undefined`.
 export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
   return {
     // onMounted bootstrap reads.
@@ -235,10 +217,7 @@ export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
     list_research_inbox: () => [] as ResearchDocument[],
     list_research_archive: () => [] as ResearchDocument[],
     get_settings: () => defaultSettings,
-    // Read on Settings-view entry, alongside get_settings.
     truncation_stats: () => defaultTruncationStats,
-    // The fixed investor-profile preset for the read-only Settings block —
-    // ready-to-render display strings from the backend label source.
     get_investor_profile: () => defaultInvestorProfile,
     schwab_status: () => defaultSchwabStatus,
     // Action commands a spec may drive through a user interaction.
@@ -251,9 +230,8 @@ export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
       missing_models: [],
     }),
     save_web_research_settings: () => null,
-    // The pre-run web-research probe (also the Settings connection row). The
-    // default reads healthy so a spec-driven Run analysis launches without the
-    // degraded-mode notice; notice specs override with a degraded read.
+    // Reads healthy so a spec-driven Run analysis launches without the
+    // degraded-mode notice.
     test_searxng: () => ({
       status: "ok",
       detail: null,
@@ -265,18 +243,13 @@ export function defaultInvokeHandlers(): Record<string, InvokeHandler> {
     schwab_disconnect: () => null,
     generate_portfolio_manual: () => samplePortfolioRun,
     pull_holdings: () => sampleHoldingsPull,
-    // Data portability: both dialogs default to "cancelled" (null), the no-op
-    // outcome. `import_data` is deliberately unregistered — it must only ever
-    // run against an inspected archive a spec explicitly set up, so reaching it
-    // without an override is a loud unhandled-invoke failure.
+    // null is the cancelled-dialog outcome. `import_data` is deliberately
+    // unregistered so a spec reaches it only through an archive it set up.
     export_data: () => null,
     import_data_inspect: () => null,
   };
 }
 
-// Build an `invoke` implementation. `overrides` replace or add per-command
-// handlers — to assert a specific payload, return tailored data, or simulate a
-// failure (a handler that throws).
 export function makeInvokeRouter(
   overrides: Record<string, InvokeHandler> = {}
 ): (cmd: string, args?: Record<string, unknown>) => Promise<unknown> {
@@ -290,15 +263,11 @@ export function makeInvokeRouter(
   };
 }
 
-// A no-op `UnlistenFn` — the resolved value of both `listen` and `onFocusChanged`.
 export const unlisten = (): void => {};
 
-// Capture the callback a spec's mocked `listen` registered for an event, so the
-// spec can drive App's run tracker by feeding it `ProgressMessage`s the way the
-// backend would over the "job-progress" channel. App registers its listeners in
-// `onMounted`, so call this only after the mount's promises have flushed. Stays
-// `vi`-free (reads the mock's `.calls` structurally) so the helper keeps its
-// import-order-agnostic posture.
+// Returns the callback the mocked `listen` registered for `event`. App registers
+// its listeners in `onMounted`, so call this only after the mount's promises
+// have flushed.
 type ListenLike = { mock: { calls: unknown[][] } };
 export function emitterFor(
   listenMock: ListenLike,
@@ -312,11 +281,8 @@ export function emitterFor(
   return (payload: unknown) => cb({ payload });
 }
 
-// The window's `onFocusChanged` sibling of `emitterFor`. App subscribes via
-// `getCurrentWindow().onFocusChanged(cb)` in `onMounted`, so the callback is the
-// first (only) arg of the single registration; capture it to drive App's
-// focus-refresh path by feeding it focus transitions the way wry's window would.
-// Same `vi`-free, post-mount-flush contract as `emitterFor`.
+// The `onFocusChanged` sibling of `emitterFor`, with the same post-mount-flush
+// constraint.
 export function focusEmitter(
   onFocusChangedMock: ListenLike
 ): (focused: boolean) => void {

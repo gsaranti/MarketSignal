@@ -1,12 +1,4 @@
-// Settings.vue is presentational — props in, three events out (save / set-dark /
-// test) — and, unlike App.vue, imports no `@tauri-apps/api`, so it mounts with no
-// Tauri mock, exactly like ResearchDocuments.spec.ts. (The handoff framed Settings
-// as an invoke-caller; it isn't — only App.vue is.)
-//
-// Pins the emit contract that carries real logic: the save payload omits
-// untouched credentials (the secret is never re-sent — Settings.vue onSave) and
-// includes only the typed ones, a no-edit submit doesn't emit, and the appearance
-// toggle flips the current prop value.
+// Settings is presentational (App owns every invoke), so no Tauri mocks.
 
 import { test, expect } from "vitest";
 import { mount } from "@vue/test-utils";
@@ -24,9 +16,8 @@ import type {
 
 const settingsView: SettingsView = {
   models: { main: "gpt-main", bull: "gpt-bull", bear: "gpt-bear", balanced: "gpt-bal" },
-  // Both API tokens already configured, so `tokensSatisfied` holds without
-  // retyping them — a model edit can drive a valid cloud save while the token
-  // fields stay untouched.
+  // Both tokens configured, so the cloud form's token gate holds without
+  // retyping them.
   credentials: { openai: true, anthropic: true, fmp: false, fred: false, tavily: false },
   local_models: {
     daemon_endpoint: "",
@@ -50,8 +41,6 @@ const baseProps = {
   dark: false,
   testing: { openai: false, anthropic: false, fmp: false, fred: false, tavily: false },
   testResults: { openai: null, anthropic: null, fmp: null, fred: null, tavily: null },
-  // The two independent submissions' channels + the local-daemon test state:
-  // idle, no errors, untested.
   savingProviders: false,
   providersError: null as string | null,
   savingLocal: false,
@@ -63,37 +52,25 @@ const baseProps = {
   searxngTesting: false,
   searxngStatus: null as WebResearchPreflight | null,
   truncationStats: null as TruncationStats | null,
-  // The read-only investor-profile preset: unavailable by default (the section
-  // is omitted); the profile tests override.
   investorProfile: null as InvestorProfileDisplay | null,
-  // A clean install: no Schwab credentials, no connection (the shared helper
-  // fixture, spread so deepFreeze can't freeze the shared object). Schwab tests
-  // override.
+  // Spread, so deepFreeze below does not freeze the shared helper object.
   schwabStatus: { ...defaultSchwabStatus } as SchwabStatus | null,
   schwabConnecting: false,
   schwabBusy: false,
   schwabError: null as string | null,
-  // Data portability: idle, nothing running, no status/error.
   dataBusy: null as "export" | "import" | null,
   slotBusy: false,
   dataError: null as string | null,
   dataStatus: null as string | null,
 };
 
-// makeWrapper spreads baseProps *shallowly*, so its nested objects (settingsView,
-// testing, testResults) are shared by reference across every wrapper. The fixture
-// is read-only by design — deep-freezing makes that a guarantee: a test that
-// mutates a nested prop in place would throw at the write rather than silently
-// leak into the next test. (Settings.vue copies props into local form state, so a
-// frozen `settings` mounts unchanged.)
 deepFreeze(baseProps);
 
 function makeWrapper(overrides: Partial<typeof baseProps> = {}) {
   return mount(Settings, { props: { ...baseProps, ...overrides } });
 }
 
-// The three independent forms, in template order (docs/configuration.md §API
-// Tokens: the token gate is scoped to the cloud submission alone).
+// In template order (docs/configuration.md §API Tokens).
 function forms(wrapper: ReturnType<typeof makeWrapper>) {
   const all = wrapper.findAll("form.settings-form");
   return { cloud: all[0], providers: all[1], local: all[2] };
@@ -101,8 +78,6 @@ function forms(wrapper: ReturnType<typeof makeWrapper>) {
 
 test("the cloud save emits models + typed tokens only, untouched secrets null", async () => {
   const wrapper = makeWrapper();
-  // Type a new OpenAI token; the Anthropic slot stays untouched. The provider
-  // credentials are not part of this submission at all.
   await wrapper.find("#cred-openai").setValue("sk-new");
   await forms(wrapper).cloud.trigger("submit");
 
@@ -134,8 +109,8 @@ test("a typed provider credential emits save-providers, never save", async () =>
 });
 
 test("provider credentials save with no cloud token configured (the ungate)", async () => {
-  // A cloud-keyless machine: no token stored, none typed — the local-suite
-  // setup path (docs/configuration.md §External Data Provider Credentials).
+  // A cloud-keyless machine (docs/configuration.md §External Data Provider
+  // Credentials).
   const wrapper = makeWrapper({
     settings: {
       ...settingsView,
@@ -153,8 +128,7 @@ test("provider credentials save with no cloud token configured (the ungate)", as
 
 test("a reload after one section's save never wipes another section's typed edits", async () => {
   const wrapper = makeWrapper();
-  // The user types a cloud token but doesn't save it, then saves providers —
-  // App re-fetches settings and passes a fresh view object down.
+  // A providers save makes App pass a fresh settings view down.
   await wrapper.find("#cred-openai").setValue("sk-typed-not-saved");
   await wrapper.setProps({
     settings: { ...settingsView, credentials: { ...settingsView.credentials, fmp: true } },
@@ -167,7 +141,7 @@ test("a clean save clears its OWN secret fields only (completion edge)", async (
   const wrapper = makeWrapper();
   await wrapper.find("#cred-openai").setValue("sk-typed-not-saved");
   await wrapper.find("#cred-fmp").setValue("fmp-typed");
-  // Simulate the providers save round-trip: saving flips on, then cleanly off.
+  // The providers save round-trip: saving flips on, then cleanly off.
   await wrapper.setProps({ savingProviders: true });
   await wrapper.setProps({ savingProviders: false });
   const fmp = wrapper.find("#cred-fmp").element as HTMLInputElement;
@@ -189,10 +163,8 @@ test("the local-models form round-trips saved values and emits save-local in ful
       },
     },
   });
-  // Saved values pre-fill (not secrets — they round-trip).
   const endpoint = wrapper.find("#local-endpoint").element as HTMLInputElement;
   expect(endpoint.value).toBe("http://127.0.0.1:11434");
-  // An edit makes the form dirty; the submission carries all three verbatim.
   await wrapper.find("#local-reasoner").setValue("reasoner-b");
   await forms(wrapper).local.trigger("submit");
   const saved = wrapper.emitted("save-local");
@@ -211,14 +183,13 @@ test("an unedited local-models form does not emit save-local", async () => {
 });
 
 test("the daemon test is gated on a saved endpoint and an at-rest form", async () => {
-  // No endpoint saved → the test button is disabled with the reason as title.
   const bare = makeWrapper();
   const bareBtn = bare.find(".local-test .cred-test-btn");
   expect(bareBtn.attributes("disabled")).toBeDefined();
   expect(bareBtn.attributes("title")).toContain("Save a daemon endpoint");
 
-  // Saved endpoint → testable; an unsaved edit re-disables (probes the saved
-  // config, not what's typed); the untested state reads as untested.
+  // An unsaved edit re-disables the test: it probes the saved config, not what
+  // is typed.
   const wrapper = makeWrapper({
     settings: {
       ...settingsView,
@@ -268,8 +239,7 @@ test("the daemon status distinguishes unreachable from model-missing from connec
 });
 
 test("a reachable daemon over an empty roster never claims full setup", () => {
-  // Endpoint saved, required roster blank: the probe has nothing to report
-  // missing, so the copy must point at the roster gap, not read as connected.
+  // With a blank roster the probe has nothing to report missing.
   const wrapper = makeWrapper({
     settings: {
       ...settingsView,
@@ -288,8 +258,8 @@ test("a reachable daemon over an empty roster never claims full setup", () => {
 });
 
 test("a saved reasoner completes the roster", () => {
-  // The reasoner is the one required slot; a blank fast tier never holds
-  // setup open.
+  // The reasoner is the one required slot; a blank fast tier never holds setup
+  // open.
   const wrapper = makeWrapper({
     settings: {
       ...settingsView,
@@ -318,11 +288,9 @@ test("the web-research form round-trips the saved endpoint and emits save-web-re
   });
   const endpoint = wrapper.find("#searxng-endpoint").element as HTMLInputElement;
   expect(endpoint.value).toBe("http://127.0.0.1:8888");
-  // An unedited form does not emit.
   const form = wrapper.findAll("form.settings-form")[3];
   await form.trigger("submit");
   expect(wrapper.emitted("save-web-research")).toBeUndefined();
-  // An edit makes it dirty; the submission carries the value verbatim.
   await wrapper.find("#searxng-endpoint").setValue("http://127.0.0.1:9999");
   await form.trigger("submit");
   expect(wrapper.emitted("save-web-research")).toEqual([
@@ -331,7 +299,6 @@ test("the web-research form round-trips the saved endpoint and emits save-web-re
 });
 
 test("the searxng row distinguishes untested / ok / unreachable, and gates on a saved endpoint", () => {
-  // No endpoint saved: the test control is disabled with the reason as title.
   const bare = makeWrapper();
   const bareBtn = bare.findAll(".local-test .cred-test-btn")[1];
   expect(bareBtn.attributes("disabled")).toBeDefined();
@@ -346,15 +313,13 @@ test("the searxng row distinguishes untested / ok / unreachable, and gates on a 
       ".local-test .cred-status"
     )[1];
 
-  // Untested reads untested — never probed at startup.
+  // Never probed at startup.
   expect(statusOf(null).text()).toContain("Untested");
 
   const ok = statusOf({ status: "ok", detail: null, degraded: false });
   expect(ok.text()).toContain("serving search results");
   expect(ok.classes()).toContain("cred-status--ok");
 
-  // Unreachable names the diagnosis, the setup command, and the SearXNG-only
-  // degraded consequence (research skipped until it serves).
   const down = statusOf({
     status: "unreachable",
     detail: "SearXNG rejected the JSON request (HTTP 403)",
@@ -367,10 +332,7 @@ test("the searxng row distinguishes untested / ok / unreachable, and gates on a 
 });
 
 test("the web-research section note describes SearXNG-only degradation, not a Tavily fallback", () => {
-  // The visible section note is user-facing consent context: it must not
-  // promise a fallback the local suite no longer wires (docs/web-research.md
-  // §Tavily fallback — the suite is SearXNG-only). Previously untested, which
-  // let stale "fall back to Tavily" copy survive the disconnect.
+  // The suite is SearXNG-only (docs/web-research.md §Tavily fallback).
   const saved = {
     ...settingsView,
     web_research: { searxng_endpoint: "http://127.0.0.1:8888" },
@@ -390,9 +352,7 @@ test("the appearance toggle (in the toolbar) emits set-dark with the flipped val
 });
 
 // --- Investor profile section ------------------------------------------------
-// The read-only preset block (docs/configuration.md §Investor Profile): omitted
-// when unavailable, otherwise five backend-composed label/value rows with no
-// inputs — read-only by construction, so it can't disturb any form's dirtiness.
+// (docs/configuration.md §Investor Profile)
 
 function profileSection(wrapper: ReturnType<typeof makeWrapper>) {
   return wrapper.find('section[aria-labelledby="sec-profile"]');
@@ -416,9 +376,8 @@ test("the investor-profile section renders the five preset rows verbatim, with n
   const section = profileSection(wrapper);
   expect(section.exists()).toBe(true);
 
-  // The five rows, in template order, rendering the backend strings verbatim
-  // (they are the shared label source with the action call's prompt — never
-  // re-worded frontend-side).
+  // The backend strings are the shared label source with the action call's
+  // prompt, never re-worded frontend-side.
   const labels = section.findAll(".profile-row dt").map((d) => d.text());
   expect(labels).toEqual([
     "Objective",
@@ -436,14 +395,10 @@ test("the investor-profile section renders the five preset rows verbatim, with n
     profile.cash,
   ]);
 
-  // Read-only by construction: no form controls of any kind inside the section.
   expect(section.find("input, select, textarea, button").exists()).toBe(false);
 });
 
 // --- Truncation diagnostics section ----------------------------------------
-// The read-only telemetry block: omitted when unavailable, an empty state when
-// nothing's been recorded, and a label/value readout (+ per-format breakdown)
-// once truncations exist.
 
 function diagnostics(wrapper: ReturnType<typeof makeWrapper>) {
   return wrapper.find('section[aria-labelledby="sec-diagnostics"]');
@@ -492,9 +447,7 @@ test("a populated aggregate renders both rates, counts, and per-format breakdown
   const section = diagnostics(wrapper);
   expect(section.find(".trunc-empty").exists()).toBe(false);
 
-  // Scalar readout: the truncated-of-parsed doc rate (3/11 = 27.3%), reports
-  // affected, and the chars-dropped-of-original ratio (29k/100k = 29.0%), each a
-  // thousands-grouped "X of Y (Z%)".
+  // 3/11 = 27.3%; 29k/100k = 29.0%.
   const values = section.findAll(".trunc-row dd").map((d) => d.text());
   expect(values).toContain("3 of 11 (27.3%)");
   expect(values).toContain("2");
@@ -533,7 +486,7 @@ test("a missing denominator falls back to the bare truncation count, not 'of 0'"
 
 test("a numerator above the denominator falls back to the bare count, not >100%", () => {
   // The two telemetry writes are independent best-effort, so a truncation count
-  // ahead of its parse-run count is possible; it must not render an over-100% rate.
+  // can run ahead of its parse-run count.
   const stats: TruncationStats = {
     total_truncations: 5,
     total_docs_parsed: 3,
@@ -554,9 +507,8 @@ test("a numerator above the denominator falls back to the bare count, not >100%"
 });
 
 test("an unaligned cohort suppresses the rate even when it would otherwise compute", () => {
-  // 3 of 100 would render "3.0%", but a truncation without a parse-run
-  // denominator means the cohorts are mismatched, so the rate is withheld until
-  // the legacy rows age out — the bare count shows in the meantime.
+  // 3 of 100 would otherwise render "3.0%"; an unaligned truncation means the
+  // cohorts are mismatched.
   const stats: TruncationStats = {
     total_truncations: 3,
     total_docs_parsed: 100,
@@ -578,11 +530,9 @@ test("an unaligned cohort suppresses the rate even when it would otherwise compu
 });
 
 test("a chars-cohort gap suppresses the chars ratio while the doc rate still renders", () => {
-  // The two ratios guard independently: every truncation report has a parse-run
-  // (doc rate safe), but a parse run predates the chars denominator
-  // (parse_runs_missing_original_chars > 0), so the chars ratio is withheld to
-  // the bare count until that legacy row ages out — even though 29k/100k = 29.0%
-  // would otherwise compute.
+  // Every truncation has a parse run (doc rate safe), but one parse run predates
+  // the chars denominator, so only the chars ratio is withheld though 29k/100k
+  // would compute.
   const stats: TruncationStats = {
     total_truncations: 3,
     total_docs_parsed: 11,
@@ -598,19 +548,15 @@ test("a chars-cohort gap suppresses the chars ratio while the doc rate still ren
   const values = diagnostics(wrapper)
     .findAll(".trunc-row dd")
     .map((d) => d.text());
-  // Doc rate still computed; chars ratio withheld to the bare grouped count.
   expect(values).toContain("3 of 11 (27.3%)");
   expect(values).toContain("29,000");
   expect(values).not.toContain("29,000 of 100,000 (29.0%)");
 });
 
 test("an unaligned truncation suppresses the chars ratio even with a nonzero denominator", () => {
-  // A truncation whose report has no parse-run row (unaligned_truncations > 0)
-  // puts its dropped chars in the numerator while its original chars never reach
-  // total_original_chars — so the chars ratio is unmatched, exactly as the doc
-  // rate is. The chars denominator is nonzero (a *newer* aligned run) and
-  // parse_runs_missing_original_chars is 0, so only the unaligned arm can catch
-  // it: 29k/100k = 29.0% would otherwise render dishonestly.
+  // The unaligned truncation's dropped chars enter the numerator while its
+  // original chars never reach the denominator, so the chars ratio is unmatched;
+  // with parse_runs_missing_original_chars at 0, only the unaligned arm catches it.
   const stats: TruncationStats = {
     total_truncations: 3,
     total_docs_parsed: 11,
@@ -626,21 +572,18 @@ test("an unaligned truncation suppresses the chars ratio even with a nonzero den
   const values = diagnostics(wrapper)
     .findAll(".trunc-row dd")
     .map((d) => d.text());
-  // Both rates withheld (the unaligned gap hits both); chars shows the bare count.
+  // The unaligned gap withholds both rates.
   expect(values).toContain("29,000");
   expect(values).not.toContain("29,000 of 100,000 (29.0%)");
   expect(values.some((v) => v.includes("%"))).toBe(false);
 });
 
 // --- Charles Schwab connection ---------------------------------------------
-// The credential + connect/disconnect surface: rendered on its own status channel,
-// with save-before-connect gating and connection-state-driven copy and controls.
 
 function schwabSection(wrapper: ReturnType<typeof makeWrapper>) {
   return wrapper.find('section[aria-labelledby="sec-schwab"]');
 }
 
-// The section's buttons are role-labelled by their text; find one by label.
 function schwabButton(wrapper: ReturnType<typeof makeWrapper>, label: string) {
   return wrapper
     .findAll('section[aria-labelledby="sec-schwab"] button')
@@ -691,7 +634,6 @@ test("save-schwab leaves the secret null when only the client id changed", async
 });
 
 test("connect is disabled until both credentials are saved", () => {
-  // client id saved but no secret configured → connect blocked.
   const wrapper = makeWrapper({
     schwabStatus: { ...schwabConfigured, secret_configured: false },
   });
@@ -721,8 +663,7 @@ test("a busy run slot disables connect", () => {
 });
 
 test("credential save is disabled while a connect or run is in flight", async () => {
-  // A dirty edit that would otherwise be saveable, but a connect is mid-login: saving
-  // now could swap the secret under the captured client id, so Save must be blocked.
+  // Saving mid-login could swap the secret under the captured client id.
   const connecting = makeWrapper({
     schwabStatus: schwabConfigured,
     schwabConnecting: true,
@@ -732,7 +673,6 @@ test("credential save is disabled while a connect or run is in flight", async ()
     schwabButton(connecting, "Save credentials")!.attributes("disabled")
   ).toBeDefined();
 
-  // Same guard while any run holds the global slot.
   const busy = makeWrapper({ schwabStatus: schwabConfigured, schwabBusy: true });
   await busy.find("#schwab-client-secret").setValue("rotated-secret");
   expect(
@@ -752,7 +692,6 @@ test("a connected account shows a live status, offers Reconnect, and Disconnect 
   expect(schwabSection(wrapper).find(".schwab-status").text()).toContain(
     "Connected"
   );
-  // Connect reads "Reconnect" once a session exists.
   expect(schwabButton(wrapper, "Reconnect")).toBeTruthy();
   const disconnect = schwabButton(wrapper, "Disconnect")!;
   expect(disconnect).toBeTruthy();
@@ -770,9 +709,7 @@ test("a lapsed session reads as expired", () => {
 });
 
 // --- Data portability section ------------------------------------------------
-// Whole-corpus export/import (docs/data-portability.md): the passphrase rides
-// each emit, busy/slot states disable both actions with an explanatory title,
-// and the App-owned status/error channels render in place.
+// (docs/data-portability.md)
 
 function dataSection(wrapper: ReturnType<typeof makeWrapper>) {
   return wrapper.find('section[aria-labelledby="sec-data"]');

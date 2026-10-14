@@ -1,7 +1,5 @@
-// Unit tests for the pure ET session-dating helpers — the frontend mirror of
-// the backend's `market_clock::et_date_of` / `over_age` pair and its
-// calendar-month rule. Run via
-// `npm test` on Node's built-in runner (type-stripping import, no build step).
+// The frontend mirror of the backend's `market_clock`; the case tables below are
+// pinned case-for-case against its Rust tests.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -23,25 +21,22 @@ test("a date-only stamp is taken as-is; garbage is null", () => {
 });
 
 test("malformed and zoneless stamps degrade to the date prefix, like the backend", () => {
-  // A malformed timestamp degrades to its date prefix rather than vanishing —
-  // market_clock::et_date_of's exact fallback.
   assert.equal(etDateOf("2026-08-05T99:99:99Z"), "2026-08-05");
-  // A zoneless timestamp is no RFC3339 instant: the backend's strict parse
-  // rejects it, so the frontend must not read it as machine-local time.
+  // Zoneless: the backend's strict parse rejects it, so it must not read as
+  // machine-local time.
   assert.equal(etDateOf("2026-08-05T23:30:00"), "2026-08-05");
-  // A prefix that is not a real calendar date is still null — the backend's
-  // NaiveDate parse rejects it, so the fallback must too.
+  // A prefix that is not a real calendar date is null, as the backend's
+  // NaiveDate parse rejects it.
   assert.equal(etDateOf("2026-99-99T12:00:00Z"), null);
   assert.equal(etDateOf("2026-99-99"), null);
-  // An overflowed-but-parseable day: Date.parse would normalize Feb 30 to
-  // March 2, where the backend rejects the instant and its prefix — null on
-  // both sides, never a fabricated date.
+  // Date.parse would normalize Feb 30 to March 2; the backend rejects both the
+  // instant and its prefix, so null, never a fabricated date.
   assert.equal(etDateOf("2026-02-30T12:00:00Z"), null);
 });
 
 test("exotic RFC3339 forms match the backend's chrono parse case-for-case", () => {
   // The same cases market_clock's exotic-forms test pins on the Rust side:
-  // accepted variants convert (ET day — one earlier in the evening window)...
+  // accepted variants convert to the prior ET day...
   assert.equal(etDateOf("2026-08-06 01:30:00+00:00"), "2026-08-05");
   assert.equal(etDateOf("2026-08-06t01:30:00+00:00"), "2026-08-05");
   assert.equal(etDateOf("2026-08-06T01:30:00z"), "2026-08-05");

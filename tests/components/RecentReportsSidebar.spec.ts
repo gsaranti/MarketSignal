@@ -1,10 +1,4 @@
-// Component tests for RecentReportsSidebar.vue — props in, two events out
-// (navigate / select). Mock-free like ResearchDocuments/Settings. These pin: the
-// populated report list (one row each, the current-selection marking + aria-current,
-// the select emit), the empty/failed fallback row (the "No reports yet" vs
-// "Couldn't load reports" copy, the error styling + title, the navigate emit), and
-// the bottom nav (active marking, count badges shown only when non-zero, navigate
-// payloads).
+// RecentReportsSidebar is presentational, so no Tauri mocks.
 
 import { test, expect } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
@@ -29,13 +23,13 @@ function summary(id: string, createdAt: string, title = "Sample headline"): Repo
   };
 }
 
-// Two reports, newest first — read-only across wrappers, so freeze them.
+// Newest first.
 const reports: ReportSummary[] = deepFreeze([
   summary("11111111-aaaa-4bbb-8ccc-000000000001", "2026-06-08T13:00:00Z", "Rotation, not rupture"),
   summary("22222222-aaaa-4bbb-8ccc-000000000002", "2026-06-01T13:00:00Z", "Credit cracks widen"),
 ]);
 
-// Two portfolio runs, newest first — the swap-in history for the Portfolio view.
+// Newest first.
 const portfolioRuns: PortfolioRunSummary[] = deepFreeze([
   {
     run_id: "prun-2",
@@ -81,7 +75,6 @@ test("renders one report row per report, dated locally with a short id", () => {
   const wrapper = makeWrapper();
   const rows = wrapper.findAll(".sidebar-list .report-row");
   expect(rows).toHaveLength(2);
-  // The row is labeled by the agent's per-issue headline, not the product name.
   expect(rows[0].find(".row-title").text()).toBe("Rotation, not rupture");
   expect(rows[0].find(".row-meta").text()).toBe(
     `${localDateTime(reports[0].created_at)} · #11111111`
@@ -103,7 +96,6 @@ test("marks the selected row current (class + aria-current) only on the report v
   expect(rows[1].attributes("aria-current")).toBe("true");
   expect(rows[0].attributes("aria-current")).toBeUndefined();
 
-  // Same selection but viewing another surface: nothing is marked current.
   const elsewhere = makeWrapper({ view: "settings", selectedReportId: selected });
   expect(elsewhere.findAll(".sidebar-list .report-row")[1].attributes("aria-current"))
     .toBeUndefined();
@@ -128,13 +120,11 @@ test("the empty state shows a single 'No reports yet' row that navigates to the 
 });
 
 test("the empty-state row marks itself current (class + aria-current) only on the report view", () => {
-  // On the report view the (empty) library row is the current surface...
   const onReport = makeWrapper({ reports: [], view: "report" });
   const reportRow = onReport.find(".sidebar-list .report-row");
   expect(reportRow.classes()).toContain("is-current");
   expect(reportRow.attributes("aria-current")).toBe("true");
 
-  // ...but viewing another surface leaves it unmarked.
   const elsewhere = makeWrapper({ reports: [], view: "inbox" });
   const elsewhereRow = elsewhere.find(".sidebar-list .report-row");
   expect(elsewhereRow.classes()).not.toContain("is-current");
@@ -151,9 +141,7 @@ test("a listing failure (no list to fall back on) reads as an error, not an empt
 });
 
 // --- Portfolio-runs history (the shared-history swap per feature) ------------
-// On the Portfolio view the same sidebar swaps its history content to the
-// retained Portfolio runs (design kit Sidebar.jsx; docs/interface.md §Main
-// Layout) — same rows, same selection accent, run-flavored copy.
+// (design kit Sidebar.jsx; docs/interface.md §Main Layout)
 
 test("the Portfolio view swaps the history list to portfolio runs", () => {
   const wrapper = makeWrapper({ view: "portfolio" });
@@ -164,7 +152,6 @@ test("the Portfolio view swaps the history list to portfolio runs", () => {
   expect(rows[0].find(".row-meta").text()).toBe(
     `${localDateTime(portfolioRuns[0].created_at)} · graded 19`
   );
-  // The report list is not rendered on this view.
   expect(wrapper.find(".sidebar-header").text()).not.toContain("Recent reports");
 });
 
@@ -177,7 +164,7 @@ test("every other view keeps the report history visible", () => {
 
 test("an unreadable row tags 'unreadable'", () => {
   // A corrupt blob still lists from its column identity (docs/interface.md
-  // §Main Layout), tagged unreadable and disabled.
+  // §Main Layout).
   const wrapper = makeWrapper({
     view: "portfolio",
     portfolioRuns: [
@@ -191,9 +178,8 @@ test("an unreadable row tags 'unreadable'", () => {
 });
 
 test("an unreadable row is unavailable and fabricates no counts", async () => {
-  // The summary's zeros are placeholders (the blob no longer decodes), so
-  // neither the holdings count nor "graded 0" may render as fact — and the
-  // row cannot open, so it must not present as a live button.
+  // The summary's zeros are placeholders (the blob no longer decodes), so they
+  // must not render as fact.
   const wrapper = makeWrapper({
     view: "portfolio",
     portfolioRuns: [{ ...portfolioRuns[0], readable: false }],
@@ -249,8 +235,8 @@ test("nav items mark the active view and emit navigate with its key", async () =
 });
 
 test("the report nav entry leads the nav and closes the Portfolio dead-end", async () => {
-  // On the Portfolio view the history list swaps to runs, so no report row
-  // exists — the nav entry is the only path back to the report.
+  // On the Portfolio view the history list holds runs, so the nav entry is the
+  // only path back to the report.
   const wrapper = makeWrapper({ view: "portfolio" });
   const labels = wrapper.findAll(".nav-item .nav-label").map((l) => l.text());
   expect(labels[0]).toBe("Latest Market Report");

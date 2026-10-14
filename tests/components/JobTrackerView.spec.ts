@@ -1,12 +1,5 @@
-// Component tests for JobTrackerView.vue — props in, two events out (cancel /
-// close). Mock-free like ResearchDocuments/Settings. These pin the run-tracker's
-// rendering contract: the headline (running step while active, "Run log" once
-// terminal), the terminal tag mapping + alert tone, the per-step status word and
-// marker icon, the failure-detail gate, the request-row tone mapping, the streamed
-// agent-text block, the "Starting…" edge state, the scroll region's aria-busy, and
-// the Cancel/Back action with its cancel-requested busy state. The auto-scroll
-// watcher is deliberately not asserted — it is DOM-geometry behavior, not a
-// contract worth pinning in happy-dom.
+// JobTrackerView is presentational, so no Tauri mocks. The auto-scroll watcher
+// is deliberately not asserted: DOM-geometry behavior happy-dom cannot pin.
 
 import { test, expect } from "vitest";
 import { mount } from "@vue/test-utils";
@@ -15,9 +8,8 @@ import Icon from "../../src/components/Icon.vue";
 import { deepFreeze } from "../helpers/freeze";
 import type { RunTrace } from "../../src/types";
 
-// An in-flight run: an ok baseline step whose request rows cover every reqTone
-// branch (ok / empty=benign / rejected=fail / running), an ok routing step, a
-// failed gather step carrying a detail, and the running report step streaming text.
+// The baseline step's request rows cover every reqTone branch
+// (ok / empty=benign / rejected=fail / running).
 const activeTrace: RunTrace = deepFreeze({
   runId: "run-1",
   label: "Weekly Market Report",
@@ -60,13 +52,11 @@ test("the headline tracks the running step while active", () => {
     props: { trace: activeTrace, active: true, cancelRequested: false },
   });
   expect(wrapper.find(".toolbar-label").text()).toBe("Drafting report");
-  // No terminal tag while the run is in flight.
   expect(wrapper.find(".toolbar-tag").exists()).toBe(false);
 });
 
 test("an active run with no running step yet falls back to 'Generating report'", () => {
-  // The run owns the slot (active) but no step is `running` — before/between steps.
-  // The headline's third arm; the report tag stays absent (terminal is null).
+  // Active but no step `running` yet: before/between steps.
   const pending: RunTrace = deepFreeze({
     runId: "run-1",
     label: "Weekly Market Report",
@@ -82,10 +72,7 @@ test("an active run with no running step yet falls back to 'Generating report'",
 });
 
 test("a portfolio-owned tracker never announces itself as report generation", () => {
-  // The owning-page label set (docs/run-tracking.md): back control, scroll-region
-  // accessible name, and idle headline all follow the run's kind — a Portfolio
-  // run's tracker showing "Back to report" / "Report generation progress" was the
-  // original mislabel this pins against.
+  // The owning-page label set (docs/run-tracking.md).
   const pending: RunTrace = deepFreeze({
     runId: "run-1",
     label: "Portfolio Analysis",
@@ -165,23 +152,19 @@ test("each step shows its status word and the marker icon for its outcome", () =
     props: { trace: activeTrace, active: true, cancelRequested: false },
   });
   const steps = wrapper.findAll(".step");
-  // running -> "Working…"; failed -> "Failed"; cancelled -> "Stopped"; ok/pending
-  // carry meaning via the marker alone.
+  // ok/pending carry meaning via the marker alone.
   expect(steps[3].find(".step-status").text()).toBe("Working…");
   expect(steps[2].find(".step-status").text()).toBe("Failed");
   expect(steps[4].find(".step-status").text()).toBe("Stopped");
   expect(steps[0].find(".step-status").exists()).toBe(false);
-  // The marker icon distinguishes outcome by NAME (not just "an svg exists"), so a
-  // check<->warning swap is caught: ok -> check, failed/cancelled -> warning.
+  // Asserted by icon name, so a check/warning swap is caught.
   expect(steps[0].find(".step-marker").findComponent(Icon).props("name")).toBe("check");
   expect(steps[2].find(".step-marker").findComponent(Icon).props("name")).toBe("warning");
   expect(steps[4].find(".step-marker").findComponent(Icon).props("name")).toBe("warning");
 });
 
 test("the quick check's sweep outcomes render as completed-with-outcome, never failure or not-started", () => {
-  // flagged -> amber warning marker + "Flagged"; unknown -> quiet hollow marker
-  // (no icon) + "Unknown". The visible status word carries each outcome, and
-  // neither falls back to the screen-reader "Not started" branch.
+  // Neither outcome may fall back to the screen-reader "Not started" branch.
   const sweep: RunTrace = deepFreeze({
     runId: "qc-1",
     label: "Portfolio quick check",
@@ -220,17 +203,12 @@ test("request rows map status to tone and show the raw word for non-ok/non-runni
   });
   const reqs = wrapper.findAll(".req");
   expect(reqs.map((r) => r.attributes("data-tone"))).toEqual(["ok", "benign", "fail", "running"]);
-  // The clipped name carries its full text as a title tooltip.
   expect(reqs[0].find(".req-name").attributes("title")).toBe(
     "S&P 500 index level, a deliberately long name that clips"
   );
-  // ok -> a check icon (svg); the failure shows its reason word; running -> a dot.
   expect(reqs[0].find(".req-status svg").exists()).toBe(true);
   expect(reqs[2].find(".req-status").text()).toBe("rejected");
   expect(reqs[3].find(".req-status .req-dot").exists()).toBe(true);
-  // A failed row renders its cause — the detail the backend leaves on the
-  // row — visibly, with the full text mirrored as a title; non-fail rows
-  // render no detail line.
   const detail = reqs[2].find(".req-detail");
   expect(detail.text()).toBe("402 premium");
   expect(detail.attributes("title")).toBe("402 premium");
@@ -254,13 +232,9 @@ test("a research row names what it asked for, and a completed row shows its outc
         agentThinking: "",
         analystThinking: {},
         requests: [
-          // A completed search: subject + its outcome note.
           { provider: "web", group: "research", seriesId: "search: PSX refining margins 2026", name: "competitive-position", status: "ok", detail: "12 hits", target: { kind: "search", text: "PSX refining margins 2026" } },
-          // An in-flight fetch of a long address: subject, no note yet.
           { provider: "web", group: "research", seriesId: `fetch: ${longUrl}`, name: "competitive-position", status: "running", detail: null, target: { kind: "fetch", text: longUrl } },
-          // A failed fetch: the cause takes the detail line, never the note slot.
           { provider: "web", group: "research", seriesId: "fetch: https://example.com/x", name: "competitive-position", status: "failed", detail: "SearXNG returned no usable results", target: { kind: "fetch", text: "https://example.com/x" } },
-          // An ordinary data row: no subject, no note.
           { provider: "SEC", group: "company-facts", seriesId: "0000078214", name: "SEC company facts", status: "ok", detail: null, target: null },
         ],
       },
@@ -273,8 +247,6 @@ test("a research row names what it asked for, and a completed row shows its outc
   });
   const reqs = wrapper.findAll(".req");
   expect(reqs).toHaveLength(4);
-  // The subject renders as a kind token plus the text, in reading order after
-  // the topic and before the status, with the full text mirrored as a title.
   expect(reqs[0].find(".req-name").text()).toBe("competitive-position");
   expect(reqs[0].find(".req-target-kind").text()).toBe("search");
   expect(reqs[0].find(".req-target-text").text()).toBe("PSX refining margins 2026");
@@ -288,14 +260,11 @@ test("a research row names what it asked for, and a completed row shows its outc
   );
   expect(order.indexOf("req-name")).toBeLessThan(order.indexOf("req-target"));
   expect(order.indexOf("req-target")).toBeLessThan(order.indexOf("req-status"));
-  // A completed row shows its outcome note; an in-flight row has none yet, and
-  // a failed row's cause goes to the detail line, not the note.
   expect(reqs[0].find(".req-note").text()).toBe("12 hits");
   expect(reqs[0].find(".req-note").attributes("title")).toBe("12 hits");
   expect(reqs[1].find(".req-note").exists()).toBe(false);
   expect(reqs[2].find(".req-note").exists()).toBe(false);
   expect(reqs[2].find(".req-detail").text()).toBe("SearXNG returned no usable results");
-  // A row with no subject renders neither segment.
   expect(reqs[3].find(".req-target").exists()).toBe(false);
   expect(reqs[3].find(".req-note").exists()).toBe(false);
 });
@@ -323,9 +292,8 @@ test.each(["step", "unattributed"])("%s request subjects reveal their full text 
   try {
     const rows = wrapper.findAll(".req");
     const button = rows[0].get<HTMLButtonElement>(".req-target");
-    // A native, enabled button supplies Tab focus and Enter/Space activation.
-    // happy-dom does not synthesize native keyboard clicks; exercise its click
-    // handler and focus retention here, rather than pretending keydown does so.
+    // happy-dom does not synthesize native keyboard activation, so the
+    // native-button assertions stand in for Enter/Space.
     expect(button.element.tagName).toBe("BUTTON");
     expect(button.attributes("type")).toBe("button");
     expect(button.element.disabled).toBe(false);
@@ -363,11 +331,9 @@ test("the streamed reasoning renders only where present, labeled and above the r
   const wrapper = mount(JobTrackerView, {
     props: { trace: activeTrace, active: true, cancelRequested: false },
   });
-  // Only the one step carrying reasoning shows the pane (empty agentThinking renders nothing).
   const reasoning = wrapper.findAll(".agent-thinking-body");
   expect(reasoning).toHaveLength(1);
   expect(reasoning[0].text()).toContain("Weighing thin breadth");
-  // It is labeled (distinct from the report-text console) and sits above the report stream.
   const reportStep = wrapper.findAll(".step")[3];
   expect(reportStep.find(".agent-thinking-label").text()).toBe("Reasoning");
   const html = reportStep.html();
@@ -375,9 +341,7 @@ test("the streamed reasoning renders only where present, labeled and above the r
 });
 
 test("each analyst's reasoning renders as its own labeled pane, in canonical order", () => {
-  // The "analysts" step carries one reasoning stream per posture (thoughts only); the
-  // tracker renders one labeled pane each, ordered bull → bear → balanced. A posture
-  // with no thoughts (here: none missing) simply wouldn't render.
+  // Panes are ordered bull → bear → balanced regardless of the fixture's key order.
   const trace: RunTrace = deepFreeze({
     runId: "run-1",
     label: "Weekly Market Report",
@@ -411,9 +375,7 @@ test("each analyst's reasoning renders as its own labeled pane, in canonical ord
 });
 
 test("unattributed rows render as a neutral trailing list, absent when empty", () => {
-  // Rows whose events carried no owning-step stamp render under their own
-  // caption — never inside a step, never with a step marker or failure word of
-  // their own — and the section does not exist for a well-bracketed run.
+  // Unattributed: the row's events carried no owning-step stamp.
   const withUnattributed: RunTrace = deepFreeze({
     runId: "run-1",
     label: "Portfolio Analysis",
@@ -432,7 +394,6 @@ test("unattributed rows render as a neutral trailing list, absent when empty", (
   const row = section.find(".req");
   expect(row.attributes("data-tone")).toBe("ok");
   expect(row.find(".req-name").text()).toBe("Rate anchor");
-  // The section lives outside the step list: no step marker, no step status word.
   expect(section.find(".step-marker").exists()).toBe(false);
   expect(section.find(".step-status").exists()).toBe(false);
 
@@ -485,8 +446,7 @@ test("active runs offer Cancel (which emits + reports its busy state); terminal 
 });
 
 // ---- The interrupted-run Resume offer (docs/portfolio-analysis.md §Failure
-// posture: offered from a Portfolio run's failed / cancelled tracker state,
-// only while an eligible checkpoint trail exists) ----
+// posture) ----
 
 const resumable = deepFreeze({
   available: true,
@@ -511,9 +471,8 @@ test("a stopped portfolio run with an eligible trail offers Resume and states wh
   expect(buttons.map((b) => b.text())).toEqual(["Resume run", "Back to portfolio"]);
   const note = wrapper.find(".resume-note");
   expect(note.text()).toContain("3 of 8 holdings completed");
-  // The trail is identified by its own pinned as-of — never claimed as this
-  // run's own work (an earlier run's trail can outlive a run that failed
-  // before opening its own).
+  // The trail is identified by its own as-of, never claimed as this run's work:
+  // an earlier run's trail can outlive a run that failed before opening its own.
   expect(note.text()).toContain("An interrupted run from");
   expect(note.text()).toContain("2026");
   await buttons[0].trigger("click");
@@ -527,7 +486,6 @@ test("a stopped portfolio run with an eligible trail offers Resume and states wh
 });
 
 test("an ineligible trail states why instead of offering, and other states offer nothing", () => {
-  // A trail that exists but cannot resume: the reason line, no button.
   const blocked = mount(JobTrackerView, {
     props: {
       trace: terminalTrace("cancelled"),
@@ -542,7 +500,6 @@ test("an ineligible trail states why instead of offering, and other states offer
   ]);
   expect(blocked.find(".resume-note").text()).toContain("Resume unavailable:");
 
-  // No trail at all: nothing renders.
   const none = mount(JobTrackerView, {
     props: {
       trace: terminalTrace("failed"),
@@ -569,7 +526,6 @@ test("an ineligible trail states why instead of offering, and other states offer
   ]);
   expect(done.find(".resume-note").exists()).toBe(false);
 
-  // A report run's tracker never offers resume.
   const report = mount(JobTrackerView, {
     props: {
       trace: terminalTrace("failed"),

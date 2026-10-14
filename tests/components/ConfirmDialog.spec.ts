@@ -1,12 +1,5 @@
-// ConfirmDialog.vue is the design package's confirmation dialog translated to
-// Vue (preview/confirmation-dialog.html): presentational, parent-owned
-// open/busy, confirm/cancel only ever emitted. Pins the dialog contract that
-// carries real logic: the a11y wiring (role/aria-modal/labelledby/describedby),
-// initial focus on Cancel (the safe action), Escape and scrim-click as Cancel —
-// both inert while busy — and the busy state's disabled actions + status line.
-//
-// Mounted with `attachTo` so document.activeElement reflects focus moves (the
-// component focuses via real DOM focus()).
+// Mounted with `attachTo` so document.activeElement reflects the component's
+// real DOM focus() moves.
 
 import { test, expect, afterEach } from "vitest";
 import { mount, VueWrapper } from "@vue/test-utils";

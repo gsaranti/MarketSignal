@@ -1,9 +1,5 @@
-// Unit tests for the pure chart renderer. Run via `npm test` — Node's built-in
-// test runner imports the TypeScript source directly through type-stripping (no
-// build step, no extra dependency). renderChart is a pure `string -> string|null`
-// function, so these assert the SVG geometry, the validation/fail-soft contract,
-// the accessibility output, and the v-html escaping that the markdown-it fence
-// rule relies on. They replace the throwaway node smoke the chart slices used.
+// renderChart is pure (`string -> string | null`), so these assert on the SVG
+// text directly.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -38,7 +34,6 @@ function tickValues(svg: string): number[] {
 
 const near = (a: number, b: number, eps = 0.6): boolean => Math.abs(a - b) <= eps;
 
-// Each chart-xlabel's x, text-anchor, and text content, in document order.
 function xLabels(svg: string): Array<{ x: number; anchor: string; text: string }> {
   const out: Array<{ x: number; anchor: string; text: string }> = [];
   const re =
@@ -51,9 +46,9 @@ function xLabels(svg: string): Array<{ x: number; anchor: string; text: string }
 const viewBoxH = (svg: string): number =>
   +(svg.match(/viewBox="0 0 \d+ (\d+)"/)?.[1] ?? "0");
 
-// The left edge of the y-tick label column. Ticks are anchored end at x=W-4=716
-// in 9px mono (~TICK_CHAR_W=6 viewBox units/char); plotted data must stay left of
-// this to clear the tick values. Mirrors the renderer's gutter sizing.
+// The left edge of the y-tick label column: ticks are anchored end at
+// x = W-4 = 716 in 9px mono (~6 viewBox units/char), mirroring the renderer's
+// gutter sizing.
 function tickLeftEdge(svg: string): number {
   const TICK_CHAR_W = 6;
   const lens = [...svg.matchAll(/<text class="chart-tick"[^>]*>([^<]+)<\/text>/g)].map(
@@ -79,7 +74,6 @@ test("line: renders a stroked path, no fill / bar / baseline", () => {
 test("line: keeps its data-fitted domain (not zero-anchored)", () => {
   const out = renderChart(spec({ type: "line", series: [{ points: [4400, 4500, 4600] }] }));
   assert.ok(out !== null);
-  // A level series far from zero must not be squashed against a 0..4600 axis.
   assert.ok(Math.min(...tickValues(out)) > 1000);
 });
 
@@ -103,16 +97,13 @@ test("bar: signed bars grow up / down from a zero baseline", () => {
   assert.ok(y0 !== null, "baseline present");
   const r = rects(out);
   assert.equal(r.length, 2);
-  // Positive bar: bottom edge (y + h) sits on the baseline, growing up.
   assert.ok(near(r[0].y + r[0].h, y0), "positive bar bottom at baseline");
-  // Negative bar: top edge (y) sits on the baseline, growing down.
   assert.ok(near(r[1].y, y0), "negative bar top at baseline");
 });
 
 test("bar: domain is zero-anchored even when all points are positive", () => {
   const out = renderChart(spec({ type: "bar", series: [{ points: [2, 5, 3] }] }));
   assert.ok(out !== null);
-  // include-zero means the bottom tick is at / below 0.
   assert.ok(Math.min(...tickValues(out)) <= 0);
 });
 
@@ -128,14 +119,12 @@ test("bar: end label centers over its bar (anchor middle), not the right edge", 
   const m = out.match(/<text class="chart-endlabel"[^>]*\bx="([-\d.]+)"[^>]*text-anchor="(\w+)"/);
   assert.ok(m, "bar end label present");
   assert.equal(m[2], "middle");
-  // The last bar lives in the right slot but its center is well left of the right
-  // margin (~708); the label must sit with the bar, not float off in the margin.
+  // The last bar's center sits well left of the right margin (~708).
   assert.ok(+m[1] < 690, `label x ${m[1]} should track the bar, not the right edge`);
 });
 
 test("bar: end label stays within the canvas at high point counts", () => {
-  // The last bar's center nears x≈W (=720) as the point count grows; the centered
-  // label must be clamped so it doesn't clip past the viewBox edge.
+  // At 120 points the last bar's center nears x ≈ W (720).
   const points = Array.from({ length: 120 }, (_, i) => (i % 2 ? 1 : -1));
   const out = renderChart(spec({ type: "bar", series: [{ label: "Energy", points }] }));
   assert.ok(out !== null);
@@ -148,9 +137,9 @@ test("bar: end label stays within the canvas at high point counts", () => {
 });
 
 test("truncates a long, wide-glyph label and keeps it within the canvas", () => {
-  // Worst case: the widest glyph (W) AND the last bar near the right edge (many
-  // points). LABEL_CHAR_W is an upper bound on glyph advance, so asserting against
-  // it is a sound worst-case containment check — rendered-pixel fit is GUI-pass.
+  // Worst case: the widest glyph and the last bar near the right edge.
+  // LABEL_CHAR_W is an upper bound on glyph advance, so this is a sound
+  // containment check; rendered-pixel fit is a GUI pass.
   const long = "W".repeat(200);
   const points = Array.from({ length: 120 }, () => 1);
   const out = renderChart(spec({ type: "bar", series: [{ label: long, points }] }));
@@ -162,7 +151,6 @@ test("truncates a long, wide-glyph label and keeps it within the canvas", () => 
   assert.ok(text.endsWith("…") && text.length <= 24, "label is ellipsized to a bounded width");
   const halfW = (text.length * 10) / 2; // 10 = LABEL_CHAR_W upper bound
   assert.ok(x - halfW >= 0 && x + halfW <= 720, `bounded label stays within the viewBox (x=${x})`);
-  // The full label still reaches assistive tech via the aria description.
   assert.ok(ariaLabel(out).includes(long), "aria keeps the full untruncated label");
 });
 
@@ -212,7 +200,6 @@ test("categorical bar: one centered x-axis label per category, left-to-right", (
     ["Tech", "Energy", "Financials"],
   );
   assert.ok(labels.every((l) => l.anchor === "middle"));
-  // Centered under evenly-divided slots: strictly increasing, all inside canvas.
   assert.ok(labels[0].x < labels[1].x && labels[1].x < labels[2].x);
   assert.ok(labels[0].x > 0 && labels[2].x < 720);
 });
@@ -316,7 +303,6 @@ test("categorical bar: labels stagger across two rows (even upper, odd lower)", 
     spec({ type: "bar", categories, series: [{ points: [1, 2, 3, 4, 5] }] }),
   );
   assert.ok(out !== null);
-  // Each x-label's y in document (category) order.
   const ys = [...out.matchAll(/<text class="chart-xlabel"[^>]*\by="([-\d.]+)"/g)].map(
     (m) => +m[1],
   );
@@ -324,16 +310,14 @@ test("categorical bar: labels stagger across two rows (even upper, odd lower)", 
   const upper = ys[0];
   const lower = ys[1];
   assert.ok(lower > upper, "the odd-index row sits below the even-index row");
-  // Even indices all share the upper baseline; odd indices the single lower one.
   assert.equal(ys[2], upper);
   assert.equal(ys[4], upper);
   assert.equal(ys[3], lower);
 });
 
 test("categorical bar: common-prefix names stay distinct at high cardinality (P2 fix)", () => {
-  // The 11 GICS sectors — the canonical cross-section. The two Consumer sectors
-  // used to collide on a single "Consu…" stub; the two-row budget must keep them
-  // distinct for sighted readers (the whole point of the stagger).
+  // The 11 GICS sectors; the two Consumer sectors share a prefix the two-row
+  // budget must keep distinct.
   const categories = [
     "Information Technology", "Health Care", "Financials",
     "Consumer Discretionary", "Communication Services", "Industrials",
@@ -348,12 +332,11 @@ test("categorical bar: common-prefix names stay distinct at high cardinality (P2
   const stap = texts[6]; // Consumer Staples
   assert.ok(disc.startsWith("Consumer ") && stap.startsWith("Consumer "));
   assert.notEqual(disc, stap, "the two Consumer sectors must not collide on one stub");
-  // The full names still reach assistive tech.
   assert.ok(ariaLabel(out).includes("Consumer Discretionary") && ariaLabel(out).includes("Consumer Staples"));
 });
 
 test("categorical bar: truncation leaves no trailing space before the ellipsis", () => {
-  // A mid-word cut right after a space used to render "Real …" (a gap before …).
+  // "Real Estate" cuts right after its space, where a gap could precede the ellipsis.
   const categories = ["Real Estate", ...Array.from({ length: 13 }, (_, i) => `S${i}`)];
   const out = renderChart(
     spec({ type: "bar", categories, series: [{ points: categories.map(() => 1) }] }),
@@ -375,8 +358,8 @@ test("categorical bar: no on-canvas series end-label (the aria carries the serie
     }),
   );
   assert.ok(out !== null);
-  // The end label would ride over the last bar (low contrast) — categorical bars
-  // suppress it; a plain bar still carries it (see the bar end-label tests above).
+  // The end label would ride over the last bar at low contrast, so categorical
+  // bars suppress it.
   assert.doesNotMatch(out, /chart-endlabel/);
   assert.ok(ariaLabel(out).includes("1-week: Tech 2.00, Energy -1.00"));
 });
@@ -384,9 +367,7 @@ test("categorical bar: no on-canvas series end-label (the aria carries the serie
 // --- right-edge y-axis gutter + hover tooltip ---------------------------------
 
 test("bar: bars clear the y-axis tick value column, even for wide tick values", () => {
-  // Regression: the rightmost bar used to grow under the right-edge tick numbers.
-  // Large values widen the tick labels, so the gutter must widen to match them
-  // (the fixed-width gutter could not guarantee this).
+  // Large values widen the tick labels, so the gutter must widen to match.
   const out = renderChart(
     spec({ type: "bar", categories: ["A", "B", "C"], series: [{ points: [120000, 235000, 90000] }] }),
   );
@@ -402,7 +383,6 @@ test("bar: bars clear the y-axis tick value column, even for wide tick values", 
 });
 
 test("line: the end label clears the y-axis tick value column", () => {
-  // Regression: the "10Y" end label used to overlap the top tick value.
   const out = renderChart(
     spec({ type: "line", series: [{ label: "10Y", points: [4.1, 4.5, 4.69] }] }),
   );
@@ -434,7 +414,6 @@ test("categorical bar: multi-series renders a legend with a swatch + label per s
     ...out.matchAll(/<span class="chart-legend-item"><span class="[^"]*"><\/span>([^<]*)<\/span>/g),
   ].map((m) => m[1]);
   assert.deepEqual(labels, ["This week", "Last week"]);
-  // The emphasized series gets the accent swatch; the base series the ink swatch.
   assert.match(out, /<span class="chart-legend-swatch chart-legend-swatch--accent"><\/span>Last week/);
   assert.match(out, /<span class="chart-legend-swatch"><\/span>This week/);
 });
@@ -482,17 +461,14 @@ test("categorical bar: a truncated label carries a full-name <title> tooltip; sh
     spec({ type: "bar", categories, series: [{ points: categories.map(() => 1) }] }),
   );
   assert.ok(out !== null);
-  // A truncated label nests a <title> with the full, escaped name (a hover tooltip).
   assert.match(out, /<title>Consumer Discretionary<\/title>/);
   assert.match(out, /<title>Information Technology<\/title>/);
-  // A short, untruncated label (Energy) renders no redundant tooltip.
   assert.doesNotMatch(out, /<title>Energy<\/title>/);
   // The xLabels helper still reads the display text past the optional <title>.
   assert.equal(xLabels(out).length, 11);
 });
 
 test("categorical bar: the <title> tooltip escapes the full name (v-html safety)", () => {
-  // A long, metacharacter-bearing name truncates -> its <title> must be escaped.
   const evil = "<img src=x onerror=alert(1)> a deliberately long sector label";
   const out = renderChart(
     spec({ type: "bar", categories: [evil, "B"], series: [{ points: [1, 2] }] }),
@@ -524,10 +500,8 @@ test("rejects malformed / out-of-contract specs", () => {
 });
 
 test("normalizes a Unicode dash before a digit so a negative still parses", () => {
-  // A model emitting U+2011 (non-breaking hyphen) instead of ASCII '-' in a
-  // negative number — the real failure observed live ("…,‑0.21,…"), which made
-  // the chart JSON invalid and dropped it to a raw code block. The normalized
-  // output must match the ASCII-hyphen equivalent exactly.
+  // Models emit U+2011 (non-breaking hyphen) for the minus of a negative number,
+  // which is invalid JSON.
   const nb = String.fromCharCode(0x2011); // U+2011 non-breaking hyphen
   const withNb = `{"type":"bar","categories":["A","B"],"series":[{"points":[1.52,${nb}0.21]}]}`;
   const withAscii = `{"type":"bar","categories":["A","B"],"series":[{"points":[1.52,-0.21]}]}`;
@@ -537,8 +511,7 @@ test("normalizes a Unicode dash before a digit so a negative still parses", () =
 });
 
 test("leaves a Unicode em-dash in a title untouched (only number-position dashes normalize)", () => {
-  // The em-dash is followed by a space, not a digit, so the lookahead leaves it
-  // verbatim — titles keep their typography; only minus-in-a-number is rewritten.
+  // Followed by a space, not a digit, so the lookahead leaves it verbatim.
   const emDash = String.fromCharCode(0x2014); // U+2014 em dash
   const title = `10Y ${emDash} 2Y spread`;
   const svg = renderChart(spec({ type: "line", title, series: [{ points: [1, 2] }] }));
@@ -579,8 +552,8 @@ test("categorical bar: two series with one emphasized renders; the limit is cate
     spec({ type: "bar", categories: ["A", "B"], series: [{ label: "This", points: [1, 2] }, { label: "Last", points: [3, 4], emphasis: true }] }),
   );
   assert.ok(cat !== null, "2-series categorical with one emphasis and labels renders");
-  // The two-distinguishable-fills rule is categorical-only — a 3-series TIME-SERIES
-  // bar is unaffected (its per-series end labels disambiguate it).
+  // A time-series bar's per-series end labels disambiguate it, so the rule does
+  // not apply.
   const ts = renderChart(
     spec({ type: "bar", series: [{ points: [1, 2] }, { points: [3, 4] }, { points: [5, 6], emphasis: true }] }),
   );

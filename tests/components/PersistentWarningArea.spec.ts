@@ -1,10 +1,4 @@
-// Component tests for PersistentWarningArea.vue — props in, no emits (the collapse
-// state is internal). Mock-free like ResearchDocuments/Settings (no @tauri-apps/api
-// import). These pin the warning band's contract: the visibility gate (silent until
-// there's something to say), the config-check error row, one row per backend
-// category with its items joined, the collapsed issue-count pluralization, the
-// disclosure a11y wiring, and the signature watcher that re-expands the band when a
-// NEW warning appears after the user collapsed it.
+// PersistentWarningArea is presentational, so no Tauri mocks.
 
 import { test, expect } from "vitest";
 import { mount } from "@vue/test-utils";
@@ -13,8 +7,6 @@ import PersistentWarningArea from "../../src/components/PersistentWarningArea.vu
 import { deepFreeze } from "../helpers/freeze";
 import type { ValidationReport } from "../../src/types";
 
-// Two active categories — the band groups them into one block. Read-only by design;
-// freezing makes a future in-place mutation throw at the write site.
 const twoCategoryReport: ValidationReport = deepFreeze({
   is_blocked: true,
   categories: [
@@ -64,7 +56,6 @@ test("the collapsed count pluralizes on the issue total (error row included)", a
   await wrapper.find(".warning-toggle").trigger("click"); // expanded -> collapsed
   expect(wrapper.find(".warning-count").text()).toContain("2 issues");
 
-  // A single issue reads "1 issue".
   const single = mount(PersistentWarningArea, {
     props: { report: oneCategoryReport, error: null },
   });
@@ -78,13 +69,12 @@ test("the disclosure button wires aria-expanded/aria-controls and toggles the li
   });
   const toggle = wrapper.find(".warning-toggle");
   expect(toggle.attributes("aria-controls")).toBe("warning-list");
-  // Starts expanded (v-show leaves the list displayed).
   expect(toggle.attributes("aria-expanded")).toBe("true");
   expect(wrapper.find("#warning-list").attributes("style") ?? "").not.toContain("display: none");
 
   await toggle.trigger("click");
   expect(toggle.attributes("aria-expanded")).toBe("false");
-  // Collapsed -> v-show sets the inline display:none.
+  // v-show collapses through the inline display:none.
   expect(wrapper.find("#warning-list").attributes("style") ?? "").toContain("display: none");
 });
 
@@ -95,15 +85,12 @@ test("re-expands when a NEW warning kind appears after the user collapsed the ba
   await wrapper.find(".warning-toggle").trigger("click"); // collapse
   expect(wrapper.find(".warning-toggle").attributes("aria-expanded")).toBe("false");
 
-  // A new category kind ('providers') joins the signature -> the watcher re-expands.
   await wrapper.setProps({ report: twoCategoryReport });
   await nextTick();
   expect(wrapper.find(".warning-toggle").attributes("aria-expanded")).toBe("true");
 });
 
-// The one non-blocking category (failed-job) carries a dismiss control; the
-// blocking config categories (twoCategoryReport above) do not. Kinds match the
-// backend's kebab-case `WarningKind` serialization.
+// Kinds match the backend's kebab-case `WarningKind` serialization.
 const dismissibleReport: ValidationReport = deepFreeze({
   is_blocked: false,
   categories: [
@@ -122,17 +109,15 @@ test("offers a dismiss control on the non-blocking category and emits the kind +
   });
   const buttons = wrapper.findAll(".warning-dismiss");
   expect(buttons).toHaveLength(1);
-  // The accessible name carries the category title (the icon itself is aria-hidden).
   expect(buttons[0].attributes("aria-label")).toBe("Dismiss: Last job failed");
 
   await buttons[0].trigger("click");
-  // Emits the rendered identity alongside the kind so the backend dismisses *this*
-  // warning, not a newer one it would re-derive.
+  // The rendered identity rides along so the backend dismisses this warning,
+  // not a newer one it would re-derive.
   expect(wrapper.emitted("dismiss")).toEqual([["failed-job", "7"]]);
 });
 
 test("blocking config categories and the error row carry no dismiss control", () => {
-  // twoCategoryReport is two blocking config categories; plus a config-check error row.
   const wrapper = mount(PersistentWarningArea, {
     props: { report: twoCategoryReport, error: "boom" },
   });
@@ -140,27 +125,21 @@ test("blocking config categories and the error row carry no dismiss control", ()
 });
 
 test("stays collapsed when the signature changes but introduces no NEW warning kind", async () => {
-  // The negative arm of the watcher: the signature must actually CHANGE for the
-  // watcher to fire (an items-only change wouldn't move it), so we DROP a kind
-  // ('providers') rather than mutate items. 'tokens,providers' -> 'tokens' fires
-  // the watcher, but every remaining kind was already present, so `appeared` is
-  // false and the user's collapse must survive. Mirror of the re-expand test above.
+  // The signature must actually change for the watcher to fire (an items-only
+  // change would not move it), so a kind is dropped rather than items mutated:
+  // every remaining kind was already present, so the collapse must survive.
   const wrapper = mount(PersistentWarningArea, {
     props: { report: twoCategoryReport, error: null },
   });
   await wrapper.find(".warning-toggle").trigger("click"); // collapse
   expect(wrapper.find(".warning-toggle").attributes("aria-expanded")).toBe("false");
 
-  // Removing the 'providers' kind changes the signature without adding one.
   await wrapper.setProps({ report: oneCategoryReport });
   await nextTick();
   expect(wrapper.find(".warning-toggle").attributes("aria-expanded")).toBe("false");
 });
 
-// A long failed-job error must not grow the band over the view below it
-// (`.warning-list` is height-bounded and scrolls). happy-dom has no layout, so the
-// overflow is stubbed on the element; the contract pinned here is that the list
-// takes a tab stop — keyboard scrolling — only while it overflows.
+// happy-dom has no layout, so the overflow is stubbed on the element.
 test("the bounded list takes a tab stop only while it overflows", async () => {
   const failed: ValidationReport = deepFreeze({
     is_blocked: false,

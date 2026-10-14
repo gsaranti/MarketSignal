@@ -1,12 +1,5 @@
-// Component tests for LatestReportView.vue — props in, one event out
-// (export-markdown). Mock-free of Tauri (no @tauri-apps/api import); the single
-// browser-global stub is `window.print`, which Tauri's macOS print shim replaces —
-// it is a DOM global, not a Tauri mock, kept localized to the one PDF test. These
-// pin: the four-way pane precedence (error > loadError > report > empty), the
-// markdown-it rendering rules (heading/linkify, html:false, the table-scroll
-// wrapper, the ```chart fence + its fallback), the toolbar label/tag, the
-// canExport-driven export buttons, the export-markdown emit + busy label, the
-// export-error strip, and the PDF print title-munging.
+// No Tauri mocks; the one browser global stubbed is `window.print`, localized
+// to the PDF test.
 
 import { test, expect, vi, type VueWrapper } from "vitest";
 import { mount } from "@vue/test-utils";
@@ -56,9 +49,8 @@ function toolbarBtn(wrapper: VueWrapper, text: string) {
 }
 
 test("pane precedence: a generation error outranks both a load error and a loaded report", () => {
-  // Set all three competing inputs so the test pins the branch ORDER, not just
-  // error-over-report: reversing the error/loadError branches would still show a
-  // report-error block, but with the wrong label.
+  // All three competing inputs, so the branch order is pinned: swapped
+  // error/loadError branches would still show a report-error block.
   const wrapper = makeWrapper({
     report: makeReport("# Body"),
     error: "model timed out",
@@ -87,7 +79,6 @@ test("renders markdown: headings + linkified URLs, with raw HTML neutralized (ht
   const article = makeWrapper({ report: makeReport(md) }).find(".report-article");
   expect(article.find("h2").text()).toBe("Heading two");
   expect(article.find("a").attributes("href")).toContain("example.com");
-  // html:false escapes inline HTML, so no live <b> element is produced.
   expect(article.find("b").exists()).toBe(false);
 });
 
@@ -102,7 +93,7 @@ test("a valid ```chart fence renders as an inline SVG figure; a malformed one fa
   const validArticle = makeWrapper({ report: makeReport(valid) }).find(".report-article");
   expect(validArticle.find("svg.chart-svg").exists()).toBe(true);
 
-  // No `series` -> renderChart returns null -> the fence renders as a plain code block.
+  // No `series`, so renderChart returns null.
   const malformed = ["```chart", '{"type":"line"}', "```"].join("\n");
   const malformedArticle = makeWrapper({ report: makeReport(malformed) }).find(".report-article");
   expect(malformedArticle.find("svg.chart-svg").exists()).toBe(false);
@@ -112,7 +103,6 @@ test("a valid ```chart fence renders as an inline SVG figure; a malformed one fa
 test("the toolbar label reflects the loaded issue, and the Latest tag is gated on isLatest", () => {
   const report = makeReport("# Body");
   const latest = makeWrapper({ report, isLatest: true });
-  // The label is the issue headline; the date-time + short id ride in the meta.
   expect(latest.find(".toolbar-label").text()).toBe("Rotation, not rupture");
   expect(latest.find(".toolbar-meta").text()).toBe(
     `${localDateTime(report.summary.created_at)} · #abcdef12`
@@ -120,7 +110,6 @@ test("the toolbar label reflects the loaded issue, and the Latest tag is gated o
   expect(latest.find(".toolbar-tag").exists()).toBe(true);
 
   expect(makeWrapper({ report, isLatest: false }).find(".toolbar-tag").exists()).toBe(false);
-  // No report -> the static fallback label, no tag.
   const none = makeWrapper();
   expect(none.find(".toolbar-label").text()).toBe("Latest report");
   expect(none.find(".toolbar-tag").exists()).toBe(false);
@@ -152,7 +141,6 @@ test("an export failure shows a non-destructive alert strip without unmounting t
   const wrapper = makeWrapper({ report: makeReport("# Body"), exportError: "disk full" });
   const strip = wrapper.find(".export-error[role='alert']");
   expect(strip.text()).toContain("Couldn't export: disk full");
-  // The report stays on screen — export is an action, not a load.
   expect(wrapper.find(".report-article").exists()).toBe(true);
 });
 
@@ -178,7 +166,6 @@ test("Export PDF seeds the print title with the spec basename and restores it af
     expect(titleDuringPrint).toBe(expectedBase);
     expect(document.title).toBe("Market Signal"); // exportPdf restored its own change
   } finally {
-    // Restore BOTH globals this test mutated, so nothing leaks to later tests.
     (window as unknown as { print: typeof window.print }).print = original;
     document.title = originalTitle;
   }

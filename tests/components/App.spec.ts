@@ -1,17 +1,7 @@
-// First SFC spec to exercise the `@tauri-apps/api` boundary. App.vue is the only
-// component that imports it — four modules: core (`invoke`), event (`listen`),
-// window (`getCurrentWindow().onFocusChanged`), and app (`getVersion`).
-//
-// This establishes the project's Tauri-mock pattern. `vi.mock` factories are
-// hoisted above imports, so the mock *functions* are declared via `vi.hoisted`
-// and their *implementations* come from `tests/helpers/tauri.ts` in `beforeEach`.
-// `vitest.config.ts` sets `globals: false`, so every test helper (incl. `vi`) is
-// imported explicitly.
-//
-// Two assertions: (1) App's `onMounted` bootstrap contract — the exact command /
-// listener / window / version set it fires on mount, which doubles as proof the
-// four-module mock is complete enough to mount the real App; (2) the `@save`
-// wiring round-trips a child emit into `invoke("save_settings", payload)`.
+// App.vue is the only component that imports `@tauri-apps/api`. `vi.mock`
+// factories are hoisted above imports, so the mock functions are declared via
+// `vi.hoisted` and their implementations come from `tests/helpers/tauri.ts` in
+// `beforeEach`. `vitest.config.ts` sets `globals: false`, so `vi` is imported.
 
 import { describe, test, expect, beforeEach, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
@@ -29,10 +19,7 @@ import type {
   TruncationStats,
 } from "../../src/types";
 
-// A controllable promise for the interleaving tests below — kept local to this
-// spec (test-mechanics, not a Tauri double, so it stays out of helpers/tauri.ts).
-// Lets a test hold an invoke pending while it drives other events, then settle it
-// to pin a guard that only a deterministic ordering can exercise without flake.
+// Holds an invoke pending while a test drives other events, then settles it.
 function deferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
@@ -47,8 +34,6 @@ function deferred<T>(): {
   return { promise, resolve, reject };
 }
 
-// Hoisted above the imports below so the `vi.mock` factories can close over these
-// mock fns. (`vi.hoisted` runs before module imports; `vi` is available in it.)
 const tauri = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
@@ -64,8 +49,6 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: tauri.getVersion }));
 
-// Resolved only after the mocks are registered (hoisting makes the order here
-// cosmetic, but App.vue must bind the mocked modules at import time).
 import App from "../../src/App.vue";
 import RecentReportsSidebar from "../../src/components/RecentReportsSidebar.vue";
 import Settings from "../../src/components/Settings.vue";
@@ -77,7 +60,6 @@ import ConfirmDialog from "../../src/components/ConfirmDialog.vue";
 import { sampleHoldingsPull, samplePortfolioRun } from "../helpers/tauri";
 
 beforeEach(() => {
-  // Clear call history between tests, then (re)apply implementations.
   vi.clearAllMocks();
   tauri.invoke.mockImplementation(makeInvokeRouter());
   tauri.listen.mockResolvedValue(unlisten);
@@ -90,11 +72,8 @@ const invokedCommands = () => tauri.invoke.mock.calls.map((c) => c[0]);
 const cancelRunCalls = () =>
   tauri.invoke.mock.calls.filter((c) => c[0] === "cancel_run");
 
-// Mount App, let the onMounted cascade settle, then put a live run on screen: a
-// run-started event builds the trace, and @view-tracker (the footer handle) flips
-// the report pane to the tracker so JobTrackerView renders. Returns the captured
-// "job-progress" emitter so a test can fold in more events. `overrides` reach the
-// invoke router (e.g. a cancel_run handler), re-applied over the beforeEach default.
+// Mounts App, settles onMounted, puts a live run on screen and flips the report
+// pane to the tracker; returns the captured "job-progress" emitter.
 async function mountWithTracker(
   overrides: Record<string, (args?: Record<string, unknown>) => unknown> = {}
 ) {
@@ -140,12 +119,6 @@ const sampleReport2: GeneratedReport = {
   summary: sampleSummary2,
 };
 
-// These fixtures are shared at module scope and spread shallowly (sampleSummary2
-// reuses sampleSummary's arrays; both reports nest a summary; all are handed to
-// child props / returned from the mocked invoke), so a single in-place mutation
-// would leak across tests. They're read-only by design — deep-freezing makes that
-// a guarantee, turning any future in-place write into a loud throw at the mutation
-// site. Freezing each report transitively freezes its nested summary and arrays.
 deepFreeze(sampleReport);
 deepFreeze(sampleReport2);
 
@@ -154,24 +127,14 @@ describe("App.vue Tauri boundary", () => {
     const wrapper = mount(App);
     await flushPromises();
 
-    // Version read, the focus subscription via getCurrentWindow(), and both
-    // event listeners — all real onMounted glue.
     expect(tauri.getVersion).toHaveBeenCalledTimes(1);
     expect(tauri.getCurrentWindow).toHaveBeenCalled();
     expect(tauri.onFocusChanged).toHaveBeenCalledTimes(1);
 
-    // Exactly the one listener — sorted-equality so the assertion is a true set
-    // check (catches a dropped or duplicated listener), order-agnostic.
     const events = tauri.listen.mock.calls.map((c) => c[0]).sort();
     expect(events).toEqual(["job-progress"]);
 
-    // Exactly the refresh commands onMounted issues — sorted-equality
-    // enforces the set with no extras or duplicates (not a subset), while
-    // tolerating any reordering of the onMounted calls. Proves the four-module
-    // mock is complete enough to mount the real App without a throw.
-    // `truncation_stats` and `schwab_status` ride in via refreshSettings (loaded up
-    // front for the gate's config state), alongside get_settings; the local-suite
-    // presence gate + the Portfolio page's persisted state load up front too.
+    // Sorted equality: the exact set, no extras or duplicates, order-agnostic.
     expect([...invokedCommands()].sort()).toEqual([
       "check_configuration",
       "check_local_configuration",
@@ -216,7 +179,6 @@ describe("App.vue Tauri boundary", () => {
     settings.vm.$emit("save", payload);
     await flushPromises();
 
-    // The @save="saveSettings" wiring forwards the child payload verbatim.
     expect(tauri.invoke).toHaveBeenCalledWith("save_settings", payload);
 
     wrapper.unmount();
@@ -243,8 +205,7 @@ describe("App.vue Tauri boundary", () => {
     wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "settings");
     await flushPromises();
 
-    // App.vue is <script setup> with no defineExpose — assert through the child
-    // prop, the spec's load-bearing read idiom.
+    // App.vue has no defineExpose, so state is read through child props.
     const settings = wrapper.findComponent(Settings);
     expect(settings.props("truncationStats")).toEqual(stats);
 
@@ -317,9 +278,8 @@ describe("App.vue Tauri boundary", () => {
   });
 
   test("a pending schwab_connect shows the footer's Schwab-labeled running row, then re-reads job_status", async () => {
-    // The connect holds the single global run slot, so the footer's running row is
-    // correct to appear — but it must say what's actually running, never
-    // "Generating report…" (the original mislabel this pins against).
+    // The connect holds the single global run slot, so the running row is
+    // correct to appear.
     const connect = deferred<null>();
     tauri.invoke.mockImplementation(
       makeInvokeRouter({ schwab_connect: () => connect.promise })
@@ -335,8 +295,8 @@ describe("App.vue Tauri boundary", () => {
     expect(panel.props("runActive")).toBe(true);
     expect(panel.props("runningLabel")).toBe("Connecting to Charles Schwab…");
 
-    // Settling the connect drops the running row and re-syncs the run-slot view
-    // (a focus bounce mid-login may have polled `is_running: true`).
+    // A focus bounce mid-login may have polled `is_running: true`, so settling
+    // re-reads job_status.
     const before = tauri.invoke.mock.calls.filter(
       (c: unknown[]) => c[0] === "job_status"
     ).length;
@@ -352,12 +312,8 @@ describe("App.vue Tauri boundary", () => {
   });
 
   test("the footer's section + showGenerate props follow the view: stamps map per feature, the trigger is report-view-only", async () => {
-    // The user-settled featureOf mapping (docs/interface.md §Main Layout): the
-    // Portfolio view reports the portfolio job; report AND the neutral surfaces
-    // (inbox/archive/settings) report the report job — but the generate trigger
-    // renders only when the report view is the main window, so the neutral
-    // views get report stamps WITHOUT the button. Pinned here because only App
-    // owns both view→prop mappings.
+    // The featureOf mapping (docs/interface.md §Main Layout); only App owns both
+    // view→prop mappings.
     const wrapper = mount(App);
     await flushPromises();
     const panel = wrapper.findComponent(JobStatusPanel);
@@ -380,10 +336,7 @@ describe("App.vue Tauri boundary", () => {
   });
 });
 
-// The run tracker's event-folding (handleProgress) reducer, driven through the
-// real "job-progress" listener via the captured emitter. JobTrackerView's `trace`
-// prop is the observable — App.vue is <script setup> with no defineExpose, so the
-// folded RunTrace is read through the child, never off `wrapper.vm`.
+// The folded RunTrace is read through JobTrackerView's `trace` prop.
 describe("App.vue run tracker", () => {
   test("folds run-started into a trace with the synthetic gate step, shown by @view-tracker", async () => {
     const { wrapper } = await mountWithTracker();
@@ -404,10 +357,8 @@ describe("App.vue run tracker", () => {
   test("request rows land in the step their event's stamp names", async () => {
     const { wrapper, emit } = await mountWithTracker();
 
-    // Ownership is stated by the run, not inferred by the fold: the backend
-    // stamps every request event with its owning step at the progress seam
-    // (progress.rs), so a research-group row and a baseline-series row each
-    // land exactly where their stamps say — group names play no routing role.
+    // Ownership is stamped by the backend (progress.rs); group names play no
+    // routing role.
     emit({ run_id: "R1", seq: 2, kind: "step-started", step: "baseline", label: "Baseline market data" });
     emit({ run_id: "R1", seq: 3, kind: "request-started", step: "baseline", group: "indices", provider: "fmp", series_id: "spx", name: "S&P 500" });
     // request-finished updates the matching in-flight row rather than appending.
@@ -430,13 +381,8 @@ describe("App.vue run tracker", () => {
   test("a local job's stamped rows land in their holding step, and no phantom is conjured", async () => {
     const { wrapper, emit } = await mountWithTracker();
 
-    // The Portfolio job's per-holding fetches arrive stamped with the holding's
-    // own step. Before ownership was stamped, unowned rows fell through to a
-    // synthesized "Baseline market data" step no backend ever finishes, which
-    // stayed open for the whole run and named itself in the tracker header
-    // (docs/verification/2026-08-10-big-run-attempt-1.md, Finding 6).
-    // Step key and groups are the production strings: `holding_step_key` formats
-    // `holding-<SYMBOL>`, and these are real emitters (sec.rs, fmp.rs, fred.rs).
+    // Step key and groups are the production strings (`holding_step_key`
+    // formats `holding-<SYMBOL>`).
     emit({ run_id: "R1", seq: 2, kind: "step-started", step: "holding-PSX", label: "Analyze PSX" });
     emit({ run_id: "R1", seq: 3, kind: "request-started", step: "holding-PSX", group: "company-facts", provider: "SEC", series_id: "0000078214", name: "SEC company facts" });
     emit({ run_id: "R1", seq: 4, kind: "request-started", step: "holding-PSX", group: "company-eod-deep", provider: "FMP", series_id: "PSX", name: "Deep price history" });
@@ -449,7 +395,6 @@ describe("App.vue run tracker", () => {
     expect(holding?.requests.map((r) => r.group)).toEqual(["company-facts", "company-eod-deep"]);
     expect(holding?.requests.map((r) => r.provider)).toEqual(["SEC", "FMP"]);
     expect(holding?.requests[0]).toMatchObject({ seriesId: "0000078214", status: "ok" });
-    // The phantom step is never conjured at all.
     expect(steps.find((s) => s.key === "baseline")).toBeUndefined();
 
     wrapper.unmount();
@@ -458,9 +403,7 @@ describe("App.vue run tracker", () => {
   test("a research row's subject rides the fold on both the start and a start-less finish", async () => {
     const { wrapper, emit } = await mountWithTracker();
 
-    // The research loop stamps its search / fetch rows with a typed target
-    // (progress.rs `RequestTarget`); the fold carries it onto the row from the
-    // start event, and from a finish that arrives with no start to resolve.
+    // The typed target is progress.rs `RequestTarget`.
     emit({ run_id: "R1", seq: 2, kind: "step-started", step: "holding-PSX", label: "Analyze PSX" });
     emit({ run_id: "R1", seq: 3, kind: "request-started", step: "holding-PSX", group: "research", provider: "web", series_id: "search: PSX refining margins", name: "competitive-position", target: { kind: "search", text: "PSX refining margins" } });
     emit({ run_id: "R1", seq: 4, kind: "request-finished", step: "holding-PSX", group: "research", provider: "web", series_id: "search: PSX refining margins", name: "competitive-position", status: "ok", detail: "12 hits", target: { kind: "search", text: "PSX refining margins" } });
@@ -486,11 +429,8 @@ describe("App.vue run tracker", () => {
   test("an unstamped row lands in the unattributed list and can never fail the run's record", async () => {
     const { wrapper, emit } = await mountWithTracker();
 
-    // A request emitted with no step open arrives without a stamp. It lands in
-    // the trace's unattributed list — visible, resolvable, conjuring no step —
-    // and the terminal reconcile leaves it alone, so it can never paint a
-    // failed stage into a successful run (the retired synthesized-step
-    // fallback's failure mode).
+    // A request emitted with no step open arrives without a stamp; the terminal
+    // reconcile leaves it alone.
     emit({ run_id: "R1", seq: 2, kind: "request-started", group: "suite-rate", provider: "FRED", series_id: "DGS10", name: "Rate anchor" });
     emit({ run_id: "R1", seq: 3, kind: "request-finished", group: "suite-rate", series_id: "DGS10", status: "ok" });
     emit({ run_id: "R1", seq: 4, kind: "run-finished", status: "successful" });
@@ -499,7 +439,6 @@ describe("App.vue run tracker", () => {
     const trace = wrapper.findComponent(JobTrackerView).props("trace");
     expect(trace.unattributed.map((r) => r.group)).toEqual(["suite-rate"]);
     expect(trace.unattributed[0]).toMatchObject({ seriesId: "DGS10", status: "ok" });
-    // No step was conjured for it — the trace still holds only the gate step.
     expect(trace.steps.map((s) => s.key)).toEqual(["gate"]);
     expect(trace.steps.every((s) => s.status !== "failed")).toBe(true);
 
@@ -550,10 +489,6 @@ describe("App.vue run tracker", () => {
   test("step-finished applies the reported status and detail to its step", async () => {
     const { wrapper, emit } = await mountWithTracker();
 
-    // step-started flips the step to running; step-finished then writes both the
-    // reported status and detail (App.vue's step-finished branch). The run-finished
-    // reconcile test deliberately leaves a step running, so this is the only test
-    // exercising the normal finished path's status + detail assignment.
     emit({ run_id: "R1", seq: 2, kind: "step-started", step: "baseline", label: "Baseline market data" });
     emit({ run_id: "R1", seq: 3, kind: "step-finished", step: "baseline", status: "ok", detail: "42 series" });
     await flushPromises();
@@ -570,9 +505,6 @@ describe("App.vue run tracker", () => {
   test("step-thinking folds into the owning step's reasoning, keeping its label", async () => {
     const { wrapper, emit } = await mountWithTracker();
 
-    // The portfolio per-holding interpretation streams step-scoped reasoning onto
-    // the holding's own step (App.vue's step-thinking branch) — not the report
-    // workflow's fixed "agent"/"analysts" steps.
     emit({ run_id: "R1", seq: 2, kind: "step-started", step: "holding-AAPL", label: "Analyze AAPL" });
     emit({ run_id: "R1", seq: 3, kind: "step-thinking", step: "holding-AAPL", delta: "Weighing the trim " });
     emit({ run_id: "R1", seq: 4, kind: "step-thinking", step: "holding-AAPL", delta: "against the tilt" });
@@ -581,8 +513,6 @@ describe("App.vue run tracker", () => {
     const steps = wrapper.findComponent(JobTrackerView).props("trace").steps;
     const holding = steps.find((s) => s.key === "holding-AAPL");
     expect(holding?.agentThinking).toBe("Weighing the trim against the tilt");
-    // The chunks fold into the existing step (label intact) rather than creating a
-    // duplicate or leaking onto the report workflow's fixed steps.
     expect(holding?.label).toBe("Analyze AAPL");
     expect(steps.filter((s) => s.key === "holding-AAPL")).toHaveLength(1);
     expect(steps.some((s) => s.key === "agent" || s.key === "analysts")).toBe(false);
@@ -610,10 +540,6 @@ describe("App.vue run tracker", () => {
   test("a successful run closes a still-running step ok, never failed", async () => {
     const { wrapper, emit } = await mountWithTracker();
 
-    // The reconcile mirrors the terminal status. Under the old fixed "failed"
-    // fallback, a stage that never emitted step-finished painted FAILED onto a
-    // successful run's record — the failure mode the step-ownership slice
-    // retires.
     emit({ run_id: "R1", seq: 2, kind: "step-started", step: "persist", label: "Saving the report" });
     emit({ run_id: "R1", seq: 3, kind: "run-finished", status: "successful", report_id: "rep-1" });
     await flushPromises();
@@ -640,9 +566,6 @@ describe("App.vue run tracker", () => {
   });
 });
 
-// Report selection: a sidebar @select round-trips into load_report and feeds the
-// report pane, with the open-failure and the list-vs-load error channels kept
-// distinct. LatestReportView / RecentReportsSidebar props are the observables.
 describe("App.vue report selection", () => {
   test("a sidebar @select loads the report into the pane", async () => {
     tauri.invoke.mockImplementation(
@@ -703,8 +626,6 @@ describe("App.vue report selection", () => {
   });
 });
 
-// The cancel path + the tracker view toggle glue. A live run is on screen via
-// mountWithTracker; cancelRun rides @cancel into invoke("cancel_run").
 describe("App.vue cancel + tracker toggle", () => {
   test("@cancel invokes cancel_run and marks the request pending", async () => {
     const { wrapper } = await mountWithTracker({ cancel_run: () => null });
@@ -744,7 +665,6 @@ describe("App.vue cancel + tracker toggle", () => {
     wrapper.findComponent(JobTrackerView).vm.$emit("cancel");
     await flushPromises();
 
-    // The !runActive guard short-circuits before any invoke.
     expect(cancelRunCalls()).toHaveLength(0);
 
     wrapper.unmount();
@@ -765,10 +685,6 @@ describe("App.vue cancel + tracker toggle", () => {
   });
 });
 
-// generate(): the manual-run kickoff wired from JobStatusPanel @generate. Covers
-// the blocked-gate short-circuit, the happy path (fresh report into the pane), and
-// the pre-tracker failure surfacing on the report pane's error channel. The
-// interleaved cancel-suppression branch lives in the deferred-harness block below.
 describe("App.vue generate", () => {
   test("a Generate emit invokes generate_report_manual and lands the fresh report", async () => {
     tauri.invoke.mockImplementation(
@@ -781,8 +697,6 @@ describe("App.vue generate", () => {
     await flushPromises();
 
     expect(tauri.invoke).toHaveBeenCalledWith("generate_report_manual");
-    // reportPaneMode was "tracker" at kickoff, so success swaps in the report and
-    // settles the pane back to the report view.
     expect(wrapper.findComponent(LatestReportView).props("report")).toEqual(sampleReport);
 
     wrapper.unmount();
@@ -801,7 +715,6 @@ describe("App.vue generate", () => {
     wrapper.findComponent(JobStatusPanel).vm.$emit("generate");
     await flushPromises();
 
-    // The `if (blocked.value) return` guard fires before the command.
     expect(invokedCommands()).not.toContain("generate_report_manual");
 
     wrapper.unmount();
@@ -821,8 +734,6 @@ describe("App.vue generate", () => {
     wrapper.findComponent(JobStatusPanel).vm.$emit("generate");
     await flushPromises();
 
-    // No run-started arrived, so runTrace stayed null and the catch routes the
-    // reason to the report pane (the skip / pre-tracker-error branch).
     const latest = wrapper.findComponent(LatestReportView);
     expect(latest.exists()).toBe(true);
     expect(latest.props("error")).toContain("gate slammed");
@@ -831,10 +742,8 @@ describe("App.vue generate", () => {
   });
 });
 
-// The window focus-refresh path: regaining focus re-checks config / status and
-// re-lists reports + both research folders, so external changes (e.g. files
-// dropped into the inbox via Finder) surface on return. Driven through the
-// captured onFocusChanged callback (focusEmitter).
+// Regaining focus refreshes so external changes (files dropped into the inbox
+// via Finder) surface on return.
 describe("App.vue focus refresh", () => {
   test("regaining focus refreshes config, status, reports, and both folders", async () => {
     const wrapper = mount(App);
@@ -845,9 +754,7 @@ describe("App.vue focus refresh", () => {
     focus(true);
     await flushPromises();
 
-    // Exactly the refresh commands the focus handler issues — sorted-equality
-    // so it's a true set check with no extras (the local presence gate rides
-    // along so a Schwab/local-models change surfaces on return).
+    // Sorted equality: the exact set, no extras.
     expect([...invokedCommands()].sort()).toEqual([
       "check_configuration",
       "check_local_configuration",
@@ -869,15 +776,13 @@ describe("App.vue focus refresh", () => {
     focus(false);
     await flushPromises();
 
-    // The `if (focused)` guard short-circuits a blur.
     expect(invokedCommands()).toHaveLength(0);
 
     wrapper.unmount();
   });
 });
 
-// Interleaving guards that only a controllable promise can pin deterministically:
-// generate()'s cancel-suppression and selectReport()'s latest-load-wins race.
+// Interleaving guards only a controllable promise can pin deterministically.
 describe("App.vue interleaved guards", () => {
   test("a cancelled generate suppresses the error surface", async () => {
     const pending = deferred<GeneratedReport>();
@@ -891,23 +796,19 @@ describe("App.vue interleaved guards", () => {
     await flushPromises();
     const emit = emitterFor(tauri.listen, "job-progress");
 
-    // Kick off the run; it parks on the pending invoke. run-started then builds the
-    // trace so JobTrackerView renders and its @cancel becomes reachable.
+    // run-started builds the trace so JobTrackerView's @cancel becomes reachable.
     wrapper.findComponent(JobStatusPanel).vm.$emit("generate");
     await flushPromises();
     emit({ run_id: "R1", seq: 1, kind: "run-started", label: "Weekly run" });
     await flushPromises();
 
-    // User cancels (sets cancelRequested), then the run rejects — the cancel branch
-    // must swallow the error rather than surface it.
     wrapper.findComponent(JobTrackerView).vm.$emit("cancel");
     await flushPromises();
     pending.reject(new Error("aborted by cancel"));
     await flushPromises();
 
     expect(cancelRunCalls()).toHaveLength(1);
-    // Leave the tracker to reveal the report pane: its error channel stayed clean
-    // (contrast the pre-tracker-error test, where the same throw surfaces).
+    // Leaving the tracker reveals the report pane.
     wrapper.findComponent(JobTrackerView).vm.$emit("close");
     await flushPromises();
     expect(wrapper.findComponent(LatestReportView).props("error")).toBeNull();
@@ -932,8 +833,6 @@ describe("App.vue interleaved guards", () => {
     await flushPromises();
     expect(wrapper.findComponent(LatestReportView).props("report")).toEqual(sampleReport2);
 
-    // The stale rep-1 load resolves late; the selectedReportId guard drops it so it
-    // can't clobber the newer report.
     slow.resolve(sampleReport);
     await flushPromises();
     expect(wrapper.findComponent(LatestReportView).props("report")).toEqual(sampleReport2);
@@ -942,10 +841,6 @@ describe("App.vue interleaved guards", () => {
   });
 });
 
-// The Portfolio page's App-side wiring: navigation, the local-suite warning
-// merge (band shows both gates' categories; the cloud report gate is
-// untouched), the run flow, and the tracker's owning-page placement with no
-// bogus /8 fraction (the fixed denominator is the report pipeline's).
 describe("App.vue portfolio wiring", () => {
   test("sidebar Portfolio nav shows PortfolioView with the persisted run", async () => {
     tauri.invoke.mockImplementation(
@@ -994,7 +889,6 @@ describe("App.vue portfolio wiring", () => {
     const sidebar = wrapper.findComponent(RecentReportsSidebar);
     expect(sidebar.props("portfolioRuns")).toHaveLength(2);
 
-    // Selecting the older run opens it read-only on the Portfolio page.
     sidebar.vm.$emit("select-run", "prun-old");
     await flushPromises();
     const portfolio = wrapper.findComponent(PortfolioView);
@@ -1002,13 +896,11 @@ describe("App.vue portfolio wiring", () => {
     expect(portfolio.props("historical")).toBe(true);
     expect(sidebar.props("selectedRunId")).toBe("prun-old");
 
-    // Back to latest restores the live view.
     portfolio.vm.$emit("back-to-latest");
     await flushPromises();
     expect(portfolio.props("run")).toEqual(samplePortfolioRun);
     expect(portfolio.props("historical")).toBe(false);
 
-    // Selecting the newest row never enters the historical state.
     sidebar.vm.$emit("select-run", samplePortfolioRun.run_id);
     await flushPromises();
     expect(portfolio.props("historical")).toBe(false);
@@ -1016,8 +908,6 @@ describe("App.vue portfolio wiring", () => {
   });
 
   test("an unreadable row classifies as unreadable, not never-ran", async () => {
-    // A row whose blob is corrupt has readable: false — it must trip the
-    // unreadable read, never the never-ran copy (Codex round).
     tauri.invoke.mockImplementation(
       makeInvokeRouter({
         latest_portfolio_run: () => null,
@@ -1070,10 +960,8 @@ describe("App.vue portfolio wiring", () => {
 
     const portfolio = wrapper.findComponent(PortfolioView);
     expect(portfolio.props("historyError")).toContain("run row unreadable");
-    // The general run-error channel stays untouched — the failure must never
-    // read as a job failure.
+    // A past-run open failure must never read as a job failure.
     expect(portfolio.props("runError")).toBeNull();
-    // The latest view stayed up; returning to latest clears the message.
     expect(portfolio.props("historical")).toBe(false);
     portfolio.vm.$emit("back-to-latest");
     await flushPromises();
@@ -1142,10 +1030,7 @@ describe("App.vue portfolio wiring", () => {
     const wrapper = mount(App);
     await flushPromises();
 
-    // The band renders the local category…
     expect(wrapper.text()).toContain("Charles Schwab connection");
-    // …but the report gate stays unblocked (cloud validation is clean), and the
-    // Portfolio triggers are locked.
     expect(wrapper.findComponent(JobStatusPanel).props("blocked")).toBe(false);
     wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
     await flushPromises();
@@ -1156,11 +1041,8 @@ describe("App.vue portfolio wiring", () => {
   });
 
   test("a credential both gates name renders one row, not two", async () => {
-    // The two validation reports are independent and legitimately overlap: an unset
-    // FMP key is a provider-credentials failure for the cloud gate AND for the local
-    // suite. Concatenated, the band rendered "Provider credentials" twice — against
-    // the one-row-per-category contract, and as a duplicate Vue key since the list
-    // keys on kind.
+    // The two gates legitimately overlap (an unset FMP key fails both), and the
+    // band's list keys on kind.
     tauri.invoke.mockImplementation(
       makeInvokeRouter({
         check_configuration: () => ({
@@ -1195,7 +1077,6 @@ describe("App.vue portfolio wiring", () => {
       r.text().includes("Provider credentials")
     );
     expect(credentialRows).toHaveLength(1);
-    // Neither gate's detail is dropped by the merge — the row carries both.
     expect(credentialRows[0]!.text()).toContain("Tavily");
     expect(credentialRows[0]!.text()).toContain("FRED");
     wrapper.unmount();
@@ -1230,9 +1111,8 @@ describe("App.vue portfolio wiring", () => {
 
   test("a portfolio run lands its result on the page, and its tracker shows no /8 fraction", async () => {
     const pending = deferred<typeof samplePortfolioRun>();
-    // Stateful like the real store: after the run resolves, the defensive
-    // latest_portfolio_run re-read (generatePortfolio's finally) returns the
-    // persisted run instead of clobbering the inline result with null.
+    // Stateful like the real store, so the post-run latest_portfolio_run re-read
+    // returns the persisted run instead of null.
     let persisted: typeof samplePortfolioRun | null = null;
     tauri.invoke.mockImplementation(
       makeInvokeRouter({
@@ -1248,9 +1128,8 @@ describe("App.vue portfolio wiring", () => {
     wrapper.findComponent(PortfolioView).vm.$emit("run");
     await flushPromises();
 
-    // The run streams into the shared tracker, which replaces the Portfolio
-    // page (owning-page placement) — and the footer's determinate fraction
-    // stays null: the /8 denominator belongs to the report pipeline only.
+    // The footer's /8 denominator belongs to the report pipeline, so progress
+    // stays null here.
     const emit = emitterFor(tauri.listen, "job-progress");
     emit({ run_id: "P1", seq: 1, kind: "run-started", label: "Portfolio Analysis" });
     await flushPromises();
@@ -1278,7 +1157,6 @@ describe("App.vue portfolio wiring", () => {
     wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "portfolio");
     await flushPromises();
 
-    // A selective run: the per-card selection rides the emit into the command.
     wrapper.findComponent(PortfolioView).vm.$emit("run", ["AAPL", "MSFT"]);
     await flushPromises();
     expect(tauri.invoke).toHaveBeenCalledWith("generate_portfolio_manual", {
@@ -1286,8 +1164,7 @@ describe("App.vue portfolio wiring", () => {
       resume: null,
     });
 
-    // No selection: the whole-book run, selected explicitly null (and no
-    // resume — the Run-analysis triggers always start a new run).
+    // The Run-analysis triggers always start a new run, so resume is null.
     wrapper.findComponent(PortfolioView).vm.$emit("run");
     await flushPromises();
     expect(tauri.invoke).toHaveBeenCalledWith("generate_portfolio_manual", {
@@ -1298,10 +1175,8 @@ describe("App.vue portfolio wiring", () => {
   });
 
   test("a quick check's trace never renders on the report pane left in tracker mode", async () => {
-    // The gap this pins: a failed report run leaves the report pane in tracker
-    // mode; a quick check then replaces the shared trace. The report pane's
-    // kind gate must exclude the quick-check kind like the portfolio kind —
-    // otherwise the sweep's tracker would appear on the report page.
+    // A failed report run leaves the report pane in tracker mode; a quick check
+    // then replaces the shared trace, and the pane's kind gate must exclude it.
     const pending = deferred<unknown>();
     tauri.invoke.mockImplementation(
       makeInvokeRouter({ run_portfolio_quick_check: () => pending.promise })
@@ -1348,8 +1223,8 @@ describe("App.vue portfolio wiring", () => {
     wrapper.findComponent(PortfolioView).vm.$emit("pull");
     await flushPromises();
 
-    // The failure is inline on the page, and the presence gate is re-read so a
-    // mid-session lapse re-locks the triggers without waiting for focus.
+    // Re-read so a mid-session lapse re-locks the triggers without waiting for
+    // focus.
     expect(wrapper.findComponent(PortfolioView).props("runError")).toContain(
       "not connected"
     );
@@ -1358,8 +1233,7 @@ describe("App.vue portfolio wiring", () => {
   });
 
   test("a stale portfolio read can't overwrite a fresher run result", async () => {
-    // The mount-time read (#1) is held open across a full run; when it finally
-    // resolves with pre-run (null) state, the epoch guard must discard it.
+    // The mount-time read (#1) is held open across a full run.
     const slow = deferred<typeof samplePortfolioRun | null>();
     let persisted: typeof samplePortfolioRun | null = null;
     let reads = 0;
@@ -1389,9 +1263,8 @@ describe("App.vue portfolio wiring", () => {
   });
 
   test("a successful pull settles the loading flag a superseded read left behind", async () => {
-    // Mount's read (#1) hangs; the pull's direct assignment supersedes it, so
-    // the discarded read's finally won't clear portfolioLoading — the pull
-    // path must settle it itself, and the stale resolution must change nothing.
+    // The superseded read's finally will not clear portfolioLoading, so the pull
+    // path must settle it itself.
     const slow = deferred<null>();
     let reads = 0;
     tauri.invoke.mockImplementation(
@@ -1441,8 +1314,7 @@ describe("App.vue portfolio wiring", () => {
 
   test("a degraded SearXNG preflight parks the run behind the notice; confirm launches it once", async () => {
     // The pre-run web-research notice (docs/interface.md §Pre-run web-research
-    // notice): a degraded probe holds the launch behind confirm-and-proceed —
-    // never a silent launch, never a block.
+    // notice).
     tauri.invoke.mockImplementation(
       makeInvokeRouter({
         test_searxng: () => ({
@@ -1460,16 +1332,13 @@ describe("App.vue portfolio wiring", () => {
 
     wrapper.findComponent(PortfolioView).vm.$emit("run", ["AAPL"]);
     await flushPromises();
-    // The run has NOT launched; the notice dialog (the second ConfirmDialog —
-    // the first is the import dialog) is open with the SearXNG-only degraded copy.
     expect(invokedCommands()).not.toContain("generate_portfolio_manual");
+    // The second ConfirmDialog; the first is the import dialog.
     const notice = wrapper.findAllComponents(ConfirmDialog)[1];
     expect(notice.props("open")).toBe(true);
     expect(notice.props("body")).toContain("SearXNG-only");
     expect(notice.props("detail")).toContain("HTTP 403");
 
-    // Confirm relaunches exactly the run that was asked for — the selection
-    // payload survives the detour.
     notice.vm.$emit("confirm");
     await flushPromises();
     expect(tauri.invoke).toHaveBeenCalledWith("generate_portfolio_manual", {
@@ -1498,8 +1367,6 @@ describe("App.vue portfolio wiring", () => {
     await flushPromises();
     const notice = wrapper.findAllComponents(ConfirmDialog)[1];
     expect(notice.props("open")).toBe(true);
-    // SearXNG-only, so a degraded run researches blind: the copy flags
-    // not-recommended per the docs' wording.
     expect(notice.props("body")).toContain("not recommended");
 
     notice.vm.$emit("cancel");
@@ -1532,8 +1399,7 @@ describe("App.vue portfolio wiring", () => {
       detail: "SearXNG rejected the JSON request (HTTP 403)",
       degraded: true,
     };
-    // Stateful settings: the saved endpoint changes when save-web-research
-    // lands, so the reload can tell "same endpoint" from "changed endpoint".
+    // Stateful, so the reload can tell a same-endpoint save from a changed one.
     let endpoint = "";
     tauri.invoke.mockImplementation(
       makeInvokeRouter({
@@ -1556,19 +1422,15 @@ describe("App.vue portfolio wiring", () => {
     wrapper.findComponent(PortfolioView).vm.$emit("run");
     await flushPromises();
 
-    // The job-launch probe is a connectivity check like a manual test — its
-    // result reaches the Settings indicator (docs/interface.md §Connection
-    // status: "a manual Test Connection or the connectivity check run when a
-    // job is launched"), and opening Settings (whose reload re-reads the SAME
-    // endpoint) must not discard it.
+    // The launch probe's result reaches the Settings indicator
+    // (docs/interface.md §Connection status), and a same-endpoint reload must
+    // not discard it.
     wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "settings");
     await flushPromises();
     expect(wrapper.findComponent(Settings).props("searxngStatus")).toEqual(
       preflight
     );
 
-    // Saving a DIFFERENT endpoint reloads settings, and the old endpoint's
-    // probe result must not render as the new endpoint's state.
     wrapper
       .findComponent(Settings)
       .vm.$emit("save-web-research", { searxng_endpoint: "http://127.0.0.1:9999" });
@@ -1578,10 +1440,8 @@ describe("App.vue portfolio wiring", () => {
   });
 
   test("a settings reload during the launch probe discards the raced result and re-probes", async () => {
-    // The concurrent-save race: while the launch probe is in flight, a
-    // settings reload (epoch bump) supersedes the saved config the probe
-    // described. The raced result must neither paint the indicator nor ground
-    // the consent decision — the launch re-probes the current config.
+    // A settings reload bumps the epoch, superseding the config the in-flight
+    // probe described.
     const stale = {
       status: "ok",
       detail: null,
@@ -1608,20 +1468,16 @@ describe("App.vue portfolio wiring", () => {
     await flushPromises();
     expect(resolvers.length).toBe(1);
 
-    // A settings reload lands while the probe is pending (any refresh bumps
-    // the epoch — here, opening Settings).
+    // Opening Settings reloads them, bumping the epoch while the probe is pending.
     wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "settings");
     await flushPromises();
 
-    // The raced probe resolves "ok" — but it described the pre-reload config:
-    // it must not paint the indicator, and the launch must re-probe.
     resolvers[0](stale);
     await flushPromises();
     expect(wrapper.findComponent(Settings).props("searxngStatus")).toBeNull();
     expect(resolvers.length).toBe(2);
     expect(invokedCommands()).not.toContain("generate_portfolio_manual");
 
-    // The fresh probe's degraded read grounds the consent notice.
     resolvers[1](fresh);
     await flushPromises();
     expect(wrapper.findComponent(Settings).props("searxngStatus")).toEqual(fresh);
@@ -1632,12 +1488,9 @@ describe("App.vue portfolio wiring", () => {
   });
 
   test("a probe resolving while an endpoint save is mid-flight never grounds the launch", async () => {
-    // The remaining race arm: a save's invoke is still in flight (the backend
-    // is between endpoints), so ANY probe resolving in that window could
-    // describe either config. The save bumps the epoch at its START, and the
-    // launch loop also refuses acceptance while webResearchSaving holds — so
-    // the launch falls through to the degraded-unknown consent notice rather
-    // than silently launching on an ambiguous "ok".
+    // While a save's invoke is in flight the backend is between endpoints, so
+    // any probe resolving in that window could describe either config; the
+    // launch refuses acceptance while webResearchSaving holds.
     const ambiguous = {
       status: "ok",
       detail: null,
@@ -1661,7 +1514,6 @@ describe("App.vue portfolio wiring", () => {
     await flushPromises();
     expect(probeResolvers.length).toBe(1);
 
-    // Open Settings and start an endpoint save that stays in flight.
     wrapper.findComponent(RecentReportsSidebar).vm.$emit("navigate", "settings");
     await flushPromises();
     wrapper
@@ -1669,9 +1521,8 @@ describe("App.vue portfolio wiring", () => {
       .vm.$emit("save-web-research", { searxng_endpoint: "http://127.0.0.1:9999" });
     await flushPromises();
 
-    // Every probe resolving during the save is discarded — bounded retries,
-    // then the degraded-unknown consent notice. Nothing launches, and the
-    // ambiguous "ok" never paints the indicator.
+    // Bounded retries: every probe resolving during the save is discarded, then
+    // the degraded-unknown notice.
     for (let i = 0; i < 3; i++) {
       expect(probeResolvers.length).toBe(i + 1);
       probeResolvers[i](ambiguous);
@@ -1683,8 +1534,7 @@ describe("App.vue portfolio wiring", () => {
     expect(notice.props("open")).toBe(true);
     expect(notice.props("detail")).toContain("settings changed while probing");
 
-    // Even CONFIRMING the notice while the save is still in flight must not
-    // launch — the confirm path holds the same mid-save block as the probe.
+    // The confirm path holds the same mid-save block as the probe.
     notice.vm.$emit("confirm");
     await flushPromises();
     expect(invokedCommands()).not.toContain("generate_portfolio_manual");
@@ -1695,10 +1545,7 @@ describe("App.vue portfolio wiring", () => {
   });
 });
 
-// The data-import fork (docs/data-portability.md §Import flow): an inspected
-// archive either loads straight into an empty store or parks on the replace-all
-// ConfirmDialog, whose confirm is the only path to `import_data` with
-// `replace: true`. Wired through the real Settings emit and the real dialog.
+// (docs/data-portability.md §Import flow)
 describe("App.vue data-import fork", () => {
   const inspection = {
     path: "/tmp/market-signal-export-2026-07-05.zip",
@@ -1746,8 +1593,6 @@ describe("App.vue data-import fork", () => {
     wrapper.findComponent(Settings).vm.$emit("import-data", "pw");
     await flushPromises();
 
-    // Nothing destructive yet: the inspection parked on the open dialog, whose
-    // detail line describes the actual picked artifact.
     expect(invokedCommands()).not.toContain("import_data");
     const dialog = wrapper.findComponent(ConfirmDialog);
     expect(dialog.props("open")).toBe(true);
@@ -1758,8 +1603,6 @@ describe("App.vue data-import fork", () => {
     dialog.vm.$emit("confirm");
     await flushPromises();
 
-    // The confirmed commit carries the inspected path, the passphrase, and the
-    // explicit replace; the dialog closes and the store-reading surfaces refetch.
     expect(tauri.invoke).toHaveBeenCalledWith("import_data", {
       path: inspection.path,
       passphrase: "pw",

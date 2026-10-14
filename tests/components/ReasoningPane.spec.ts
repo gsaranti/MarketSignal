@@ -1,10 +1,5 @@
-// Component tests for ReasoningPane.vue — the bounded, self-scrolling reasoning
-// well shared by every reasoning stream the tracker shows. These pin its
-// rendering contract (caption + text), its scroll-group semantics (labeled,
-// keyboard-reachable), and the per-pane auto-follow rule: pinned to the newest
-// text while the reader sits at the bottom, left alone once they scroll up.
 // happy-dom computes no layout, so the follow tests stub the well's scroll
-// geometry on the element itself and assert what the component writes back.
+// geometry on the element and assert what the component writes back.
 
 import { test, expect } from "vitest";
 import { mount } from "@vue/test-utils";
@@ -17,8 +12,7 @@ function mountPane(text = "First thought.") {
   });
 }
 
-// Stub a fixed geometry on the well: a 600px-tall stream in a 200px-tall box,
-// with a plain settable scrollTop the component's writes land on.
+// A 600px-tall stream in a 200px-tall box, with a settable scrollTop.
 function stubGeometry(el: Element): { get top(): number } {
   let top = 0;
   Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 600 });
@@ -53,10 +47,9 @@ test("the well is a labeled, keyboard-reachable group rather than a landmark", (
 });
 
 test("a fresh mount with text already present starts at the tail", () => {
-  // The tracker remounts when the user returns to it mid-run, so the pane must
-  // not open on its first lines and jump on the next delta. The element does
-  // not exist before mount, so the geometry is stubbed on the prototype and
-  // restored afterwards.
+  // The tracker remounts mid-run, so the pane must not open on its first lines.
+  // The element does not exist before mount, so the geometry is stubbed on the
+  // prototype and restored afterwards.
   const proto = HTMLElement.prototype;
   const saved = {
     scrollHeight: Object.getOwnPropertyDescriptor(proto, "scrollHeight"),
