@@ -2,24 +2,25 @@
 
 ## Active task
 
-The shared engine's factor machinery — tasks 1 and 2 of 4 landed; task 3 next and unplanned.
+The shared engine's factor machinery — tasks 1–3 of 4 landed; task 4 next and unplanned.
 
 ## What happened
 
-Task 2, Portfolio's letter inheriting the factor scores, landed (`bd1e6c5`, pushed).
-A stock's quality, valuation, risk and momentum sub-scores are now the factor composite's axes under the profile's sector and a metric class (general, bank, other financial, equity REIT), banks and REITs reading their own anchor rows.
-The cutoffs moved to 70 / 60 / 45 / 35 on both branches; the stamps are `grade-v3`, `evidence-floor-v6`, `portfolio-v77`, `checkpoint-v26` and archive 23.
-The audit persists the whole composite and the verdict a grade basis, both required keys through the new `required_option` deserializer (the user's ruling: an absent key fails the decode, `null` reads none).
-SCORES lists each score's factors, the card's engine detail shows a basis line, and the ignored harness replays persisted composites (the sweep shifting anchors as well as widths).
-The Metis reviewer rejected once (the sweep had no anchor knob), then approved with nits; Codex's overflow P2 was fixed and its required-key P2 ruled.
-Every ruling is in the commit message.
+Task 3, the Trade Opportunities–side reads, landed (`c64eb48`, pushed).
+The tradability flag bands Amihud illiquidity and FINRA's days-to-cover into the haircut; the price-action confirmer reads 12−1 relative strength against `^GSPC` and the sector SPDR and a three-year-pivot breakout.
+The TO narrative read trips `hype` above a 70% log share of a positive move, crosses Portfolio's split bridge on the anchor print's stored close, and falls back to an as-filed P/S split guarded by share-count continuity.
+The driver ladder's `DriverRung` gives the commodity cyclical mid-cycle EPS on a five-year median net margin; new fetchers keep EOD volume and annual income.
+Nothing calls the reads yet, Portfolio is unchanged, and no stamp moved.
+The Metis reviewer approved with nits (N1–N11 ruled); Codex's three P2s and its round-2 P2 were fixed; every ruling is in the commit message.
+`f3c7fc9` points §Step 5c's haircut at its canonical rows.
 
 ## Current state
 
-The factor-machinery item stays under To build; tasks 1 and 2 of 4 are done.
-Task 3: the Trade Opportunities–side reads — the price-action confirmer, the tradability flag with its banded haircut (EOD volume kept, the Amihud and days-to-cover bands drafted), the 70% narrative trip, and the archetype driver overrides (a driver-ladder hook, mid-cycle EPS).
+The factor-machinery item stays under To build; tasks 1–3 of 4 are done.
 Task 4: the factor-distribution store — one current observation per issuer per factor, the 24-month age-out and 20-issuer floor, Portfolio's engine pass contributing fail-soft from `job::run_analysis`, the portability archive at the next format; its INDEX row lands with it.
 "Runway years" (the TO horizon rule's input) stays undefined; the TO spine item drafts it.
+For the TO spine, from task 3: fetch a candidate's deep history once through `fetch_dated_bars` and derive its closes from the bars; FMP's light-EOD volume and its five annual income rows stay live-unverified until the spine's dev run.
+`trade-opportunities-workflow.md §Step 5h` restates the entry gate's legs (the haircut points among them) beside the entry asymmetry row — a later docs pass.
 The dev-run batch (every Portfolio item's dev run) and the big run are the user's call; the drafted cutoffs and the drafted anchors (the market-wide bands, GP/A, D/E, volatility, FFO over assets) are shadow-tuned after it through `sweep_grade_bands`.
 The prompt review can resume at file 18 (the review examples are 18–20, the thesis, appendix, role/risk and action files 21–30); the stamp is `portfolio-v77`, the next `portfolio-v78`.
 Task 2's findings for later: the Real Estate row still averages REITs with real-estate operators though REITs read their own row; METRICS still renders P/E, P/S and P/B beside the factor lines (prompt-review material); the thin-history flag counts the growth and investment factors outside the letter.
@@ -40,5 +41,5 @@ None.
 
 ## Where to start
 
-`/metis-session-start`, then `/metis-plan-task` for the factor machinery's task 3, the Trade Opportunities–side reads: read the matching rows of `trade-opportunities.md §Starting parameters`, `trade-opportunities-workflow.md §Step 5c` and `portfolio/factors.rs`, then put every flag and assumption through the selector.
+`/metis-session-start`, then `/metis-plan-task` for the factor machinery's task 4, the factor-distribution store: read `storage.md §Local Analysis Suite Storage`, the store's sentences in `trade-opportunities-workflow.md §Step 5c` and `data-portability.md`, then put every flag and assumption through the selector.
 Never propose the run.
