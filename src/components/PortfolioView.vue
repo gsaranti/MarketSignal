@@ -23,21 +23,15 @@ import type {
 } from "../types";
 
 // The Portfolio page (docs/portfolio-analysis.md §Storage and display,
-// docs/interface.md). Analytical register throughout — mono/tabular numerics,
-// tracked-caps heads, hairlines, the desaturated directional + grade palette —
-// per the design package's Portfolio.jsx fidelity reference. Presentational:
-// props in, events out; App.vue owns every invoke.
+// docs/interface.md), per the design package's Portfolio.jsx fidelity
+// reference. Presentational: props in, events out; App.vue owns every invoke.
 const props = defineProps<{
-  // The latest persisted analysis run (null before the first run).
   run: PortfolioRun | null;
-  // The latest standalone Pull-holdings snapshot (null before the first pull).
-  // View-only — never merged into the run-anchored verdict cards.
+  // The standalone pull is view-only, never merged into the verdict cards.
   pull: HoldingsPull | null;
-  // Reading the persisted state (initial fetch / on-entry refresh).
   loading: boolean;
   loadError: string | null;
-  // An inline run-gate block or run/pull failure — ephemeral, never a
-  // persistent warning (docs/interface.md §Connection status).
+  // Ephemeral, never a persistent warning (docs/interface.md §Connection status).
   runError: string | null;
   // Presence-gate locks (docs/interface.md §Persistent Warning Area): Run
   // needs the whole local gate; the view-only Pull needs only Schwab.
@@ -45,37 +39,29 @@ const props = defineProps<{
   runBlockedReason: string | null;
   pullBlocked: boolean;
   pullBlockedReason: string | null;
-  // A workflow holds the single global run slot (report / portfolio / connect /
-  // pull) — both triggers disable while anything runs.
+  // Any workflow holds the single global run slot.
   busy: boolean;
   running: boolean;
   pulling: boolean;
-  // Viewing a persisted past run from the sidebar's runs history — read-only
-  // (docs/interface.md §Main Layout): the triggers lock, the current-holdings
-  // comparison (keyed to the latest vintage) hides, and a banner names the
-  // vintage with a way back. Optional so the latest-run mounting stays the
-  // default.
+  // Viewing a past run, read-only (docs/interface.md §Main Layout).
   historical?: boolean;
-  // A past-run OPEN failure — its own channel so it never renders under the
-  // "Couldn't run" label; App clears it on the next selection / back-to-latest.
+  // Its own channel so a past-run open failure never renders under the
+  // "Couldn't run" label.
   historyError?: string | null;
-  // The latest quick-check state (docs/portfolio-analysis.md §The quick check)
-  // — the card overlay's source: attention flags, evidence-event badges,
-  // degraded-sweep notes. Null when no quick check has run since the last full
-  // pass; applied only while it swept the rendered (latest) run.
+  // docs/portfolio-analysis.md §The quick check; overlaid only while it swept
+  // the rendered run.
   quick?: QuickCheckState | null;
   quickChecking?: boolean;
-  // The history holds a row that couldn't be decoded (it would otherwise BE the
-  // latest view) — the page must say unreadable, never never-ran.
+  // The history holds a row that couldn't be decoded: the page must say
+  // unreadable, never never-ran.
   unreadableHistory?: boolean;
-  // The runs-history listing itself failed to load: with `run` null the page
-  // cannot tell a never-ran store from one whose listing errored, so the
-  // empty state must not claim either.
+  // The listing failed: with `run` null the page cannot tell a never-ran store
+  // from one whose listing errored, so the empty state must claim neither.
   historyUnknown?: boolean;
 }>();
 
 const emit = defineEmits<{
-  // With a payload, the run is a selective re-analysis over those symbols
+  // With a payload, a selective re-analysis over those symbols
   // (docs/portfolio-analysis.md §Triggering); without one, the whole book.
   (e: "run", selected?: string[]): void;
   (e: "pull"): void;
@@ -95,22 +81,18 @@ const pullDisabled = computed(
 );
 
 // ---- Selective re-analysis selection (docs/portfolio-analysis.md §Triggering)
-// Per-card selection driving the selective run — view-local UI state, never
-// persisted, reset when the rendered run changes (a new run is a new selection
-// context). Design-package note: the analytical register defines no selection
-// control, so this extends it minimally — a hairline 2px-radius box beside the
-// ticker (checked = accent fill, the actionable state), the register's shared
-// focus-visible ring — recorded as an extension, not silently invented.
+// View-local, never persisted, reset when the rendered run changes.
+// Design-package extension: the analytical register defines no selection
+// control; this adds a hairline 2px-radius box beside the ticker (checked =
+// accent fill) with the register's shared focus-visible ring.
 const selected = ref<Set<string>>(new Set());
 const selectionActive = computed(() => selected.value.size > 0);
 const selectionDisabled = computed(
   () => isHistorical.value || props.busy || props.run === null
 );
-// Holdings present in the book but absent from this run's verdicts — new /
-// unselected holdings a selective run left not analyzed since the 2026-08-16
-// badge ruling (docs/portfolio-analysis.md §Triggering). Derived from
-// holdings-minus-verdicts; rendered as placeholder "run to grade" cards,
-// selectable so the next selective run can grade them.
+// Holdings in the book but absent from this run's verdicts
+// (docs/portfolio-analysis.md §Triggering): rendered as selectable "run to
+// grade" placeholders.
 const notAnalyzed = computed<Position[]>(() => {
   const graded = new Set(
     (props.run?.verdicts ?? []).map((v) => v.symbol.toUpperCase())
@@ -119,10 +101,9 @@ const notAnalyzed = computed<Position[]>(() => {
     (p) => !graded.has(p.symbol.toUpperCase())
   );
 });
-// This run's isolated per-holding failures, keyed by uppercase symbol
-// (docs/portfolio-analysis.md §Failure posture). A symbol here renders a failed
-// badge; its carried prior verdict shows beside it when present, else its
-// placeholder renders as a debut-failure card rather than "run to grade".
+// This run's isolated per-holding failures (docs/portfolio-analysis.md
+// §Failure posture): a failed badge beside the carried prior verdict when one
+// exists, else a debut-failure placeholder rather than "run to grade".
 const failedBySymbol = computed<Map<string, HoldingFailure>>(() => {
   const m = new Map<string, HoldingFailure>();
   for (const f of props.run?.failed_holdings ?? []) {
@@ -133,8 +114,6 @@ const failedBySymbol = computed<Map<string, HoldingFailure>>(() => {
 function failureFor(symbol: string): HoldingFailure | null {
   return failedBySymbol.value.get(symbol.toUpperCase()) ?? null;
 }
-// The failed badge's tooltip: the concise cause, plus a note that the card shows
-// the last successful analysis when a prior verdict was carried.
 function failedBadgeTitle(symbol: string): string {
   const f = failureFor(symbol);
   if (!f) return "";
@@ -142,8 +121,6 @@ function failedBadgeTitle(symbol: string): string {
     ? `Analysis failed this run — ${f.cause}. Showing the last successful analysis; re-run this holding to refresh.`
     : `Analysis failed this run — ${f.cause}. Re-run this holding to analyze it.`;
 }
-// Every current holding a selective run can target — graded/carried verdicts
-// plus the not-analyzed holdings above.
 const selectableSymbols = computed<string[]>(() => [
   ...(props.run?.verdicts ?? []).map((v) => v.symbol.toUpperCase()),
   ...notAnalyzed.value.map((p) => p.symbol.toUpperCase()),
@@ -177,8 +154,6 @@ function onRun() {
   emit("run", selectionActive.value ? [...selected.value] : undefined);
 }
 
-// The disabled reason, surfaced as the button title so the lock is explicable
-// in place (the warning band carries the full items).
 const runTitle = computed(() => {
   if (isHistorical.value)
     return "Viewing a past analysis — go back to the latest run to run jobs";
@@ -198,9 +173,8 @@ const pullTitle = computed(() => {
   return "Fetch current positions without running the analysis";
 });
 
-// The quick check shares the run trigger's presence gate (it skips only the
-// daemon-connectivity probe, which the frontend lock never carried anyway —
-// docs/interface.md §Connection status) and needs a run to sweep.
+// The quick check shares the run trigger's presence gate (docs/interface.md
+// §Connection status) and needs a run to sweep.
 const quickDisabled = computed(
   () => runDisabled.value || props.run === null
 );
@@ -210,8 +184,8 @@ const quickTitle = computed(() => {
   if (props.runBlocked)
     return props.runBlockedReason ?? "Local-suite configuration is incomplete";
   if (props.busy) return "Another job is running";
-  // A corrupt-only history: a run exists but no readable run does — never
-  // "run first", which claims nothing ever ran (audit L3).
+  // A corrupt-only history must never read "run first", which claims nothing
+  // ever ran.
   if (props.run === null && props.unreadableHistory)
     return "The latest run couldn't be read — run a fresh analysis before checking it";
   if (props.run === null) return "Run an analysis first — there are no engine reads to check yet";
@@ -219,8 +193,7 @@ const quickTitle = computed(() => {
 });
 
 // ---- Quick-check card overlay -------------------------------------------------
-// Applied only on the latest live view: the flags describe the latest vintage,
-// and only a state swept against the rendered run is honest to overlay.
+// Only a state swept against the rendered run is honest to overlay.
 const quickOverlayActive = computed(
   () =>
     !isHistorical.value &&
@@ -237,8 +210,7 @@ const quickBySymbol = computed(() => {
 function quickFor(symbol: string): HoldingQuickState | null {
   return quickBySymbol.value.get(symbol.toUpperCase()) ?? null;
 }
-// The side-reversal badge title — the carried thesis is for the opposite
-// position (docs/portfolio-analysis.md §Triggering).
+// The side-reversal badge (docs/portfolio-analysis.md §Triggering).
 const SIDE_REVERSED_TITLE =
   "This position's net side flipped since this verdict was written — the carried thesis is for the opposite position; re-run to refresh";
 const FLAG_LABELS: Record<FlagTrigger, string> = {
@@ -252,8 +224,8 @@ function flagTitle(h: HoldingQuickState): string {
   const flag = h.flag!;
   return `${flag.detail} — raised ${fmtStamp(flag.raised_at)}; a full or selective analysis over this holding clears it`;
 }
-// The quiet evidence-event badge: the count carries in the text, the details in
-// the title (never the amber action color — docs/interface.md).
+// The count carries in the text, the details in the title; never the amber
+// action color (docs/interface.md).
 function eventBadge(h: HoldingQuickState): { text: string; title: string } | null {
   if (h.evidence_events.length === 0) return null;
   const n = h.evidence_events.length;
@@ -262,7 +234,6 @@ function eventBadge(h: HoldingQuickState): { text: string; title: string } | nul
     title: h.evidence_events.map((e) => e.detail).join(" · "),
   };
 }
-// The degraded-sweep note: names the families the sweep couldn't check.
 function degradedBadge(h: HoldingQuickState): { text: string; title: string } | null {
   const unknown = h.families.filter((f) => f.state === "unknown");
   if (unknown.length === 0) return null;
@@ -278,15 +249,13 @@ function degradedBadge(h: HoldingQuickState): { text: string; title: string } | 
 
 // ---- Analysis-vintage stamp (docs/portfolio-analysis.md §Triggering) ---------
 // A verdict whose analyzed_at is older than the run's created_at was not
-// re-analyzed by that run — a selective run's carry, or an abstention holding
-// its prior vintage — the stamp the card shows. Over-age mirrors the engine's
-// 28-day carry boundary exactly: whole ET session days, date-diffed (job.rs
-// OVER_AGE_DAYS + market_clock::et_date_of — recalibrate both together; a
-// fractional-ms age disagreed with the engine around the boundary); quiet
-// informational tags, never the amber action color. A vintage the ET dating
-// cannot read is stale too — the engine's conservative resolution (an
-// unparseable `analyzed_at` reads over-age) — but the raw stamp never renders
-// (localDate would print NaN-NaN-NaN).
+// re-analyzed by that run. Over-age mirrors the engine's 28-day carry boundary
+// exactly: whole ET session days, date-diffed (job.rs OVER_AGE_DAYS +
+// market_clock::et_date_of; recalibrate both together, since a fractional-ms
+// age disagreed with the engine around the boundary). An unreadable vintage
+// reads over-age like the engine, but its raw stamp never renders (localDate
+// would print NaN-NaN-NaN). Quiet informational tags, never the amber action
+// color.
 const OVER_AGE_DAYS = 28;
 function carriedStamp(
   v: HoldingVerdict
@@ -338,20 +307,19 @@ function fmtMoney(v: number): string {
 }
 function fmtPct(fraction: number, digits = 1): string {
   const s = (fraction * 100).toFixed(digits);
-  // A value that rounds to zero must not keep its sign — toFixed renders
-  // −0.0004 as "-0.0", a signed-zero artifact.
+  // toFixed renders −0.0004 as "-0.0"; a value that rounds to zero must not
+  // keep its sign.
   return `${Number(s) === 0 ? (0).toFixed(digits) : s}%`;
 }
 function fmtSigned(v: number): string {
-  // Sign keyed on the rendered (cent-rounded) value, so a sub-cent negative
-  // can't render "−$0.00" (and −0 normalizes to 0).
+  // Sign keyed on the cent-rounded value so a sub-cent negative can't render
+  // "−$0.00".
   const cents = Math.round(v * 100) / 100;
   const shown = cents === 0 ? 0 : cents;
   return `${shown > 0 ? "+" : ""}${fmtMoney(shown)}`;
 }
 function fmtSignedPct(fraction: number): string {
-  // "+" keyed on the rendered percent, not the raw fraction — +0.0004 rounds
-  // to "0.0%" and must not read "+0.0%".
+  // "+" keyed on the rendered percent: +0.0004 must not read "+0.0%".
   const s = fmtPct(fraction);
   return Number.parseFloat(s) > 0 ? `+${s}` : s;
 }
@@ -377,8 +345,8 @@ function weightOf(pos: Position | null): number | null {
   return pos.market_value / total;
 }
 
-// The card header's position facts, each falling to "—" when the pull left
-// the input unreported (cash rows carry no cost basis; some vehicles no price).
+// Null when the pull left the input unreported (cash rows carry no cost basis;
+// some vehicles no price).
 function priceOf(pos: Position | null): number | null {
   return pos?.current_price ?? null;
 }
@@ -386,8 +354,8 @@ function costBasisOf(pos: Position | null): number | null {
   if (!pos || pos.cost_basis <= 0 || multiplierUnverified(pos)) return null;
   return pos.cost_basis;
 }
-// The across-orders average cost per share — the netted book-level cost total
-// over the netted quantity, never a share-weighted average of source rows.
+// The netted book-level cost total over the netted quantity, never a
+// share-weighted average of source rows.
 function avgCostOf(pos: Position | null): number | null {
   if (!pos || pos.cost_basis <= 0 || pos.quantity <= 0 || multiplierUnverified(pos)) {
     return null;
@@ -395,18 +363,12 @@ function avgCostOf(pos: Position | null): number | null {
   return pos.cost_basis / pos.quantity;
 }
 
-// Unrealized P/L from the two Schwab-reported totals. A position with no
-// reported cost basis (cash, typically — arrives as 0) has an undefined gain;
-// a NEGATIVE netted basis (a net-short book, where the short side's proceeds
-// offset the basis) keeps its dollar gain — the signed totals hold
-// market value − cost basis equal to the book's aggregate unrealized P/L
-// (docs/portfolio-analysis.md §Storage and display). Zero stays undefined:
-// on the wire it is indistinguishable from "no basis reported".
-// Option and fixed-income rows render NO gain: Schwab's `averagePrice` carries
-// a contract/par multiplier convention the parse doesn't apply (an option's
-// basis would be understated ~100×, a bond's overstated ~1000×), so the
-// derived number is withheld rather than fabricated until the wire convention
-// is probed (piece-3 walk, 2026-08-05; big-run probe listed in the record).
+// A cost basis of 0 means "no basis reported" on the wire, so the gain is
+// undefined; a NEGATIVE netted basis (a net-short book) keeps its dollar gain
+// (docs/portfolio-analysis.md §Storage and display). Option and fixed-income
+// rows render NO gain: Schwab's `averagePrice` carries a contract/par
+// multiplier the parse doesn't apply, so the derived number is withheld rather
+// than fabricated.
 function multiplierUnverified(pos: Position): boolean {
   return (
     pos.asset_class === "option-contract" || pos.asset_class === "fixed-income"
@@ -424,9 +386,8 @@ function dirOf(v: number | null): "up" | "down" | "flat" {
   if (v === null || v === 0) return "flat";
   return v > 0 ? "up" : "down";
 }
-// Direction keyed on the RENDERED value, not the raw one: a fraction whose text
-// rounds to "0.0%" (or a dollar gain to "$0.00") must not carry a red/green
-// treatment its own number no longer shows.
+// Direction keyed on the RENDERED value: a number whose text rounds to zero
+// must not carry a red/green treatment.
 function pctDir(fraction: number | null): "up" | "down" | "flat" {
   return dirOf(fraction === null ? null : Math.round(fraction * 1000) / 1000);
 }
@@ -435,8 +396,8 @@ function moneyDir(v: number | null): "up" | "down" | "flat" {
 }
 
 // ---- Fresher-pull comparison (presence-only churn tags) -----------------------
-// Display-time, symbol-presence only: the quantity-move classification stays the
-// run-time engine diff's job (docs/portfolio-analysis.md §Storage and display).
+// Symbol presence only: the quantity-move classification stays the engine
+// diff's job (docs/portfolio-analysis.md §Storage and display).
 
 const pullIsFresher = computed(() => {
   if (!props.pull) return false;
@@ -444,9 +405,8 @@ const pullIsFresher = computed(() => {
   return Date.parse(props.pull.pulled_at) > Date.parse(props.run.created_at);
 });
 
-// The current-holdings section shows only when the pull is the fresher vintage
-// (before any run it IS the page body) — and never on a historical view, whose
-// run is not the vintage the pull compares against.
+// Never on a historical view: its run is not the vintage the pull compares
+// against.
 const showCurrentHoldings = computed(
   () => !isHistorical.value && props.pull !== null && pullIsFresher.value
 );
@@ -461,8 +421,8 @@ function newSinceAnalysis(symbol: string): boolean {
   return props.run !== null && !runPositions.value.has(symbol);
 }
 function noLongerHeld(symbol: string): boolean {
-  // Suppressed on a historical view: the tag compares the latest pull against
-  // the *latest* run's vintage, a pairing a past run doesn't participate in.
+  // Suppressed on a historical view: the tag pairs the latest pull with the
+  // *latest* run.
   return (
     !isHistorical.value &&
     props.run !== null &&
@@ -472,10 +432,8 @@ function noLongerHeld(symbol: string): boolean {
 }
 
 // ---- Holdings sort bar ---------------------------------------------------------
-// Four deterministic, position-level keys off the Schwab-reported market value /
-// cost basis (docs/portfolio-analysis.md §Storage and display). Display-only:
-// reorders the already-computed cards, touches nothing else. The last-used key
-// persists in localStorage (pure presentation, like the appearance preference).
+// docs/portfolio-analysis.md §Storage and display. Display-only; the last-used
+// key persists in localStorage.
 
 type SortKey = "value" | "gain" | "gain-pct" | "cost";
 interface SortState {
@@ -524,9 +482,7 @@ function pickSort(key: SortKey) {
   }
 }
 
-// The sort metric for one card's position, or null when undefined for the key
-// (no reported cost basis) — nulls sort last under every direction, per the
-// docs.
+// Null (no reported cost basis) sorts last under every direction.
 function sortMetric(pos: Position | null, key: SortKey): number | null {
   if (!pos) return null;
   switch (key) {
@@ -537,17 +493,14 @@ function sortMetric(pos: Position | null, key: SortKey): number | null {
     case "gain-pct":
       return gainPctOf(pos);
     case "cost":
-      // Suppression-aware: an option/bond row's fabricated basis must not rank
-      // either (null sorts last, like the hidden render).
+      // Suppression-aware: an option/bond row's unverified basis must not rank
+      // either.
       return costBasisOf(pos);
   }
 }
 
-// One entry of the card stack: a verdict card (`v`) or a not-analyzed
-// placeholder (`p`) — exactly one is set. The template destructures both
-// names so each card's markup keeps its own loop variable; `pos` is the
-// position the sort keys read (a verdict's book position, or the placeholder's
-// own).
+// Exactly one of `v` (a verdict card) / `p` (a not-analyzed placeholder) is
+// set; `pos` is what the sort keys read.
 interface StackCard {
   key: string;
   symbol: string;
@@ -556,11 +509,8 @@ interface StackCard {
   p: Position | null;
 }
 
-// The card stack: every verdict (graded, not-rated, insufficient) AND every
-// not-analyzed placeholder, one stack reordered in place on the same
-// position-level keys (docs/interface.md §Main Layout — the bar reorders the
-// holding cards in place, placeholders included); exited positions live only
-// in the roll-up. Stable sort with an alphabetical ticker tie-break.
+// Verdicts and placeholders in one stack (docs/interface.md §Main Layout);
+// exited positions live only in the roll-up. Alphabetical ticker tie-break.
 const sortedCards = computed<StackCard[]>(() => {
   const cards: StackCard[] = [
     ...(props.run?.verdicts ?? []).map((v) => ({
@@ -597,12 +547,9 @@ function sortButtonName(key: SortKey, label: string): string {
 }
 
 // ---- Current-holdings table sorting ----------------------------------------------
-// Column sorting for the pull table, through its grid heads proper (aria-sort —
-// the pattern the card sort bar deliberately reserves for tables). Display-only,
-// like the card sort: reorders the pulled rows in place, touches nothing else.
-// Default is the account's as-pulled order; a position missing a key's value
-// (no reported cost basis or price — rendered "—") sorts last under that key
-// in either direction.
+// Through the grid heads proper (aria-sort, the pattern the card sort bar
+// reserves for tables). Default is the as-pulled order; a position missing a
+// key's value sorts last in either direction.
 
 type PullSortKey = "symbol" | "qty" | "price" | "value" | "cost" | "gain-pct";
 interface PullSortState {
@@ -721,12 +668,10 @@ const CLASS_LABELS: Record<string, string> = {
   cash: "Cash",
   other: "Unsupported",
 };
-// The closed-end price-vs-NAV display: label by the rendered tenth of a
-// percent, so a value that displays as 0.0% reads "at par" — never a
-// signed-zero "+0.0% premium" or "-0.0% discount" (mirrors the backend's
-// shared prompt line). Rounding is half-away-from-zero to match Rust's
-// f64::round — bare Math.round takes negative halves toward +∞, splitting
-// the two labels at exactly -0.05%.
+// Label by the rendered tenth of a percent, so 0.0% reads "at par", never a
+// signed-zero premium or discount. Half-away-from-zero to match Rust's
+// f64::round: bare Math.round takes negative halves toward +∞, splitting the
+// labels at exactly -0.05%.
 function roundedNavPremium(p: number): number {
   return (Math.sign(p) * Math.round(Math.abs(p) * 1000)) / 1000;
 }
@@ -745,9 +690,8 @@ function navPremiumWord(p: number | null): string {
 function classLabel(v: HoldingVerdict): string {
   const base = CLASS_LABELS[v.asset_class] ?? v.asset_class;
   if (v.disposition.status === "priced") {
-    // A priced fund shows its deterministic strategy classification (e.g. "US
-    // equity fund" — docs/portfolio-analysis.md §Asset eligibility); null for a
-    // stock.
+    // A priced fund shows its strategy classification
+    // (docs/portfolio-analysis.md §Asset eligibility); null for a stock.
     if (v.disposition.fund_class_label)
       return `${v.disposition.fund_class_label} · reduced verdict`;
     return `${base} · ${v.asset_class === "stock" ? "full verdict" : "reduced verdict"}`;
@@ -773,8 +717,8 @@ const CONVICTION_LEVEL: Record<PortfolioConviction, number> = {
   high: 3,
 };
 
-// The engine line's tier and hurdle words. Only `fails` is dead money
-// (docs/portfolio-analysis.md §The holding verdict); the word carries it.
+// Only `fails` is dead money (docs/portfolio-analysis.md §The holding
+// verdict); the word carries it.
 const TIER_LABELS: Record<RiskTier, string> = {
   low: "Low",
   medium: "Medium",
@@ -793,29 +737,24 @@ const CHANGE_LABELS: Record<string, string> = {
   decreased: "Decreased",
   unchanged: "Unchanged",
 };
-// The basis read beside an increase (docs/portfolio-analysis.md §Holdings
-// change tracking): which way the average cost per share moved.
+// docs/portfolio-analysis.md §Holdings change tracking.
 const BASIS_LABELS: Record<BasisDirection, string> = {
   "paid-up": "Paid up",
   "averaged-down": "Averaged down",
 };
 
-// The three grade inputs, in tile order. Momentum is deliberately not here:
-// it is the market-setup read in the conviction context, outside the letter
-// (docs/portfolio-analysis.md §Starting parameters), so its tile renders set
-// apart behind a divider. The kit's SubScores still shows it undifferentiated —
-// a recorded deviation (B10 ruling, 2026-08-05), not drift to revert.
+// Momentum is deliberately absent: it is the market-setup read outside the
+// letter (docs/portfolio-analysis.md §Starting parameters), so its tile renders
+// apart behind a divider — a recorded deviation from the kit's SubScores, not
+// drift to revert.
 const LETTER_SUBSCORES = ["quality", "valuation", "risk"] as const;
 
-// Always-visible beneath the tile row — the outside-the-letter explanation
-// must not be hover-only (Codex P2, ruled 2026-08-05): one copy source serves
-// pointer, keyboard, low-vision, and screen-reader users alike.
+// Always visible beneath the tile row, never hover-only.
 const SETUP_NOTE = "Setup — market-setup read, outside the letter";
 
-// The basis line under the Sub-scores kicker: which metrics a stock's letter
-// read and the anchors its banded factors stood on, then the thin-history note
-// where most factors scored on their bands alone — words, never color alone.
-// A bank or a REIT reads its class's own anchors, so its class names both.
+// The basis line: which metrics the letter read and the anchors its banded
+// factors stood on. A bank or a REIT reads its class's own anchors, so its
+// class names both.
 const CLASS_METRICS: Record<GradeBasis["class"], string | null> = {
   general: null,
   bank: "Bank metrics",
@@ -840,20 +779,16 @@ function gradeBasisLine(basis: GradeBasis): string {
 }
 
 // ---- The typed strip and the engine line ------------------------------------
-// The strip carries the thesis document's typed appendix — the conviction and
-// the expected price at each horizon, each null where the document stated
-// none, rendered as "none" — and the holding's accuracy scores beside them;
-// the engine line beneath it carries the engine's three bands in the same
-// horizon order, a never-authored band as a dash.
+// The strip carries the thesis appendix (null = the document stated none,
+// rendered "none") and the accuracy scores; the engine line beneath carries
+// the engine's bands in the same horizon order.
 
 function convictionLevel(c: PortfolioConviction | null): number {
   return c === null ? 0 : CONVICTION_LEVEL[c];
 }
 
-// Each stated price carries its horizon date: the verdict's analysis vintage
-// (its ET session) plus three, twelve or thirty-six calendar months
-// (docs/portfolio-analysis.md §Storage and display; the calendar-month rule
-// in etDate.ts mirrors market_clock's).
+// Horizon date = the verdict's analysis vintage (its ET session) plus 3, 12 or
+// 36 calendar months (docs/portfolio-analysis.md §Storage and display).
 function expectedPrices(
   v: HoldingVerdict,
   a: ThesisAppendix
@@ -867,10 +802,9 @@ function expectedPrices(
   ];
 }
 
-// The holding's accuracy scores at each horizon, per arm (docs/portfolio-analysis.md
-// §Outcome learning): the mean per-check score, 0–100, read as a whole number;
-// `null` is "no score yet". `arms` is `null` when this run could not read the
-// episode store — the scores are unavailable, its data-health line names why.
+// Per arm (docs/portfolio-analysis.md §Outcome learning): the mean per-check
+// score, 0–100; `null` is "no score yet". `arms` is `null` when this run could
+// not read the episode store.
 type AccuracyArm = { arm: "model" | "engine"; score: number | null };
 function accuracyRows(symbol: string): { label: string; arms: AccuracyArm[] | null }[] {
   const all = props.run?.accuracy.scores ?? null;
@@ -892,8 +826,7 @@ function accuracyRows(symbol: string): { label: string; arms: AccuracyArm[] | nu
   ];
 }
 
-// The engine's bands in horizon order with their line labels; null where the
-// engine never authored the horizon (the backend always emits all three).
+// Null where the engine never authored the horizon.
 function bands(t: PriceTargets): [string, PriceTarget | null][] {
   return [
     ["3-mo band", t.three_month],
@@ -906,7 +839,6 @@ function gradeClass(grade: string): string {
   return grade.toLowerCase();
 }
 
-// Whether a graded verdict's options signal carries anything to show.
 function hasOptionsSignal(v: {
   put_call_volume: number | null;
   put_call_open_interest: number | null;
@@ -921,9 +853,8 @@ function hasOptionsSignal(v: {
   );
 }
 
-// Per-card engine-detail disclosure — the engine's reads beyond the compact
-// line (the kit's Reveal, inline rather than a popover so it never overlaps
-// neighboring cards). Keyed per symbol.
+// The kit's Reveal, inline rather than a popover so it never overlaps
+// neighboring cards.
 const openDetail = ref<Set<string>>(new Set());
 function toggleDetail(symbol: string) {
   const next = new Set(openDetail.value);
@@ -933,17 +864,14 @@ function toggleDetail(symbol: string) {
 }
 
 // ---- The thesis-document body (the kit's ThesisAnchor overflow contract) ---------
-// A long model-authored document clamps to twelve lines with an accessible
-// reveal, shown only when the text actually overflows (market-signal-design-
-// system ui_kits Portfolio.jsx, the clamp deepened to roughly the strip's
-// height). Keyed per symbol, like the Engine detail disclosure; the abstained
-// card's retained prior document rides the same machinery.
+// Clamps to twelve lines with an accessible reveal shown only when the text
+// actually overflows (ui_kits Portfolio.jsx, the clamp deepened to roughly the
+// strip's height).
 
 const openThesis = ref<Set<string>>(new Set());
 const thesisOverflow = ref<Set<string>>(new Set());
 const thesisEls = new Map<string, HTMLElement>();
-// Re-measure on card-width changes so the toggle tracks real overflow; absent
-// ResizeObserver (older webviews), the mount/update measurement stands alone.
+// Absent ResizeObserver, the mount/update measurement stands alone.
 const thesisObserver =
   typeof ResizeObserver !== "undefined"
     ? new ResizeObserver(() => {
@@ -951,8 +879,8 @@ const thesisObserver =
       })
     : null;
 function measureThesis(symbol: string, el: HTMLElement) {
-  // While expanded the paragraph never scrolls; the "Show less" control stays
-  // visible via the open set, so skip measuring (it would read no-overflow).
+  // Expanded, the paragraph would measure as no-overflow; the open set keeps
+  // the control visible instead.
   if (openThesis.value.has(symbol)) return;
   const overflows = el.scrollHeight - el.clientHeight > 2;
   if (overflows !== thesisOverflow.value.has(symbol)) {
@@ -962,8 +890,6 @@ function measureThesis(symbol: string, el: HTMLElement) {
     thesisOverflow.value = next;
   }
 }
-// A per-symbol function ref: registers the paragraph for measurement and
-// observation on mount/patch, unregisters on unmount.
 function thesisRef(symbol: string) {
   return (el: unknown) => {
     const prev = thesisEls.get(symbol);
@@ -1027,8 +953,8 @@ const keyFigures = computed(() => {
 
 <template>
   <section class="portfolio-pane" aria-label="Portfolio Analysis">
-    <!-- Toolbar: the surface eyebrow + the two independent triggers
-         (docs/portfolio-analysis.md §Triggering — never sequenced). -->
+    <!-- Independent triggers, never sequenced (docs/portfolio-analysis.md
+         §Triggering). -->
     <div class="toolbar">
       <span class="toolbar-label">Portfolio</span>
       <div class="toolbar-actions">
@@ -1068,9 +994,8 @@ const keyFigures = computed(() => {
       </div>
     </div>
 
-    <!-- Historical-view banner (docs/interface.md §Main Layout): a quiet
-         informational band, never the amber action treatment — viewing a past
-         run is a chosen state, not a problem. -->
+    <!-- docs/interface.md §Main Layout. Never the amber action treatment:
+         viewing a past run is a chosen state, not a problem. -->
     <div v-if="isHistorical && run" class="hist-banner" role="status">
       <span class="hist-banner-label">Past analysis</span>
       <span class="hist-banner-text">
@@ -1085,33 +1010,26 @@ const keyFigures = computed(() => {
       </button>
     </div>
 
-    <!-- Inline run-gate block / failure — ephemeral, never a persistent warning. -->
     <div v-if="runError" class="pane-error" role="alert">
       <span class="pane-error-label">Couldn't run</span>
       <span class="pane-error-detail">{{ runError }}</span>
     </div>
 
-    <!-- A past-run open failure — same ephemeral posture, its own label so it
-         never reads as a job failure. -->
     <div v-if="historyError" class="pane-error" role="alert">
       <span class="pane-error-label">Couldn't open the run</span>
       <span class="pane-error-detail">{{ historyError }}</span>
     </div>
 
     <div class="pane-scroll">
-      <!-- Initial load -->
       <p v-if="loading && !run && !pull" class="pane-quiet" aria-live="polite">
         Loading portfolio…
       </p>
 
-      <!-- Persisted-state read failure (with nothing cached to show) -->
       <div v-else-if="loadError && !run && !pull" class="pane-quiet" role="alert">
         <span class="pane-error-label">Couldn't load the portfolio</span>
         <span class="pane-error-detail">{{ loadError }}</span>
       </div>
 
-      <!-- The listing failed with nothing else to show: whether a prior
-           analysis exists can't be told from here, so claim neither. -->
       <div v-else-if="!run && !pull && historyUnknown" class="empty-state">
         <h2 class="empty-title">Portfolio state unavailable.</h2>
         <p class="empty-body">
@@ -1121,8 +1039,6 @@ const keyFigures = computed(() => {
         </p>
       </div>
 
-      <!-- A run exists in the history but couldn't be decoded: unreadable, not
-           never-ran. -->
       <div v-else-if="!run && !pull && unreadableHistory" class="empty-state">
         <h2 class="empty-title">A prior run couldn't be read.</h2>
         <p class="empty-body">
@@ -1133,7 +1049,6 @@ const keyFigures = computed(() => {
         </p>
       </div>
 
-      <!-- Empty: no pull, no run -->
       <div v-else-if="!run && !pull" class="empty-state">
         <h2 class="empty-title">No holdings yet.</h2>
         <p class="empty-body">
@@ -1145,10 +1060,9 @@ const keyFigures = computed(() => {
       </div>
 
       <template v-else>
-        <!-- Pulled with no latest run: the compact current-holdings view IS the
-             page body (docs/portfolio-analysis.md §Storage and display). The
-             subline is history-aware — a pull over an unreadable history must
-             not claim nothing was ever analyzed (Codex round). -->
+        <!-- docs/portfolio-analysis.md §Storage and display. The subline is
+             history-aware: a pull over an unreadable history must not claim
+             nothing was ever analyzed. -->
         <div v-if="!run && pull" class="pulled-only">
           <h2 class="empty-title">
             {{ pull.holdings.positions.length }}
@@ -1176,7 +1090,6 @@ const keyFigures = computed(() => {
           </p>
         </div>
 
-        <!-- Analyzed: strip → (fresher pull) → sort bar + cards → roll-up. -->
         <div v-if="run" class="keyfig strip" role="list">
           <div v-for="f in keyFigures" :key="f.label" class="kf" role="listitem">
             <div class="kf-label">{{ f.label }}</div>
@@ -1184,9 +1097,8 @@ const keyFigures = computed(() => {
           </div>
         </div>
 
-        <!-- Current holdings (the standalone pull), shown when it is the fresher
-             vintage — a stamped section ABOVE the run-anchored cards, never
-             merged into them. Presence-only churn tags. -->
+        <!-- A stamped section above the run-anchored cards, never merged into
+             them. -->
         <section
           v-if="showCurrentHoldings && pull"
           class="ana-card current-holdings"
@@ -1333,12 +1245,8 @@ const keyFigures = computed(() => {
         </section>
 
         <template v-if="run">
-          <!-- Stack controls: the sort bar beside the selection controls (the
-               row owns the shared spacing so the two don't each guess). -->
           <div class="stack-controls">
-            <!-- Sort bar: display-only card-stack reorder; aria-pressed toggles,
-                 never aria-sort (reserved for the grid heads). Shown once the
-                 stack has two cards to order — verdicts and placeholders alike. -->
+            <!-- aria-pressed toggles, never aria-sort (reserved for the grid heads). -->
             <div
               v-if="sortedCards.length > 1"
               class="ana-sortbar"
@@ -1358,9 +1266,7 @@ const keyFigures = computed(() => {
                 {{ k.label }}
               </button>
             </div>
-            <!-- Selection controls (docs/portfolio-analysis.md §Triggering):
-                 select-all / clear beside a live count; the per-card boxes
-                 drive the same set. Hidden on a read-only past run. -->
+            <!-- docs/portfolio-analysis.md §Triggering. -->
             <div
               v-if="!isHistorical"
               class="hc-selectbar"
@@ -1389,26 +1295,20 @@ const keyFigures = computed(() => {
             </div>
           </div>
 
-          <!-- The holding-card stack: one sorted stack of verdict cards and
-               not-analyzed placeholders (each entry sets exactly one of v / p;
-               the destructuring keeps each card's own loop variable). -->
           <div class="card-stack">
             <template v-for="{ key, v, p } in sortedCards" :key="key">
             <article
               v-if="v"
               class="ana-card holding-card"
             >
-              <!-- Isolated analysis failure with a carried prior verdict: a visible,
-                   accessible note above the (stale) card content — the cause and
-                   re-run guidance the badge's tooltip alone would hide from keyboard,
-                   touch, and screen-reader users. -->
+              <!-- A visible note: the badge's tooltip alone would hide the cause from
+                   keyboard, touch and screen-reader users. -->
               <p v-if="failureFor(v.symbol)" class="hc-fail-note" role="note">
                 <strong>Analysis failed this run</strong> — {{
                   failureFor(v.symbol)!.cause
                 }}. Showing the last successful analysis; select it and re-run to
                 refresh.
               </p>
-              <!-- Not-rated / insufficient-evidence: a legitimately reduced card. -->
               <div
                 v-if="
                   v.disposition.status === 'not-rated' ||
@@ -1478,11 +1378,9 @@ const keyFigures = computed(() => {
                     </template>
                   </div>
                   <p class="hc-reason">{{ v.disposition.reason }}</p>
-                  <!-- An abstention retains the holding's prior thesis
-                       document unrewritten (docs/portfolio-analysis.md
-                       §Evidence floor) — rendered beneath the reason under
-                       its own kicker, through the same clamp and reveal; a
-                       debut abstention has none and shows the reason alone. -->
+                  <!-- An abstention retains the prior thesis document unrewritten
+                       (docs/portfolio-analysis.md §Evidence floor); a debut
+                       abstention has none. -->
                   <div
                     v-if="
                       v.disposition.status === 'insufficient-evidence' &&
@@ -1519,24 +1417,11 @@ const keyFigures = computed(() => {
                 </div>
               </div>
 
-              <!-- Analyzed verdict — the union's two branches share one
-                   text-first card (docs/portfolio-analysis.md §Storage and
-                   display): the thesis document as the body, the typed strip
-                   beside it (the action with its rationale, then on the priced
-                   branch the conviction and the three expected prices; on the
-                   role_risk_only branch the role / risk reads), and on the
-                   priced branch one compact engine line beneath the strip —
-                   the grade with its low-confidence marker, the tier, the
-                   three bands and the hurdle state, each a computed read
-                   labeled as such. Two recorded design-package extensions
-                   (the kit's HoldingCard pairs a 1fr/1fr intrinsic-verdict /
-                   portfolio-action grid under a three-line thesis lead): the
-                   text-first body — document 3fr, strip 2fr, a twelve-line
-                   clamp — and the compact engine line, the key-figure strip's
-                   label / value vocabulary at card density. The engine's
-                   reads beyond the line (sub-scores, its own rung, the band
-                   methodology, the options signal) sit behind the Engine
-                   detail reveal. -->
+              <!-- docs/portfolio-analysis.md §Storage and display. Two recorded
+                   design-package extensions over the kit's HoldingCard: the
+                   text-first body (document 3fr, strip 2fr, a twelve-line clamp)
+                   and the compact engine line (the key-figure strip's label /
+                   value vocabulary at card density). -->
               <template v-else>
                 <header class="hc-head">
                   <div class="hc-id">
@@ -1585,9 +1470,8 @@ const keyFigures = computed(() => {
                           class="ana-tag"
                           >Structurally path-dependent</span
                         >
-                        <!-- The over-age rule-demotion is branch-unscoped
-                             (job.rs demotes role-risk adds too) — without the
-                             tag a demoted hold reads as the model's standing
+                        <!-- Branch-unscoped (job.rs demotes role-risk adds too);
+                             without the tag a demoted hold reads as the model's
                              choice. -->
                         <span v-if="demoted(v)" class="ana-tag" :title="DEMOTED_TITLE"
                           >Add demoted to hold</span
@@ -1621,10 +1505,6 @@ const keyFigures = computed(() => {
                       </div>
                     </div>
                   </div>
-                  <!-- The position block: the account facts the verdict is
-                       read against — price, the across-orders average cost,
-                       the netted cost basis, the unrealized figure on its
-                       base, and the position's weight in the book. -->
                   <dl class="hc-kv hc-position">
                     <dt class="hc-kicker">Price</dt>
                     <dd>
@@ -1678,13 +1558,8 @@ const keyFigures = computed(() => {
                 </header>
 
                 <div class="hc-body">
-                  <!-- The card's body: the thesis document as the model wrote
-                       it, rendered verbatim — never a separately authored
-                       summary (docs/portfolio-analysis.md §Storage and
-                       display). Long documents follow the kit's ThesisAnchor
-                       overflow contract — a line clamp (twelve lines here,
-                       roughly the strip's height) with a reveal shown only on
-                       overflow. -->
+                  <!-- The thesis document verbatim, never a separately authored
+                       summary (docs/portfolio-analysis.md §Storage and display). -->
                   <div class="hc-col hc-col-doc">
                     <div v-if="v.disposition.thesis_document" class="hc-thesis">
                       <span class="hc-kicker">Thesis document</span>
@@ -1707,9 +1582,7 @@ const keyFigures = computed(() => {
                     </div>
                   </div>
 
-                  <!-- The typed strip: the per-holding action call's decision
-                       — rung only, no sizing (the tunnel-vision contract) —
-                       with its rationale, then the branch's typed reads. -->
+                  <!-- Rung only, no sizing (the tunnel-vision contract). -->
                   <div class="hc-col hc-col-strip">
                     <span class="hc-kicker">Portfolio action</span>
                     <div class="hc-action">
@@ -1722,11 +1595,6 @@ const keyFigures = computed(() => {
                     </p>
 
                     <template v-if="v.disposition.status === 'priced'">
-                      <!-- The thesis document's typed appendix — the conviction
-                           and the expected price at each horizon, persisted
-                           exactly as transcribed; a null field renders as none —
-                           then the holding's accuracy scores, model and engine,
-                           at each horizon. -->
                       <dl class="hc-kv hc-strip-kv">
                         <dt>Conviction</dt>
                         <dd>
@@ -1786,10 +1654,7 @@ const keyFigures = computed(() => {
                         </template>
                       </dl>
 
-                      <!-- The compact engine line: the engine arm's reads,
-                           app-stamped and never echoed through the model —
-                           every row a computed read, labeled as such by the
-                           kicker. -->
+                      <!-- App-stamped engine reads, never echoed through the model. -->
                       <div class="hc-engine">
                         <span class="hc-kicker">Engine · computed</span>
                         <dl class="hc-kv">
@@ -1809,10 +1674,8 @@ const keyFigures = computed(() => {
                           </dd>
                           <dt>Tier</dt>
                           <dd>{{ TIER_LABELS[v.disposition.risk_tier] }}</dd>
-                          <!-- A band the engine never authored renders an em
-                               dash under its label — the position block's
-                               convention — so the three horizons always line
-                               up. -->
+                          <!-- An unauthored band renders an em dash so the three
+                               horizons always line up. -->
                           <template
                             v-for="[label, band] in bands(v.disposition.price_targets)"
                             :key="label"
@@ -1831,16 +1694,12 @@ const keyFigures = computed(() => {
                             </dd>
                           </template>
                           <dt>Hurdle</dt>
-                          <!-- Only `fails` is dead money; its word carries the
-                               meaning, the AA-safe oxblood text reinforces. -->
                           <dd
                             :class="{ 'hc-hurdle-fails': v.disposition.dead_money === 'fails' }"
                           >
                             {{ HURDLE_LABELS[v.disposition.dead_money] }}
                           </dd>
                         </dl>
-                        <!-- Engine detail: the reads beyond the compact line
-                             (a Reveal-style inline disclosure, not a popover). -->
                         <button
                           type="button"
                           class="hc-reveal"
@@ -1853,10 +1712,6 @@ const keyFigures = computed(() => {
                           Engine detail
                         </button>
                         <div v-if="openDetail.has(v.symbol)" class="hc-engine-detail">
-                          <!-- Letter inputs, then — set apart behind a hairline
-                               — the market-setup read (momentum), which is
-                               context for conviction and never a grade input
-                               (B10). -->
                           <span class="hc-kicker">Sub-scores</span>
                           <p
                             v-if="v.disposition.grade_basis"
@@ -1884,9 +1739,8 @@ const keyFigures = computed(() => {
                           </div>
                           <p class="hc-setup-note">{{ SETUP_NOTE }}</p>
                           <dl class="hc-kv">
-                            <!-- The engine's own rung — a computed read beside
-                                 the chosen action, never a recommendation;
-                                 the tag marks a departure. -->
+                            <!-- A computed read beside the chosen action, never a
+                                 recommendation; the tag marks a departure. -->
                             <dt>Engine action</dt>
                             <dd>
                               {{ ACTION_LABELS[v.disposition.engine_rung] }}
@@ -1946,8 +1800,6 @@ const keyFigures = computed(() => {
                               </template>
                             </template>
                           </dl>
-                          <!-- Every authored horizon exposes its methodology,
-                               three-month first to match the band order above. -->
                           <template v-if="bands(v.disposition.price_targets).some(([, b]) => b)">
                             <span class="hc-kicker">Band methodology</span>
                             <template
@@ -1963,10 +1815,8 @@ const keyFigures = computed(() => {
                       </div>
                     </template>
 
-                    <!-- Role/risk-only: the branch's engine-computed reads
-                         beside the action — no prices, no conviction, no
-                         empty priced-field placeholders
-                         (docs/portfolio-analysis.md §Intrinsic verdict). -->
+                    <!-- docs/portfolio-analysis.md §Intrinsic verdict: no prices, no
+                         conviction, no empty priced-field placeholders. -->
                     <template v-else>
                       <span class="hc-kicker hc-strip-kicker">Role &amp; risk</span>
                       <dl class="hc-kv">
@@ -1999,9 +1849,8 @@ const keyFigures = computed(() => {
                             }}</span>
                           </dd>
                         </template>
-                        <!-- The closed-end read — rendered only where the vehicle
-                             makes it meaningful; its absence is a named gap in the
-                             evidence-gap line below, never a fabricated number. -->
+                        <!-- Absent, the closed-end read is a named gap in the
+                             evidence-gap line, never a fabricated number. -->
                         <template
                           v-if="v.disposition.is_cef && v.disposition.nav_premium !== null"
                         >
@@ -2024,7 +1873,6 @@ const keyFigures = computed(() => {
                   </div>
                 </div>
 
-                <!-- The app-computed position delta. -->
                 <footer class="hc-foot">
                   <span class="ana-tag" :title="'Position vs. prior run'"
                     >Position: {{ CHANGE_LABELS[v.position_change]
@@ -2037,9 +1885,6 @@ const keyFigures = computed(() => {
                 </footer>
               </template>
             </article>
-            <!-- Not-analyzed holdings: present in the book but ungraded this run
-                 (new / unselected — docs/portfolio-analysis.md §Triggering).
-                 Selectable so the next selective run can grade them. -->
             <article
               v-else-if="p"
               class="ana-card holding-card"
@@ -2095,16 +1940,12 @@ const keyFigures = computed(() => {
             </template>
           </div>
 
-          <!-- Whole-book roll-up (+ the exited positions from the holdings diff). -->
           <section class="ana-card rollup" aria-label="Portfolio roll-up">
             <header class="rollup-head">
               <span class="ana-head">Roll-up · whole book</span>
               <span class="ch-stamp">Analyzed {{ fmtStamp(run.created_at) }}</span>
             </header>
             <p class="rollup-overview hc-prose">{{ run.roll_up.overview }}</p>
-            <!-- Run-level data health: how the target surface was actually sourced.
-                 The attention tag reuses the sanctioned grade-D "amber" pair
-                 (design system §Grade scale — Portfolio's attention flag). -->
             <div class="rollup-datahealth">
               <span class="hc-kicker">Data health</span>
               <p class="dh-line hc-prose">
@@ -2145,8 +1986,7 @@ const keyFigures = computed(() => {
   background: var(--paper);
 }
 
-/* Toolbar — same tier as the report/settings toolbars (surface eyebrow left,
-   actions right), so the seam lines up with the sidebar header across the gutter. */
+/* The seam lines up with the sidebar header across the gutter. */
 .toolbar {
   display: flex;
   align-items: center;
@@ -2173,8 +2013,7 @@ const keyFigures = computed(() => {
   gap: var(--s-3);
 }
 
-/* Inline run-gate block / failure. Chrome register (sans on paper-edge), like
-   the warning band — never the serif reading register. */
+/* Chrome register, never the serif reading register. */
 .pane-error {
   display: flex;
   align-items: baseline;
@@ -2185,10 +2024,8 @@ const keyFigures = computed(() => {
   flex-shrink: 0;
 }
 
-/* Historical-view banner: the pane-error band's geometry with informational ink
-   (tracked-caps label in ink-3, body in ink-2 — never the accent/amber action
-   treatment; a chosen state, not a problem). The back control rides the row's
-   right edge. */
+/* The pane-error band's geometry with informational ink, never the
+   accent/amber action treatment. */
 .hist-banner {
   display: flex;
   align-items: center;
@@ -2264,8 +2101,7 @@ const keyFigures = computed(() => {
   margin-top: var(--s-2);
 }
 
-/* Empty / pulled-not-analyzed states — serif headline + explanation, per the
-   kit's EmptyPortfolio (copy updated to the independent-triggers decision). */
+/* The kit's EmptyPortfolio. */
 .empty-state,
 .pulled-only {
   max-width: 60ch;
@@ -2292,8 +2128,7 @@ const keyFigures = computed(() => {
   margin: 0;
 }
 
-/* Content column cap: dense analytical surfaces read best bounded (the kit
-   caps at 980px); the pane itself keeps scrolling behavior. */
+/* The kit's 980px content cap. */
 .strip,
 .current-holdings,
 .stack-controls,
@@ -2308,14 +2143,12 @@ const keyFigures = computed(() => {
   margin-bottom: var(--s-6);
 }
 
-/* Key-figure strip wraps on narrow windows rather than crushing the figures —
-   a wrap-safe extension of the kit's single-row .keyfig (grid-auto-flow:
-   column; the package defines no wrapping variant). The hairline lattice is
-   the 1px flex gap over the container's hairline background, cells repainting
-   paper, so every seam survives wrapping — the per-cell border idiom left
-   row-one cells above a partial row with no bottom rule and boxed the
-   orphaned cell. Flex, not grid: a partial final row stretches to fill,
-   leaving no empty track to expose the lattice background. */
+/* A wrap-safe extension of the kit's single-row .keyfig (the package defines
+   no wrapping variant). The hairline lattice is the 1px flex gap over the
+   container's hairline background, cells repainting paper, so every seam
+   survives wrapping; the per-cell border idiom left row-one cells above a
+   partial row with no bottom rule. Flex, not grid: a partial final row
+   stretches to fill, leaving no empty track to expose the lattice. */
 .strip.keyfig {
   display: flex;
   flex-wrap: wrap;
@@ -2361,8 +2194,8 @@ const keyFigures = computed(() => {
   color: var(--ink-3);
 }
 
-/* The table scrolls inside its card on narrow windows; the page never
-   h-scrolls. Focusable so keyboard users can scroll it. */
+/* Scrolls inside its card; the page never h-scrolls. Focusable so keyboard
+   users can scroll it. */
 .ch-scroll {
   overflow-x: auto;
 }
@@ -2394,8 +2227,8 @@ const keyFigures = computed(() => {
   margin-left: var(--s-2);
 }
 
-/* ---- Stack controls: the sort bar + the selection controls on one row (the
-   row owns the inter-control spacing and the stack gap). ---- */
+/* ---- Stack controls: the row owns the inter-control spacing and the stack
+   gap. ---- */
 .stack-controls {
   display: flex;
   align-items: center;
@@ -2405,12 +2238,9 @@ const keyFigures = computed(() => {
   margin-bottom: var(--s-4);
 }
 
-/* Sort bar (design package .ana-sortbar; spacing owned by .stack-controls). */
-
-/* Selection controls (docs/portfolio-analysis.md §Triggering). The count and
-   the two link-buttons share the register's tracked-caps voice; the buttons
-   reuse the kit Reveal posture. A disabled reveal has no package treatment —
-   extended here as the sort bar's dimmed-inactive opacity (noted extension). */
+/* Selection controls (docs/portfolio-analysis.md §Triggering). Extension: a
+   disabled reveal has no package treatment, so it takes the sort bar's
+   dimmed-inactive opacity. */
 .hc-selectbar {
   display: inline-flex;
   align-items: center;
@@ -2441,12 +2271,10 @@ const keyFigures = computed(() => {
   color: var(--ink-3);
 }
 
-/* Per-card selection box (docs/portfolio-analysis.md §Triggering). The
-   register defines no selection control — extended minimally and noted: a
-   hairline 14px box at radius 2px inside a 24px hit target, checked = accent
-   fill with a paper check (accent marks the actionable selection), the shared
-   accent focus-visible ring. The box border uses --ink-3 (AA-cleared), not the
-   sub-3:1 hairline, so the control boundary meets the UI-contrast floor. */
+/* Per-card selection box (docs/portfolio-analysis.md §Triggering), an
+   extension: the register defines no selection control. A 14px box inside a
+   24px hit target; its border is --ink-3, not the sub-3:1 hairline, so the
+   control boundary meets the UI-contrast floor. */
 .hc-select {
   position: relative;
   display: inline-flex;
@@ -2604,8 +2432,6 @@ const keyFigures = computed(() => {
   min-width: 0;
 }
 
-/* The grade rides the engine line at the chip's base (md) size; its
-   low-confidence marker sits beside it on the same row. */
 .hc-grade {
   flex-shrink: 0;
 }
@@ -2631,8 +2457,6 @@ const keyFigures = computed(() => {
   white-space: nowrap;
 }
 
-/* The header's position block rides the hc-kv primitive, right-aligned:
-   both columns hug, labels reuse the kicker treatment via the dt class. */
 .hc-position {
   grid-template-columns: max-content max-content;
   justify-content: end;
@@ -2661,21 +2485,17 @@ const keyFigures = computed(() => {
   text-transform: none;
 }
 
-/* An expected price's horizon date, quiet beside the price; it wraps as one
-   unit when the strip is narrow. */
+/* Wraps as one unit when the strip is narrow. */
 .hc-horizon-date {
   color: var(--ink-3);
   white-space: nowrap;
 }
 
-/* The text-first body: the thesis document (3fr) beside the typed strip
-   (2fr), one hairline between them — a recorded extension of the kit's
-   1fr/1fr two-linked-blocks grid. The card is the query container (the
-   warning area's precedent): the sidebar is fixed, so the card runs from
-   572px at the 900px minimum window to its 980px cap, a range no viewport
-   query can address. Below 720px of card width — where the strip's value
-   column would fall under the widest unbreakable read — the body stacks:
-   document, then strip, then the engine line within it. */
+/* Document 3fr beside strip 2fr: a recorded extension of the kit's 1fr/1fr
+   grid. The card is the query container: the sidebar is fixed, so the card
+   runs from 572px at the 900px minimum window to its 980px cap, a range no
+   viewport query can address. Below 720px of card width, where the strip's
+   value column would fall under the widest unbreakable read, the body stacks. */
 .holding-card {
   container-type: inline-size;
 }
@@ -2711,9 +2531,8 @@ const keyFigures = computed(() => {
   margin-bottom: var(--s-3);
 }
 
-/* The strip's label column is shared by every dl in it (the appendix rows,
-   the engine line, the engine detail, the role / risk reads) so their value
-   columns share one left edge. Sized past the longest label at 12px. */
+/* One label column for every dl in the strip, so their value columns share a
+   left edge. Sized past the longest label at 12px. */
 .hc-col-strip .hc-kv {
   grid-template-columns: 9.5em minmax(0, 1fr);
 }
@@ -2727,8 +2546,6 @@ const keyFigures = computed(() => {
   margin: var(--s-4) 0 var(--s-3);
 }
 
-/* The compact engine line: seamed off the strip by one hairline, the
-   kicker labeling every row beneath it as computed. */
 .hc-engine {
   margin-top: var(--s-4);
   padding-top: var(--s-4);
@@ -2739,9 +2556,8 @@ const keyFigures = computed(() => {
   margin-bottom: var(--s-3);
 }
 
-/* Dead money: the one hurdle state that moves the action rule. Oxblood as
-   TEXT rides --accent-text (AA in both themes at this 12px size; --ana-down
-   is the fill / large-size pair) — the words carry the meaning. */
+/* Oxblood as TEXT rides --accent-text (AA at 12px); --ana-down is the fill /
+   large-size pair. */
 .hc-kv dd.hc-hurdle-fails {
   color: var(--accent-text);
 }
@@ -2753,18 +2569,13 @@ const keyFigures = computed(() => {
   margin-bottom: var(--s-2);
 }
 
-/* The set-apart market-setup tile (B10): a hairline seam divides it from the
-   three letter inputs so it never reads as a fourth grade input. The seam is
-   supplementary — the always-visible .hc-setup-note caption carries the
-   meaning for every modality (hairlines in this system sit far below the 3:1
-   boundary floor by design). */
+/* The seam is supplementary: hairlines sit below the 3:1 floor by design, so
+   the always-visible .hc-setup-note carries the meaning. */
 .hc-sub-setup {
   border-left: 1px solid var(--hairline-soft);
   padding-left: var(--s-3);
 }
 
-/* The engine detail's two notes ride the card's quiet note register (the
-   kit's health-note treatment). */
 .hc-basis-note,
 .hc-setup-note {
   font-family: var(--font-serif);
@@ -2773,14 +2584,11 @@ const keyFigures = computed(() => {
   color: var(--ink-3);
 }
 
-/* The basis line: a tight gap under the kicker, the tile row's own gap
-   beneath; a long anchor-row label wraps. */
 .hc-basis-note {
   margin: var(--s-1) 0 var(--s-2);
   overflow-wrap: anywhere;
 }
 
-/* The setup caption: the tile row above keeps only a tight gap to it. */
 .hc-setup-note {
   margin: 0 0 var(--s-4);
 }
@@ -2836,8 +2644,7 @@ const keyFigures = computed(() => {
   gap: var(--s-2);
 }
 
-/* The exposure weights: a wrapping row of label / weight pairs with a gap
-   between pairs (sibling inline-flex spans would otherwise run together). */
+/* Gap between pairs: sibling inline-flex spans would otherwise run together. */
 .hc-tilts {
   display: flex;
   flex-wrap: wrap;
@@ -2857,7 +2664,7 @@ const keyFigures = computed(() => {
   text-transform: capitalize;
 }
 
-/* Reveal disclosure (kit Reveal): tracked-caps trigger + inline body. */
+/* Kit Reveal. */
 .hc-reveal {
   display: inline-flex;
   align-items: center;
@@ -2932,9 +2739,7 @@ const keyFigures = computed(() => {
   color: var(--ink);
 }
 
-/* The card's thesis-document body, per the kit's ThesisAnchor (ui_kits
-   Portfolio.jsx): the document column owns its padding and seam; on the
-   abstained card the block sits beneath the reason line. */
+/* Kit ThesisAnchor (ui_kits Portfolio.jsx). */
 .hc-thesis .hc-kicker {
   margin-bottom: var(--s-2);
 }
@@ -2943,8 +2748,6 @@ const keyFigures = computed(() => {
   margin-top: var(--s-3);
 }
 
-/* The kit's thesis lead: serif at 15px in full ink (a register up from the
-   13px secondary prose elsewhere on the card). */
 .hc-thesis-text {
   white-space: pre-line;
   font-family: var(--font-serif);
@@ -2957,8 +2760,7 @@ const keyFigures = computed(() => {
   overflow-wrap: anywhere;
 }
 
-/* Twelve lines — roughly the strip's height beside it — so the body reads
-   text-first; the reveal opens the rest. */
+/* Twelve lines: roughly the strip's height beside it. */
 .hc-thesis-text.clamped {
   display: -webkit-box;
   -webkit-line-clamp: 12;
@@ -2967,9 +2769,7 @@ const keyFigures = computed(() => {
   overflow: hidden;
 }
 
-/* The reveal, per the kit's text-only toggle — accent TEXT rides the
-   AA-safe --accent-text token (--accent is fills/rings only); hover and
-   focus-visible follow the .hc-reveal conventions. */
+/* Accent TEXT rides --accent-text; --accent is fills/rings only. */
 .hc-thesis-toggle {
   appearance: none;
   background: transparent;
@@ -3004,7 +2804,6 @@ const keyFigures = computed(() => {
   background: var(--paper-edge);
 }
 
-/* The action call's rationale under the action line. */
 .hc-rationale {
   margin: var(--s-2) 0 0;
 }
@@ -3046,8 +2845,8 @@ const keyFigures = computed(() => {
   margin: 0;
 }
 
-/* The sanctioned "amber" attention state — the grade-D pair reused
-   (colors_and_type.css §Grade scale), never a literal amber. */
+/* The grade-D pair reused as the attention state (colors_and_type.css §Grade
+   scale), never a literal amber. */
 .dh-attention-tag {
   color: var(--grade-d-tx);
   background: var(--grade-d-bg);
@@ -3058,10 +2857,7 @@ const keyFigures = computed(() => {
 /* `.ana-tag-failed` — the failure badge — lives in the design package
    (colors_and_type.css, beside the status-tag contract), not here. */
 
-/* The accessible failure disclosure on a carried card: a visible note (not the
-   badge's hover-only tooltip) so keyboard, touch, and screen-reader users reach the
-   cause and re-run guidance — the debut placeholder shows its cause the same way.
-   Neutral ink (the badge carries the oxblood); the words carry the meaning. */
+/* Neutral ink: the badge carries the oxblood. */
 .hc-fail-note {
   margin: 0 0 var(--s-3);
   font-family: var(--font-sans);
@@ -3108,7 +2904,4 @@ const keyFigures = computed(() => {
   color: var(--ink-3);
   white-space: nowrap;
 }
-
-/* Reduced motion: the buttons/toggles inherit the package's transitions; no
-   motion originates here beyond those, so nothing extra to suppress. */
 </style>

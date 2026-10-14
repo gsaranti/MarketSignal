@@ -3,36 +3,25 @@ import { ref, nextTick } from "vue";
 import Icon, { type IconName } from "./Icon.vue";
 import type { ResearchDocument } from "../types";
 
-// A dense, single-column list of research documents, translated from the design
-// kit's ResearchInbox.jsx. Both research surfaces — the inbox (drop files in) and
-// the archive (read-only; the pipeline files processed documents here) — render
-// through this one component; the differences are all copy and the toolbar's
-// reveal affordance, passed as props. The list itself is identical: name, format
-// and size, modified date, and a per-row delete (allowed from either folder,
-// docs/research-documents.md §User Permissions). An inbox row whose last job
-// pass could not parse it carries `parse_error` (§Parse Failures) and renders in
-// an error state — a tag plus the reason — so the user can fix or delete it;
-// archive rows never carry one.
+// The research-document list (design kit ResearchInbox.jsx), shared by the
+// inbox and the archive: the differences are copy and the toolbar's reveal
+// affordance, passed as props. Delete is allowed from either folder
+// (docs/research-documents.md §User Permissions); only inbox rows carry
+// `parse_error` (§Parse Failures).
 withDefaults(
   defineProps<{
     documents: ResearchDocument[];
     loading: boolean;
     error: string | null;
-    // Toolbar title (uppercase surface label).
     title: string;
-    // Intro line, shown only when there are documents.
     lede: string;
-    // Empty-state eyebrow + body.
     emptyTitle: string;
     emptyBody: string;
-    // Heading on the "couldn't read this folder" error block.
     errorLabel: string;
-    // The single toolbar action — reveals the folder in the OS file manager.
     revealLabel: string;
     revealTitle: string;
-    // Optional leading icon (inbox uses "plus" for "Add files…"; the archive's
-    // "Show in Finder" carries none). Variant lets the archive use the quieter
-    // secondary button — it's a read-only convenience, not a primary action.
+    // The archive's reveal is a read-only convenience, so it takes the quieter
+    // secondary variant and no icon.
     revealIcon?: IconName | null;
     revealVariant?: "btn-primary" | "btn-secondary";
   }>(),
@@ -47,17 +36,13 @@ const emit = defineEmits<{
   (e: "reveal"): void;
 }>();
 
-// Per-row delete confirmation: the name of the row currently asking to confirm,
-// or null. An inline two-step (Delete → Confirm/Cancel) rather than a modal —
-// reversible, keyboard-operable, and it keeps the destructive action off a
-// single click.
+// The row mid-confirmation: an inline two-step rather than a modal, keeping the
+// destructive action off a single click.
 const confirmingName = ref<string | null>(null);
 
-// Focus management for the inline two-step. Opening the confirm moves focus onto
-// the Cancel button so keyboard/SR focus isn't dropped to <body> and the new
-// controls are announced; cancelling returns focus to that row's Delete trigger.
-// Both controls are recreated across the v-if swap, so they're tracked by function
-// refs (the Delete triggers keyed by document name).
+// Opening the confirm moves focus to Cancel so it isn't dropped to <body>;
+// cancelling returns it to that row's Delete. Both are recreated across the
+// v-if swap, so they're tracked by function refs.
 const cancelButton = ref<HTMLButtonElement | null>(null);
 function setCancelButton(el: unknown) {
   cancelButton.value = el ? (el as HTMLButtonElement) : null;
@@ -123,8 +108,7 @@ function formatDate(iso: string | null): string {
     </div>
 
     <div class="docs-scroll">
-      <!-- Lede only when there are documents; the empty state below carries its
-           own single instruction, so showing both would just repeat it. -->
+      <!-- The empty state carries its own instruction; a lede too would repeat it. -->
       <div v-if="documents.length > 0" class="docs-intro">
         <p class="docs-lede">{{ lede }}</p>
       </div>
@@ -134,8 +118,7 @@ function formatDate(iso: string | null): string {
         <p class="docs-error-detail">{{ error }}</p>
       </div>
 
-      <!-- Only show the loading line on the first load (no rows yet); a refresh
-           with rows already on screen shouldn't blank them out. -->
+      <!-- First load only: a refresh with rows on screen shouldn't blank them out. -->
       <p
         v-else-if="loading && documents.length === 0"
         class="docs-status"
@@ -158,25 +141,17 @@ function formatDate(iso: string | null): string {
         >
           <Icon name="file" :size="14" color="var(--ink-2)" />
           <div class="docs-row-main">
-            <!-- Full name on hover: the name clips with ellipsis (nowrap), so a
-                 long file name is otherwise unreadable on the failed row the user
-                 must act on. Same affordance as the chart labels' truncation
-                 <title>, but applied unconditionally — measuring per-row truncation
-                 would need a ResizeObserver; a redundant tooltip on a name that
-                 happens to fit is the accepted tradeoff. -->
+            <!-- The name clips with ellipsis. The tooltip is unconditional: measuring
+                 per-row truncation would need a ResizeObserver. -->
             <div class="docs-row-name" :title="doc.name">{{ doc.name }}</div>
             <div class="docs-row-meta">
               {{ formatFormat(doc.format) }} · {{ formatSize(doc.size_bytes) }}
               <span v-if="!doc.supported" class="docs-tag">unsupported</span>
               <span v-if="doc.parse_error" class="docs-tag docs-tag--error">parse failed</span>
             </div>
-            <!-- The last job pass's failure reason (docs/research-documents.md
-                 §Parse Failures): the file stays in the inbox and is retried next
-                 run unless fixed or deleted. -->
-            <!-- id keys off the row index, not doc.name (the list :key), since a
-                 file name isn't a safe/unique id token. The describedby on Delete
-                 below is computed from the same index in this row scope, so the
-                 id/reference pair never drifts even though list identity is by name. -->
+            <!-- docs/research-documents.md §Parse Failures. The id keys off the index,
+                 not doc.name: a file name isn't a safe id token. Delete's describedby
+                 uses the same index in this row scope. -->
             <p
               v-if="doc.parse_error"
               :id="`parse-error-${index}`"
@@ -202,9 +177,8 @@ function formatDate(iso: string | null): string {
                 Delete
               </button>
             </template>
-            <!-- On a failed row, tie the reason to the control that acts on it,
-                 so reaching Delete by keyboard/SR also surfaces why the file is
-                 flagged (the reason text is otherwise only in row reading order). -->
+            <!-- Ties the reason to the control that acts on it, so reaching Delete
+                 by keyboard/SR surfaces why the file is flagged. -->
             <button
               v-else
               :ref="(el) => setDeleteTrigger(doc.name, el)"
@@ -237,9 +211,7 @@ function formatDate(iso: string | null): string {
   background: var(--paper);
 }
 
-/* Toolbar geometry matches the report pane's so the two views share a seam.
-   min-height matches the button-less panes; the reveal button already sets this
-   height here, so this just pins the shared reference. */
+/* Geometry matches the report pane's toolbar so the views share a seam. */
 .toolbar {
   display: flex;
   align-items: center;
@@ -249,8 +221,6 @@ function formatDate(iso: string | null): string {
   border-bottom: var(--border);
 }
 
-/* Surface title: stronger than the section eyebrows — 13px ink semibold (a
-   deliberate step up from the 11px caption used for sub-headings). */
 .toolbar-label {
   font-family: var(--font-sans);
   font-size: var(--t-ui-sm);
@@ -275,7 +245,6 @@ function formatDate(iso: string | null): string {
   padding: var(--s-10) var(--s-8) var(--s-5);
 }
 
-/* Chrome-scale serif: annotates the surface without reading at report size. */
 .docs-lede {
   margin: 0;
   font-family: var(--font-serif);
@@ -317,8 +286,6 @@ function formatDate(iso: string | null): string {
   color: var(--ink-3);
 }
 
-/* Top padding sets the eyebrow off the toolbar seam (matches the report empty
-   state's rhythm) so the eyebrow doesn't hug the divider. */
 .docs-empty {
   max-width: var(--measure);
   padding: var(--s-10) var(--s-8);
@@ -333,8 +300,7 @@ function formatDate(iso: string | null): string {
   margin-bottom: var(--s-4);
 }
 
-/* Chrome-scale serif, not 17px report prose: an empty research folder is product
-   chrome, not a reading surface. ink-2 (not ink-3) clears WCAG AA at this size. */
+/* ink-2 (not ink-3) clears WCAG AA at this size. */
 .docs-empty-body {
   margin: 0;
   max-width: var(--measure);
@@ -345,8 +311,6 @@ function formatDate(iso: string | null): string {
   color: var(--ink-2);
 }
 
-/* The list is hairline-ruled top and bottom, dense rows separated by soft
-   hairlines — the kit's "filed research" idiom. */
 .docs-list {
   list-style: none;
   margin: 0;
@@ -402,8 +366,7 @@ function formatDate(iso: string | null): string {
   margin-top: var(--s-1);
 }
 
-/* Unsupported-format tag — an inset-well chip, no color signal (the system
-   reserves the accent for warnings/errors, not catalog metadata). */
+/* No color signal: the accent is reserved for warnings and errors. */
 .docs-tag {
   padding: 1px var(--s-2);
   background: var(--paper-edge);
@@ -412,15 +375,11 @@ function formatDate(iso: string | null): string {
   color: var(--ink-2);
 }
 
-/* Parse-failure tag — same chip geometry, but this IS a warning/error, so it
-   carries the accent voice (the error-label idiom this surface already uses;
-   --accent-text is the AA-clearing accent for text). */
+/* This one IS an error: --accent-text, the AA-clearing accent for text. */
 .docs-tag--error {
   color: var(--accent-text);
 }
 
-/* The failure reason, mirroring the folder-level error block's label/detail
-   split: the tag above is the accent label, the reason reads as quiet detail. */
 .docs-row-error {
   margin: var(--s-1) 0 0;
   font-family: var(--font-sans);
@@ -438,9 +397,7 @@ function formatDate(iso: string | null): string {
   white-space: nowrap;
 }
 
-/* Actions reveal on row hover/focus to keep the resting list clean, but stay in
-   the tab order (opacity, not display:none) so keyboard users reach them; a row
-   mid-confirmation pins them visible. */
+/* Hidden by opacity, not display:none, so the actions stay in the tab order. */
 .docs-row-actions {
   display: flex;
   gap: var(--s-3);

@@ -1,13 +1,10 @@
 <script lang="ts">
 import { defineComponent, h, type PropType } from "vue";
 
-// Outlined, single-weight icons — ported from the design kit's Icon.jsx.
-// One stroke, one color, squared caps; 1.25px at 20px, 1.1px at ≤14px. No
-// fills, no two-tone, no brand-color interiors. A 20-unit viewBox throughout.
+// Outlined single-weight icons ported from the design kit's Icon.jsx: one
+// stroke, squared caps, no fills or two-tone, a 20-unit viewBox throughout.
 type SvgEl = [string, Record<string, string | number>];
 
-// Exported so callers get compile-time checking of `name` — a typo'd icon is a
-// type error at the call site, not a silently-empty render.
 export type IconName =
   | "report"
   | "portfolio"
@@ -39,9 +36,7 @@ const PATHS: Record<IconName, SvgEl[]> = {
     ["rect", { x: 4, y: 6, width: 12, height: 11 }],
     ["line", { x1: 8, y1: 10, x2: 12, y2: 10 }],
   ],
-  // Briefcase — the holdings/Portfolio surface. Same language as the rest:
-  // one stroke, squared caps, 20-unit viewBox (an icon-set extension; the kit
-  // ships no portfolio glyph).
+  // Icon-set extension: the kit ships no portfolio glyph.
   portfolio: [
     ["rect", { x: 3, y: 7, width: 14, height: 9 }],
     ["path", { d: "M7 7V4h6v3" }],
@@ -109,8 +104,7 @@ export default defineComponent({
   setup(props) {
     return () => {
       const paths = PATHS[props.name];
-      // Belt-and-suspenders for untyped/dynamic callers the union can't catch:
-      // surface an unknown name in dev instead of rendering an empty <svg>.
+      // Dynamic callers bypass the union; warn in dev rather than render an empty <svg>.
       if (import.meta.env.DEV && !paths) {
         console.warn(`[Icon] unknown icon name: "${props.name}"`);
       }

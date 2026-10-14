@@ -2,69 +2,49 @@
 import { computed, onUnmounted, ref, watch } from "vue";
 import type { JobStatus } from "../types";
 
-// Job status (docs/scheduling.md §Job Status Visibility). Reports run history
-// (last run / last failure / last skipped / last cancelled) scoped to the
-// active section's job, and the in-flight indicator (global — one shared run
-// slot). When the report view is the main window it also carries the
-// persistent manual "Generate now" trigger (the kit's footer division —
-// generation is a job action, the report toolbar is reading-only); every other
-// view offers no generate control here — the Portfolio section keeps its own
-// Run analysis trigger on the page, and the neutral inbox/archive/settings
-// surfaces share the report's stamps but not its trigger.
-// Recessed chrome on paper-soft.
+// Job status footer (docs/scheduling.md §Job Status Visibility): run stamps
+// scoped to the active section's job, and the in-flight indicator for the one
+// shared run slot. The manual "Generate now" trigger lives here only when the
+// report view is the main window; Portfolio keeps its own Run analysis trigger
+// on the page.
 const props = defineProps<{
   status: JobStatus | null;
-  // Which section's stamps the footer reports (docs/interface.md §Main
-  // Layout): the Portfolio view scopes to the portfolio job, every other view
-  // to the report — the sidebar's featureOf mapping.
+  // Which job's stamps the footer reports (docs/interface.md §Main Layout);
+  // every non-Portfolio view scopes to the report.
   section: "report" | "portfolio";
-  // Whether the manual generate trigger renders — true only when the report
-  // view is the main window (docs/interface.md §Main Layout). Deliberately
-  // separate from `section`: the neutral surfaces are section "report" but
-  // must not surface the button.
+  // Separate from `section`: the neutral surfaces are section "report" but
+  // must not show the button.
   showGenerate: boolean;
   error: string | null;
   blocked: boolean;
   generating: boolean;
-  // A workflow holds the single run slot right now (event-driven, immediate —
-  // independent of the periodically-refreshed job status). Covers a report run
-  // between run-started/run-finished, and the interactive Schwab connect.
+  // Event-driven and immediate, independent of the polled job status; covers
+  // the interactive Schwab connect too.
   runActive: boolean;
-  // What the running row calls the in-flight work. The slot is shared by the
-  // report, the local jobs, and the Schwab connect, so the label is the
-  // caller's — a Schwab login must never read as "Generating report…".
+  // The caller's label: the slot is shared, and a Schwab login must never read
+  // as "Generating report…".
   runningLabel: string;
-  // Determinate run progress (how far through the fixed pipeline), driving the
-  // status row's 1px fill and "step N of T" caption. Null when no run is in flight.
   progress: { fraction: number; stepNumber: number; total: number; label: string } | null;
-  // Wall-clock start of the in-flight run (epoch ms) for the live elapsed timer.
+  // Epoch ms.
   runStartedAt: number | null;
-  // A latest-run trace exists in this session (terminal or not), so the tracker is
-  // reopenable.
+  // A run trace exists this session (terminal or not).
   hasRunLog: boolean;
-  // The tracker is currently the active pane, so the handle would be a no-op.
   viewingTracker: boolean;
 }>();
 
 defineEmits<{ (e: "generate"): void; (e: "view-tracker"): void }>();
 
-// Whether a run is in flight: prefer the immediate event-driven flag, falling back
-// to the backend guard state.
 const isRunning = computed(() => props.runActive || props.status?.is_running === true);
 
-// The active section's "last X" stamps — the facts block reads only this group,
-// so a portfolio run's finish never stamps LAST RUN under report chrome.
+// Only the active section's stamps, so a portfolio run never stamps LAST RUN
+// under report chrome.
 const stamps = computed(() => (props.status ? props.status[props.section] : null));
 
-// Section-appropriate empty state: the portfolio footer must not talk about
-// reports (and vice versa).
 const noRunYetLabel = computed(() =>
   props.section === "portfolio" ? "No analysis has run yet" : "No report has run yet"
 );
 
-// Stay silent until the first status resolves (mirrors the warning area), so the
-// footer doesn't flash empty on load. Surface as soon as there's status, an error,
-// a live run, or a reopenable run log.
+// Silent until the first status resolves, so the footer doesn't flash empty on load.
 const visible = computed(
   () =>
     props.status !== null ||
@@ -73,18 +53,14 @@ const visible = computed(
     props.hasRunLog
 );
 
-// The determinate fill width, clamped to [0, 100]%. The width *advancing* is the
-// status row's primary motion — a confirmed state change as each step completes.
 const progressPct = computed(() => {
   const f = props.progress?.fraction ?? 0;
   return `${Math.round(Math.max(0, Math.min(1, f)) * 100)}%`;
 });
 
-// Live elapsed timer — a ticking mono clock that proves the run isn't frozen even
-// while a single long step (e.g. the up-to-30-min research window) holds the fill
-// steady. It's honest data changing, not a decorative sweep, so it stays on-system.
-// A 1s tick runs only while a run is in flight; `aria-hidden` keeps it from spamming
-// the polite live region (screen readers get the label + step caption instead).
+// A ticking clock proves the run isn't frozen while a long step holds the fill
+// steady. It ticks only while a run is in flight; `aria-hidden` keeps it out of
+// the polite live region.
 const now = ref(Date.now());
 let timerId: ReturnType<typeof setInterval> | null = null;
 function startTimer() {
@@ -111,8 +87,7 @@ watch(
 onUnmounted(stopTimer);
 
 const elapsedLabel = computed(() => {
-  // `== null` (not `===`) so a missing/undefined value is treated as "no start time"
-  // and the timer is hidden, rather than computing against NaN.
+  // `== null` so undefined also reads as no start time, not arithmetic on NaN.
   if (props.runStartedAt == null) return null;
   const secs = Math.max(0, Math.floor((now.value - props.runStartedAt) / 1000));
   const m = Math.floor(secs / 60);
@@ -124,8 +99,7 @@ const elapsedLabel = computed(() => {
   return `${m}:${String(s).padStart(2, "0")}`;
 });
 
-// The backend persists UTC; render in the viewer's local time. Fall back to the
-// raw string if unparseable.
+// The backend persists UTC; render in the viewer's local time.
 function formatLocal(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -170,8 +144,8 @@ function formatLocal(iso: string): string {
             }}
           </dd>
         </div>
-        <!-- Timestamp only — the full failure reason is in the warning band
-             above, which has room to wrap (the footer always truncated it). -->
+        <!-- Timestamp only: the failure reason lives in the warning band, which
+             has room to wrap. -->
         <div v-if="stamps?.last_failed_at" class="job-fact">
           <dt>Last failure</dt>
           <dd>{{ formatLocal(stamps.last_failed_at) }}</dd>
@@ -188,12 +162,9 @@ function formatLocal(iso: string): string {
     </div>
 
     <div class="job-actions">
-      <!-- The footer is the run's home: this handle opens (or returns to) the
-           tracker — "View progress" during a run, "Latest run log" for the lingering
-           terminal trace afterward. Hidden when the tracker is already showing. -->
-      <!-- Only offered when a trace actually exists to show. If the UI missed this
-           run's start (e.g. a dev reload mid-run), `isRunning` may be true with no
-           trace; the handle stays hidden rather than opening an empty tracker. -->
+      <!-- If the UI missed this run's start (a dev reload mid-run), `isRunning` can
+           be true with no trace; the handle stays hidden rather than opening an
+           empty tracker. -->
       <button
         v-if="isRunning && hasRunLog && !viewingTracker"
         type="button"
@@ -211,12 +182,8 @@ function formatLocal(iso: string): string {
         Latest run log
       </button>
 
-      <!-- Persistent manual trigger — the report view only (each section keeps
-           its own trigger: Run analysis lives on the Portfolio page; the
-           neutral views offer none). Hidden while a run is in flight (the bar
-           to the left already says so). Disabled when the gate blocks a run;
-           the reason lives in the warning band above and the report empty
-           state. -->
+      <!-- Hidden while a run is in flight (the bar already says so); disabled
+           when the gate blocks a run, the reason living in the warning band. -->
       <button
         v-if="showGenerate && !isRunning"
         type="button"
@@ -236,8 +203,7 @@ function formatLocal(iso: string): string {
 </template>
 
 <style scoped>
-/* Footer seam aligns its left edge with the toolbar and warning rows
-   (var(--s-3) var(--s-8)); recessed onto paper-soft like the sidebar. */
+/* Left edge aligns with the toolbar and warning rows. */
 .job-panel {
   display: flex;
   align-items: center;
@@ -252,11 +218,9 @@ function formatLocal(iso: string): string {
   flex: 1;
 }
 
-/* Long-running-job indicator — the design kit's long-job status row
-   (components-status.html): a label, a 1px track carrying a determinate --ink fill,
-   a mono elapsed time, and a "step N of T" caption below. The fill's width tracks
-   real step completion, so its advance is a confirmed state change (the kit's motion
-   tier), never a decorative sweep — staying on-system while finally moving. */
+/* The kit's long-job status row (components-status.html). The fill tracks real
+   step completion, so its advance is a confirmed state change (the kit's motion
+   tier), never a decorative sweep. */
 .job-running {
   display: flex;
   flex-direction: column;
@@ -292,9 +256,7 @@ function formatLocal(iso: string): string {
   bottom: 0;
   background: var(--ink);
 }
-/* The width change is a state-change confirmation (the kit's 120ms tier). Reduced-
-   motion users get an instant jump to the new width — the progress still shows,
-   just without the tween. */
+/* Reduced-motion users get an instant jump to the new width. */
 @media (prefers-reduced-motion: no-preference) {
   .job-running-fill {
     transition: width var(--dur-fast) var(--ease);
@@ -311,8 +273,8 @@ function formatLocal(iso: string): string {
   white-space: nowrap;
 }
 
-/* Mixed-case running status ("Step N of T · {label}"), so neutral UI tracking —
-   --track-caption is opened only for 11px UPPERCASE captions, not running prose. */
+/* --track-caption is for 11px uppercase captions only; mixed-case running
+   status takes --track-ui. */
 .job-running-caption {
   margin: 0;
   font-family: var(--font-sans);
@@ -332,10 +294,8 @@ function formatLocal(iso: string): string {
   overflow-wrap: anywhere;
 }
 
-/* Compact secondary button sized to the footer's tight chrome. Hover steps one
-   tonal step deeper than the paper-soft footer (the secondary default hover is
-   paper-soft, which would be invisible here) — matching the sidebar's tinted-
-   region pattern. */
+/* Hover steps one tone deeper: the secondary default hover is paper-soft,
+   invisible on this footer. */
 .btn-generate {
   flex-shrink: 0;
   padding: var(--s-2) var(--s-4);
@@ -346,7 +306,6 @@ function formatLocal(iso: string): string {
   background: var(--paper-edge);
 }
 
-/* The run-handle + generate buttons share the footer's right edge. */
 .job-actions {
   flex-shrink: 0;
   display: flex;
@@ -354,8 +313,6 @@ function formatLocal(iso: string): string {
   gap: var(--s-3);
 }
 
-/* Quiet ghost handle that opens the tracker — recedes next to the generate
-   button and the facts. Sized to the footer's tight chrome. */
 .btn-handle {
   padding: var(--s-2) var(--s-3);
   font-size: var(--t-ui-sm);

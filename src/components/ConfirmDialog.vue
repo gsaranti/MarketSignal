@@ -1,25 +1,19 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 
-// Blocking confirmation for destructive / irreversible actions — the design
-// package's confirmation dialog (market-signal-design-system
-// preview/confirmation-dialog.html, `.dialog-*` in colors_and_type.css)
-// translated to Vue. Generic chrome: flat hairline panel, no shadow — all
-// separation comes from the `--scrim` veil. Presentational: the parent owns
-// `open` and `busy` (set busy on confirm, clear it when the action settles);
-// confirm/cancel are only ever emitted. Escape and a scrim click are Cancel,
-// both inert while busy.
+// The design package's confirmation dialog (market-signal-design-system
+// preview/confirmation-dialog.html, `.dialog-*` in colors_and_type.css) as a
+// presentational component: the parent owns `open` and `busy`; confirm/cancel
+// are only emitted. Escape and a scrim click are Cancel, both inert while busy.
 const props = defineProps<{
   open: boolean;
   title: string;
   body: string;
-  // Optional second body paragraph — the concrete specifics of what the
-  // action targets (e.g. the picked archive's date and counts), kept apart
-  // from `body` so the destructive scope reads first.
+  // A second paragraph for the action's specifics, kept apart from `body` so
+  // the destructive scope reads first.
   detail?: string;
   confirmLabel: string;
   busy: boolean;
-  // The undecorated status line at the left of the actions row while busy.
   busyStatus: string;
 }>();
 
@@ -31,8 +25,7 @@ const emit = defineEmits<{
 const panel = ref<HTMLDivElement | null>(null);
 const cancelBtn = ref<HTMLButtonElement | null>(null);
 
-// The element focused before the dialog opened, restored on close (the
-// dialogs-restore-focus contract).
+// Focused before the dialog opened; restored on close.
 let opener: HTMLElement | null = null;
 
 function onCancel() {
@@ -49,8 +42,7 @@ function onScrimClick(e: MouseEvent) {
   if (e.target === e.currentTarget) onCancel();
 }
 
-// Escape = Cancel; Tab is trapped inside the panel while open. Registered on
-// the document (capture) only while open, so a closed dialog costs nothing.
+// Registered on the document (capture) only while open.
 function onKeydown(e: KeyboardEvent) {
   if (e.key === "Escape") {
     e.preventDefault();
@@ -100,7 +92,7 @@ watch(
   }
 );
 
-// While busy both actions disable and focus would fall to <body>; park it on
+// While busy both actions disable and focus would fall to <body>: park it on
 // the panel (tabindex="-1") and return it to Cancel when busy clears.
 watch(
   () => props.busy,
@@ -161,5 +153,4 @@ onBeforeUnmount(() => {
 </template>
 
 <!-- No scoped styles: every class comes from the design package's
-     colors_and_type.css (imported globally in main.ts), so the component can
-     never drift from the package's dialog spec. -->
+     colors_and_type.css (global via main.ts). -->

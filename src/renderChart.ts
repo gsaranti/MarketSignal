@@ -1,21 +1,15 @@
-// Render a fenced ```chart block's JSON body into a restrained inline-SVG figure,
-// generalizing the design system's YieldChart reference
-// (market-signal-design-system/.../market_signal_desktop/LatestReport.jsx):
-// monochrome ink series, at most one accent-emphasized series, a hairline grid,
-// no markers / shadows. Three `type`s render: "line" (the reference register, no
-// fills); "bar" (grouped flat bars) and "area" (a faint single-tint wash) — both
-// drawn from a zero baseline so signed / near-zero data reads honestly from a
-// real origin. Bar and area broaden the line register's no-fills rule to flat
-// fills only (squared, hairline-gridded, no gradient / shadow) — a noted design-
-// package extension, mirrored in colors_and_type.css. Styling lives there under
-// `.prose .chart-*` so it resolves in both themes; this module only emits the
-// geometry and the class hooks.
+// Renders a fenced ```chart block's JSON body into an inline-SVG figure after
+// the design system's YieldChart reference: monochrome ink series, at most one
+// accent-emphasized series, a hairline grid, no markers or shadows. "line" keeps
+// the reference register; "bar" and "area" extend it to flat fills drawn from a
+// zero baseline (a noted design-package extension, mirrored in
+// colors_and_type.css). Styling lives there under `.prose .chart-*`; this
+// module emits only geometry and class hooks.
 //
-// Pure and fail-soft: any parse or validation failure returns null so the caller
-// (the markdown-it fence rule) can fall back to a plain code block — a malformed
-// chart never breaks the surrounding report render. The agent's chart labels are
-// escaped before embedding because the returned string is injected via v-html,
-// which bypasses markdown-it's html:false guard.
+// Pure and fail-soft: any parse or validation failure returns null so the
+// markdown-it fence rule falls back to a plain code block. Labels are escaped
+// before embedding because the returned string is injected via v-html, which
+// bypasses markdown-it's html:false guard.
 
 interface ChartSeries {
   label?: string;
@@ -29,79 +23,55 @@ interface ChartSpec {
   type: ChartType;
   title?: string;
   series: ChartSeries[];
-  // Optional per-chart x-axis category labels (one per slot, shared across
-  // series). Bar-only: a category axis makes each slot a named cross-sectional
-  // comparison ("returns by sector") rather than a time step — so it carries
-  // labeled x-ticks and enumerated aria, and it stays a discrete bar (a line or
-  // area connecting unrelated categories would imply a trend that isn't real).
+  // Per-slot x-axis labels, bar-only: a line or area connecting unrelated
+  // categories would imply a trend that isn't real.
   categories?: string[];
 }
 
-// Robustness caps — the journal-figure register is a handful of series over a
-// bounded run, not a dashboard. Mirrors the reference's 2 series / 26 points.
+// Caps: a handful of series over a bounded run, not a dashboard.
 const MAX_SERIES = 3;
 const MAX_POINTS = 120;
 const MIN_POINTS = 2;
-// Categorical bars carry a labeled x-axis, so the legibility ceiling is far
-// lower than a time series' MAX_POINTS — past this the per-slot labels truncate
-// to nothing. 16 clears the 11 GICS sectors with headroom. Because a category
-// list must match the series' point count, this also caps a categorical bar's
-// point count (a 120-bar categorical chart is rejected, falling back to a table).
+// Labeled x-ticks truncate to nothing past this; 16 clears the 11 GICS sectors.
+// A category list must match the point count, so this also caps a categorical
+// bar's points.
 const MAX_CATEGORIES = 16;
 
-// SVG geometry in viewBox units — mirrors the reference (720×130, 8px padding).
-// The SVG scales uniformly to the reading column (width:100%, height:auto in
-// CSS); strokes are pinned crisp via vector-effect:non-scaling-stroke there.
+// viewBox units, matching the reference (720×130, 8px padding); the SVG scales
+// to the reading column in CSS.
 const W = 720;
 const H = 130;
 const PAD = 8;
-// The y-axis tick labels sit at the right edge (anchored at W-4). To keep plotted
-// data — bars and the line/area end labels — from growing under them, the data
-// area stops at a right edge (`plotR`, computed per chart in buildSvg) that leaves
-// a gutter sized to the WIDEST tick string: TICK_CHAR_W is a conservative upper
-// bound on a 9px mono digit's advance (viewBox units), and TICK_GAP is the clear
-// space between the widest tick and the plot. Sizing from the actual ticks (not a
-// fixed width) keeps a large-magnitude axis (six-figure index levels) from
-// overflowing back into the plot.
+// The y-tick labels sit at the right edge; the data area stops at `plotR`, a
+// gutter sized to the widest tick string so a six-figure axis never overflows
+// into the plot. TICK_CHAR_W is a conservative upper bound on a 9px mono
+// digit's advance in viewBox units.
 const TICK_CHAR_W = 6;
 const TICK_GAP = 6;
-// Extra height appended below the plot for the x-axis category labels (only when
-// `categories` is present). Reserved as a taller viewBox rather than by shrinking
-// the plot, so the line/bar/area domain, grid, ticks, and end-label geometry are
-// untouched — the band simply hangs below the existing H.
+// Height added below the plot for category labels — a taller viewBox rather
+// than a shrunken plot, so the plot geometry is untouched.
 const X_AXIS_BAND = 28;
-// Baselines of the x-axis category text within that band (from the top of the
-// plot, i.e. H + this). Labels stagger across two rows so each clears its
-// same-row neighbour by two slots; the lower row sits X_LABEL_ROW_GAP beneath
-// the upper, and the band leaves descender room below the lower 9px label.
+// Category-label baselines below H; labels stagger across two rows.
 const X_LABEL_BASELINE = 11;
 const X_LABEL_ROW_GAP = 11;
 
-// Bar layout in viewBox units — the grouped bars fill ~2/3 of each categorical
-// slot (leaving inter-slot gaps), with a ~1u gutter between bars within a group
-// and a floor so a many-series group never collapses to invisible slivers.
+// Bars fill ~2/3 of each slot with a 1u gutter within a group; the floor keeps a
+// many-series group from collapsing to slivers.
 const BAR_SLOT_FILL = 0.66;
 const BAR_GUTTER = 1;
 const BAR_MIN_WIDTH = 0.5;
 
-// A conservative UPPER BOUND on a glyph's advance in the 10px end-label font, in
-// viewBox units (≈ one em — the widest Latin glyphs, W/M/%, stay under it). Used
-// to clamp a centered bar label so its text can't clip past the 720-wide viewBox.
-// Being an upper bound (not an average) is what makes the clamp actually contain
-// real labels, and makes the unit test that reuses it a sound worst-case check
-// rather than a circular under-estimate. Exotic wide-Unicode (CJK/emoji) can
-// exceed one em; that residual and true rendered-pixel fit are a GUI-pass concern.
+// A conservative UPPER BOUND on a glyph's advance in the 10px label font, in
+// viewBox units (about one em). An upper bound, not an average, is what makes
+// the label clamps actually contain real labels; wide Unicode (CJK/emoji) can
+// exceed it.
 const LABEL_CHAR_W = 10;
-// Series labels are short tags ("10Y", "HY OAS"); a chart can't render a long
-// one legibly, so the on-canvas end label is truncated to a sane width (the full
-// label still rides into the aria description). This bounds the clamp below, so a
-// pathological label can't out-grow the canvas no matter where its bar lands.
+// Bounds the on-canvas end label so a pathological one can't outgrow the
+// canvas; the full label still rides into the aria description.
 const MAX_LABEL_CHARS = 24;
 
-// HTML/attr-context escaping for the five XML metacharacters — enough for both
-// element text and double-quoted attribute values (where these strings land). It
-// is deliberately not a denylist of "script-looking" tokens: an `onerror=`-style
-// substring is rendered inert as escaped text, never as a live attribute.
+// Covers element text and double-quoted attribute values; deliberately an
+// escape, not a denylist, so an `onerror=`-style substring renders inert.
 function escapeXml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -111,10 +81,8 @@ function escapeXml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-// Ellipsize to a bounded character count, trimming any trailing space the cut
-// exposes so a truncated label never renders a dangling gap before the ellipsis
-// ("Real Estate" -> "Real…", not "Real …"). Shared by the end labels and the
-// x-axis category labels.
+// Trims the space a cut exposes so "Real Estate" ellipsizes to "Real…", not
+// "Real …".
 function truncate(s: string, maxChars: number): string {
   if (s.length <= maxChars) return s;
   return `${s.slice(0, maxChars - 1).trimEnd()}…`;
@@ -124,16 +92,12 @@ function isFiniteNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
-// Parse + validate the spec; null on any contract violation (caller falls back).
 function parseSpec(content: string): ChartSpec | null {
   let parsed: unknown;
   try {
-    // Normalize Unicode dash/minus variants (U+2010–2015, U+2212) that sit
-    // directly before a digit to ASCII hyphen-minus, so a model emitting a
-    // negative like "‑0.21" (U+2011) instead of "-0.21" still yields valid JSON
-    // rather than silently dropping the chart to a raw code block. Scoped to
-    // dash-before-digit: an em-dash inside a title ("10Y — 2Y", followed by a
-    // space) is left untouched, so only number-position dashes are rewritten.
+    // A model sometimes emits a Unicode dash (U+2010–2015, U+2212) for a minus
+    // sign; fold those to ASCII only where a digit follows, so an em-dash in a
+    // title is left alone.
     const normalized = content.replace(/[‐-―−](?=\d)/g, "-");
     parsed = JSON.parse(normalized);
   } catch {
@@ -166,40 +130,29 @@ function parseSpec(content: string): ChartSpec | null {
     });
   }
   if (emphasisCount > 1) return null;
-  // All series share one x-axis (point i is the same observation across series),
-  // so they must have equal length — otherwise stretching unequal series across
-  // the full width would imply an alignment that isn't real.
+  // All series share one x-axis, so unequal lengths would imply an alignment
+  // that isn't real.
   if (!series.every((s) => s.points.length === series[0].points.length)) {
     return null;
   }
 
-  // Normalize a blank or whitespace-only title to "no title" so it never renders
-  // an empty caption or a dangling "Line chart: ." in the aria description.
+  // A blank title would render an empty caption and a dangling "Line chart: .".
   const rawTitle = typeof obj.title === "string" ? obj.title.trim() : "";
   const title = rawTitle.length > 0 ? rawTitle : undefined;
 
-  // Optional category x-axis. Bar-only (line/area imply a continuous axis), one
-  // non-empty string per slot — so its length must match the shared point count,
-  // and it's capped at MAX_CATEGORIES. Any violation rejects the whole spec.
-  // Labels are trimmed (like the title) so surrounding whitespace can't eat the
-  // per-slot truncation budget and render a label as "   …".
+  // Labels are trimmed so surrounding whitespace can't eat the per-slot
+  // truncation budget and render as "   …".
   let categories: string[] | undefined;
   if (obj.categories !== undefined) {
     if (type !== "bar") return null;
-    // A categorical bar identifies its series by fill colour alone — the per-series
-    // end label is suppressed and the legend is colour-keyed. The palette is ink
-    // plus at most one accent (design system: at most one emphasized series), i.e.
-    // two distinguishable fills — so a categorical bar can honestly show at most two
-    // series, and a two-series one needs exactly one `emphasis` (one ink, one accent).
-    // More series, or two that would both render ink, can't be told apart, so reject
-    // (fall back to a table / code block) rather than draw an ambiguous chart.
+    // A categorical bar identifies its series by fill alone, and the palette is
+    // ink plus at most one accent, so it honestly shows at most two series, a
+    // two-series one needing exactly one `emphasis`. Reject rather than draw an
+    // ambiguous chart.
     if (series.length > 2) return null;
     if (series.length === 2 && emphasisCount !== 1) return null;
-    // Both series need a non-blank label so the colour-keyed legend can say what each
-    // fill means, AND the two must read differently so the key isn't two identical
-    // entries. Reject missing, blank, or duplicate (whitespace-normalized) labels —
-    // two unlabeled or same-named colours are as ambiguous as two ink bars. (A
-    // single-series categorical needs no label; it leans on the title.)
+    // The colour-keyed legend needs two distinct, non-blank names; a lone
+    // series leans on the title.
     if (series.length === 2) {
       const a = typeof series[0].label === "string" ? series[0].label.trim() : "";
       const b = typeof series[1].label === "string" ? series[1].label.trim() : "";
@@ -216,7 +169,6 @@ function parseSpec(content: string): ChartSpec | null {
   return { type, title, series, categories };
 }
 
-// Compact coordinate — 2 decimals, no trailing-zero noise in the path string.
 function coord(n: number): string {
   return (Math.round(n * 100) / 100).toString();
 }
@@ -226,8 +178,6 @@ function formatTick(v: number): string {
   return Math.abs(v) >= 100 ? Math.round(v).toString() : v.toFixed(2);
 }
 
-// The "M…L…" polyline through a series' points — the open top edge shared by the
-// line geometry and the area's filled outline.
 function polyline(
   points: number[],
   x: (i: number) => number,
@@ -243,8 +193,6 @@ function byEmphasis(series: ChartSeries[]): ChartSeries[] {
   return [...series].sort((a, b) => Number(a.emphasis) - Number(b.emphasis));
 }
 
-// Line geometry: one polyline path per series. Shared by "line" and (as the top
-// stroke) "area".
 function linePaths(
   series: ChartSeries[],
   y: (v: number) => number,
@@ -259,9 +207,8 @@ function linePaths(
     .join("");
 }
 
-// Area geometry: each series' line closed down to the zero baseline and filled
-// with a faint single tint, then the crisp top strokes drawn over ALL fills so a
-// base series' line is never occluded by the accent series' wash.
+// Top strokes are drawn over ALL fills so a base series' line is never occluded
+// by the accent wash.
 function areaShapes(
   series: ChartSeries[],
   y: (v: number) => number,
@@ -281,11 +228,9 @@ function areaShapes(
   return fills + linePaths(series, y, xScale);
 }
 
-// The left edge and width of one bar: series `j` of `n` within the categorical
-// slot at `slotIndex` of `slotCount`. Bars are centered in evenly-divided slots
-// (not on the continuous point axis), so the edge bars stay fully inside the
-// canvas and a multi-series group sits side-by-side within its slot. Shared by
-// the geometry and the end-label placement so a label centers over its own bar.
+// Bars center in evenly-divided slots rather than on the continuous point
+// axis, so the edge bars stay inside the canvas. Shared with end-label
+// placement so a label centers over its own bar.
 function barColumn(
   slotCount: number,
   n: number,
@@ -301,8 +246,6 @@ function barColumn(
   return { x: groupLeft + j * bandW, w };
 }
 
-// Bar geometry: vertical rects grown from the zero baseline (up for positive,
-// down for negative).
 function barRects(series: ChartSeries[], y: (v: number) => number, plotR: number): string {
   const slotCount = series[0].points.length;
   const n = series.length;
@@ -327,9 +270,8 @@ function buildSvg(spec: ChartSpec): string {
   const all = spec.series.flatMap((s) => s.points);
   let min = Math.min(...all);
   let max = Math.max(...all);
-  // Bar and area read magnitude against a real origin, so their domain always
-  // includes zero (and a hairline baseline is drawn at y(0)); a line keeps its
-  // data-fitted domain so a level series isn't squashed against an unused axis.
+  // Bar and area read magnitude against a real origin, so their domain includes
+  // zero; a line keeps its data-fitted domain so a level series isn't squashed.
   const anchorZero = spec.type !== "line";
   if (anchorZero) {
     min = Math.min(min, 0);
@@ -344,9 +286,7 @@ function buildSvg(spec: ChartSpec): string {
   min -= headroom;
   max += headroom;
 
-  // The three y-tick values (top / middle / bottom of the padded domain) and the
-  // data area's right edge: reserve a gutter for the WIDEST tick string so the
-  // ticks (anchored at W-4) never overlap the plotted data (see TICK_CHAR_W).
+  // Reserve a gutter for the widest tick string (see TICK_CHAR_W).
   const tickVals = [max, (max + min) / 2, min];
   const tickStrings = tickVals.map(formatTick);
   const tickW = Math.max(...tickStrings.map((s) => s.length)) * TICK_CHAR_W;
@@ -359,7 +299,6 @@ function buildSvg(spec: ChartSpec): string {
     (i: number): number =>
       count <= 1 ? (PAD + plotR) / 2 : PAD + i * ((plotR - PAD) / (count - 1));
 
-  // 4 hairline horizontal grid lines, matching the reference.
   const grid = [0, 1, 2, 3]
     .map((i) => {
       const gy = PAD + (i * (H - 2 * PAD)) / 3;
@@ -367,14 +306,11 @@ function buildSvg(spec: ChartSpec): string {
     })
     .join("");
 
-  // Zero baseline for bar/area only — the axis bars and areas grow from. A line
-  // chart has no fixed origin, so it omits it.
+  // A line chart has no fixed origin, so it omits the zero baseline.
   const baseline = anchorZero
     ? `<line class="chart-baseline" x1="0" x2="${W}" y1="${coord(y(0))}" y2="${coord(y(0))}" />`
     : "";
 
-  // Series geometry branches on type; everything else (domain, grid, ticks,
-  // end labels, aria, caption) is shared across the three types.
   const geometry =
     spec.type === "bar"
       ? barRects(spec.series, y, plotR)
@@ -382,8 +318,6 @@ function buildSvg(spec: ChartSpec): string {
         ? areaShapes(spec.series, y, xScale)
         : linePaths(spec.series, y, xScale);
 
-  // ~3 y-axis tick labels — top / middle / bottom of the padded domain (values +
-  // strings computed above so the gutter could be sized to them).
   const ticks = tickVals
     .map((v, i) => {
       const ty = y(v) + 3;
@@ -391,25 +325,19 @@ function buildSvg(spec: ChartSpec): string {
     })
     .join("");
 
-  // End-of-series labels. Each label starts near its series' last point — the
-  // emphasized one just above, the rest just below (reference idiom) — then ALL
-  // of them (accent included) are decluttered together so no two stack, and the
-  // cluster is nudged back inside the canvas if it would clip off either edge
-  // (frontend-craft overflow handling). For line/area the labels ride the shared
-  // right edge (anchor end, since every series ends at the same x); for bars they
-  // center over each series' own last bar (anchor middle), so a label sits with
-  // the bar it names rather than floating off in the right margin.
+  // End-of-series labels start near each series' last point (the emphasized one
+  // above, the rest below), are decluttered together so no two stack, and the
+  // cluster is nudged back inside the canvas. Line/area labels ride the shared
+  // right edge; bar labels center over each series' own last bar.
   const lastI = spec.series[0].points.length - 1;
   const isBar = spec.type === "bar";
   const n = spec.series.length;
   const lineEndX = coord(xScale(spec.series[0].points.length)(lastI) - 4);
   const anchor = isBar ? "middle" : "end";
 
-  // Categorical bars suppress the on-canvas series end-label: it would ride over
-  // the series' last bar (low-contrast fill-on-fill) and the category axis + title
-  // already name the chart, with each series' identity preserved in the aria
-  // description. (A dedicated multi-series categorical legend is a future
-  // enhancement; for now a multi-series categorical chart leans on the aria.)
+  // Categorical bars suppress the end label: it would ride fill-on-fill over
+  // the last bar, and the category axis, title and aria already name the
+  // series.
   const endLabelSeries = spec.categories !== undefined ? [] : spec.series;
 
   const labels = endLabelSeries
@@ -421,10 +349,8 @@ function buildSvg(spec: ChartSpec): string {
       let lx = lineEndX;
       if (isBar) {
         const col = barColumn(spec.series[0].points.length, n, lastI, j, plotR);
-        // Center over the bar, but the last bar's center nears x≈W as the point
-        // count grows; a middle-anchored label there would clip past the 720-wide
-        // viewBox (the SVG hides overflow). Clamp by the (now length-bounded)
-        // estimated half-width so the label always lands fully inside the canvas.
+        // The last bar's center nears W as the point count grows and the SVG
+        // hides overflow, so clamp by the estimated half-width.
         const halfW = (display.length * LABEL_CHAR_W) / 2;
         const center = col.x + col.w / 2;
         lx = coord(Math.min(Math.max(center, PAD + halfW), plotR - halfW));
@@ -456,18 +382,11 @@ function buildSvg(spec: ChartSpec): string {
     )
     .join("");
 
-  // X-axis category labels (categorical bars only) — one centered under each
-  // slot, STAGGERED across two rows (even indices upper, odd lower) so a label
-  // clears its nearest same-row neighbour by two slots. That roughly doubles each
-  // label's width budget over a single row, which is what lets two long
-  // common-prefix names truncate to DISTINCT stubs ("Consumer Discretionary" /
-  // "Consumer Staples" -> "Consumer Di…" / "Consumer St…") instead of colliding on
-  // one "Consu…". The budget is the two-slot span capped by the distance to the
-  // nearer viewBox edge, so a centered edge label is provably contained within the
-  // canvas with no clamp/justification — and the conservative LABEL_CHAR_W upper
-  // bound keeps that containment sound. Names past the (doubled) budget still
-  // ellipsize, but the residual shrinks with cardinality and the full name always
-  // reaches assistive tech via the aria description below.
+  // Category labels stagger across two rows so each clears its same-row
+  // neighbour by two slots, roughly doubling its width budget — which is what
+  // lets "Consumer Discretionary" / "Consumer Staples" truncate to distinct
+  // stubs instead of two "Consu…". The budget is capped by the distance to the
+  // nearer viewBox edge, so an edge label is contained with no clamp.
   const xLabels =
     spec.categories !== undefined
       ? spec.categories
@@ -475,34 +394,26 @@ function buildSvg(spec: ChartSpec): string {
             const count = spec.categories!.length;
             const slot = (plotR - PAD) / count;
             const cx = PAD + (i + 0.5) * slot;
-            // Half-width budget: the two-slot same-row spacing (a same-row
-            // neighbour sits 2 slots away, so half-width <= one slot keeps them
-            // apart), capped by the nearer viewBox edge so an edge label can't clip.
-            // The x-axis band sits below the plot, clear of the y-tick gutter, so a
-            // label may use the full width up to W (not just PLOT_R).
+            // The band sits below the plot, clear of the y-tick gutter, so a
+            // label may use the full width to W.
             const halfBudget = Math.min(slot, cx, W - cx);
             const maxChars = Math.max(1, Math.floor((2 * halfBudget) / LABEL_CHAR_W));
             const display = truncate(cat, maxChars);
             const y = H + X_LABEL_BASELINE + (i % 2) * X_LABEL_ROW_GAP;
-            // When the name is truncated, carry the full label as a native hover
-            // tooltip (SVG <title>). The tooltip is a pointer affordance only, but
-            // the full text is ALSO in the figure's aria-label below (the accessible
-            // name assistive tech reads), so the data is never hover-gated. We
-            // deliberately don't make each label focusable — up to 16 axis labels
-            // would add 16 tab stops, an a11y anti-pattern, for less than the
-            // figure-level aria already gives.
+            // A truncated name carries the full label as a native <title>
+            // tooltip; it is also in the figure's aria-label, so it is never
+            // hover-gated. Labels are deliberately not focusable: up to 16 tab
+            // stops would buy nothing the figure-level aria doesn't give.
             const tip = display !== cat ? `<title>${escapeXml(cat)}</title>` : "";
             return `<text class="chart-xlabel" x="${coord(cx)}" y="${coord(y)}" text-anchor="middle">${tip}${escapeXml(display)}</text>`;
           })
           .join("")
       : "";
 
-  // A screen-reader description — the SVG is injected via v-html and is otherwise
-  // invisible to assistive tech, so summarize each series. A time series gets its
-  // span and direction; a categorical bar instead enumerates each category and
-  // its value (a left-to-right "direction" is meaningless across categories).
-  // Escape each agent-controlled field on its own (not the composed string) so a
-  // later edit can't silently skip escaping; numeric values carry no metacharacters.
+  // The SVG is injected via v-html and otherwise invisible to assistive tech. A
+  // categorical bar enumerates each category and value (a left-to-right
+  // direction is meaningless across categories). Each field is escaped on its
+  // own, not the composed string, so a later edit can't skip escaping.
   const safeTitle = spec.title !== undefined ? escapeXml(spec.title) : "";
   const seriesDesc =
     spec.categories !== undefined
@@ -538,18 +449,11 @@ function buildSvg(spec: ChartSpec): string {
       ? `<figcaption class="chart-caption">${escapeXml(spec.title)}</figcaption>`
       : "";
 
-  // A category x-axis needs room below the plot; line/time charts keep H exactly.
   const vbH = spec.categories !== undefined ? H + X_AXIS_BAND : H;
 
-  // A multi-series categorical bar is validated to exactly two series, one
-  // emphasized, both non-blank and distinctly labeled (see parseSpec), so its legend always
-  // renders two distinguishable, named swatches — ink for the base series, accent
-  // for the emphasized one — saying which colour is which. It replaces the
-  // per-series end label (suppressed above to avoid overlapping the bars).
-  // Single-series categoricals show no legend: they lean on the title, and a
-  // one-item legend would clutter the common case where the series label just
-  // restates it. (Accepted residual: a lone series' optional qualifier then lives
-  // only in the aria description, off-canvas.)
+  // The legend replaces the suppressed end label for a two-series categorical
+  // (validated to one ink and one accent series, distinctly labeled). A single
+  // series shows none: its label usually restates the title.
   const showLegend =
     spec.categories !== undefined &&
     spec.series.length >= 2 &&

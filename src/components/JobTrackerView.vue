@@ -4,58 +4,37 @@ import Icon from "./Icon.vue";
 import ReasoningPane from "./ReasoningPane.vue";
 import type { PortfolioResumeStatus, RunTrace, StepStatus, TrackerRequest } from "../types";
 
-// Live job run tracker — shown in place of the report pane while a run is in
-// flight (and reopenable as a terminal "run log" afterward, latest run only).
+// Live job run tracker, shown in place of the report pane while a run is in
+// flight and reopenable as the latest run's log afterward.
 //
-// DESIGN-SYSTEM EXTENSION: a process/step-list surface is not in the ui_kits.
-// It is grounded in existing system idioms rather than invented: the inset-well
-// `.prose pre` block (the live agent stream), hairline list rows (the per-series
-// requests), the caption/eyebrow scale, sans chrome, and the oxblood accent only
-// on interactive states + the running marker. No fills beyond the inset-well
-// token, no shadows, no shimmer, no celebratory motion. Flagged per CLAUDE.md §5.
+// DESIGN-SYSTEM EXTENSION (CLAUDE.md §5): a process/step-list surface is not in
+// the ui_kits. It is grounded in existing idioms (the inset-well `.prose pre`
+// block, hairline list rows, the caption/eyebrow scale, the accent only on
+// interactive states and the running marker): no fills beyond the inset-well
+// token, no shadows, no shimmer, no celebratory motion.
 //
-// LIVENESS BREATHE (user-approved extension, 2026-06-23): the *active* indicators —
-// the running step marker and the in-flight request dot — carry a slow opacity
-// breathe so the run reads as alive (not frozen) while a single long step holds the
-// footer's determinate fill steady. This deliberately overrides the system's
-// "no idle motion" stance for these two elements only; it is distinct from the
-// rejected patterns (it is one slow opacity oscillation on the *current* item, not
-// skeleton shimmer, a spinner, or completion celebration) and is gated by
-// prefers-reduced-motion. Approved as an intentional departure.
+// LIVENESS BREATHE: the running step marker and the in-flight request dot carry
+// a slow opacity breathe so the run reads as alive while a long step holds the
+// footer's fill steady. An approved departure from the system's no-idle-motion
+// stance for these two elements only, gated by prefers-reduced-motion.
 //
-// The streamed-reasoning well is its own primitive (ReasoningPane.vue), shared by
-// the main agent's, each analyst's, and a local job's per-step stream: bounded in
-// height with its own scroller and auto-follow, so a long run's earlier steps
-// stay compact (ruled 2026-09-15; the extension note lives with the component).
-//
-// REQUEST-ROW SUBJECT (ruled 2026-09-15): the kit's tracker row is pip + name +
-// status. A research row (a local job's web search or page fetch) adds a third
-// text segment on the same line — a tracked-caps SEARCH / FETCH token and the
-// query or page address — and a completed row shows its short outcome note
-// ("12 hits") in the caption register beside the status. Both reuse the row's
-// existing registers (the provider column's caption, the name's ellipsis).
-// The subject is a ghost-button disclosure: keyboard or pointer activation
-// reveals the full text across the row. See the desktop kit README's request
-// subject disclosure extension; no hover is required to read clipped text.
+// REQUEST-ROW SUBJECT: a research row adds a SEARCH / FETCH token and its query
+// or page address, and a completed row its short outcome note. The subject is a
+// ghost-button disclosure revealing the full text, so no hover is required to
+// read clipped text (the desktop kit README's request subject disclosure
+// extension).
 const props = withDefaults(
   defineProps<{
     trace: RunTrace;
-    // Whether the run is still in flight (drives Cancel vs Dismiss + the live region).
     active: boolean;
-    // A cancel has been requested but the run hasn't ended yet — disables Cancel and
-    // shows the cooperative-stop note.
     cancelRequested: boolean;
-    // Which page owns the run (docs/run-tracking.md — one shared tracker placed on
-    // the running job's own page), keying the surface labels: the back control,
-    // the scroll region's accessible name, and the idle headline.
+    // Which page owns the run (docs/run-tracking.md); keys the surface labels.
     kind?: "report" | "portfolio" | "portfolio-quick-check";
-    // The interrupted-run resumability read, supplied only for a Portfolio
-    // run's terminal state (docs/portfolio-analysis.md §Failure posture: resume
-    // is offered from the failed / cancelled tracker state). `null` = no
-    // checkpoint trail (or not a portfolio run) — nothing renders.
+    // Supplied only for a Portfolio run's terminal state
+    // (docs/portfolio-analysis.md §Failure posture); `null` = no checkpoint
+    // trail, nothing renders.
     resume?: PortfolioResumeStatus | null;
-    // A resume is already being requested — disables the button so a double
-    // press cannot race the single run slot.
+    // Disables the button so a double press cannot race the single run slot.
     resumeRequested?: boolean;
   }>(),
   { kind: "report", resume: null, resumeRequested: false }
@@ -67,8 +46,7 @@ const emit = defineEmits<{
   (e: "resume"): void;
 }>();
 
-// Use row identity: repeated requests can have identical queries/URLs, and a
-// completion updates the existing row in place. Each disclosure stays independent.
+// Keyed by row identity: repeated requests can share a query or URL.
 const expandedTargets = ref(new Set<TrackerRequest>());
 watch(() => props.trace.runId, () => expandedTargets.value.clear());
 function toggleTarget(row: TrackerRequest) {
@@ -79,8 +57,8 @@ function targetDisclosureLabel(row: TrackerRequest): string {
   return `${expandedTargets.value.has(row) ? "Hide" : "Show"} full ${subject}: ${row.target?.text ?? ""}`;
 }
 
-// The owning-page label set (docs/run-tracking.md): a Portfolio run's tracker
-// must never announce itself as report generation.
+// docs/run-tracking.md: a Portfolio run's tracker must never announce itself
+// as report generation.
 const idleHeadline = computed(() => {
   switch (props.kind) {
     case "portfolio":
@@ -105,7 +83,6 @@ const progressRegionLabel = computed(() => {
   }
 });
 
-// The toolbar headline, announced politely to screen readers as it changes.
 const headline = computed(() => {
   if (props.active) {
     const running = props.trace.steps.find((s) => s.status === "running");
@@ -114,7 +91,6 @@ const headline = computed(() => {
   return "Run log";
 });
 
-// The terminal tag shown once the run ends (the run-finished status).
 const terminal = computed(() => props.trace.terminal);
 const terminalLabel = computed(() => {
   switch (terminal.value?.status) {
@@ -128,19 +104,15 @@ const terminalLabel = computed(() => {
       return terminal.value?.status ?? "";
   }
 });
-// A non-color signal pairs with the tag tint: completed reads neutral, the two
-// stopped outcomes read in accent-text and carry their own word.
+// Pairs the tag tint with its word, so the outcome never rides on color alone.
 const terminalIsAlert = computed(
   () => terminal.value?.status === "failed" || terminal.value?.status === "cancelled"
 );
 
-// Resume is offered only on a Portfolio run's failed / cancelled terminal state
-// with a currently-eligible checkpoint trail (docs/portfolio-analysis.md
-// §Failure posture); a trail that exists but cannot resume states why instead.
-// The probe returns whichever trail exists — not necessarily this run's (a run
-// failing before it opens its own trail leaves an earlier one standing) — so
-// the note identifies the trail by its own pinned as-of, never by claiming it
-// belongs to the run shown.
+// docs/portfolio-analysis.md §Failure posture. The probe returns whichever
+// trail exists, not necessarily this run's (a run failing before it opens its
+// own trail leaves an earlier one standing), so the note identifies the trail
+// by its own as-of, never claiming it belongs to the run shown.
 const resumeContext = computed(
   () =>
     !props.active &&
@@ -151,8 +123,7 @@ const resumeContext = computed(
 const resumeOffered = computed(
   () => resumeContext.value && props.resume?.available === true
 );
-// The pinned pull's as-of in the viewer's local time (backend persists UTC);
-// falls back to the raw string if unparseable.
+// The backend persists UTC; render in the viewer's local time.
 function formatLocal(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -185,8 +156,8 @@ function stepStatusText(status: StepStatus): string {
       return "Failed";
     case "cancelled":
       return "Stopped";
-    // The quick check's per-holding sweep outcomes: completed-with-outcome,
-    // named in text so neither leans on the marker (or its color) alone.
+    // The quick check's outcomes, named in text so neither leans on the marker
+    // or its color alone.
     case "flagged":
       return "Flagged";
     case "unknown":
@@ -196,9 +167,9 @@ function stepStatusText(status: StepStatus): string {
   }
 }
 
-// A request row's tone: in-flight, success, a benign non-result (no data for this
-// probe), or a failure. Drives both the right-hand indicator and the name color, so
-// meaning never rides on color alone (the failure/benign cases also show their word).
+// `benign` is a non-result (no data for this probe), not a failure. The tone
+// drives the indicator and the name color; failure and benign also show their
+// word, so meaning never rides on color alone.
 type ReqTone = "running" | "ok" | "benign" | "fail";
 function reqTone(status: string): ReqTone {
   if (status === "running") return "running";
@@ -207,16 +178,14 @@ function reqTone(status: string): ReqTone {
   return "fail";
 }
 
-// The three analysts in their canonical order, with display labels for the
-// reasoning-pane captions. Keyed by the posture the backend tags each chunk with.
+// Keyed by the posture the backend tags each chunk with.
 const ANALYST_ORDER = ["bull", "bear", "balanced"] as const;
 const ANALYST_LABELS: Record<string, string> = {
   bull: "Bull",
   bear: "Bear",
   balanced: "Balanced",
 };
-// The non-empty analyst reasoning panes for a step, in canonical order; an
-// unrecognized posture (forward-compat) still renders, labeled by its raw key.
+// An unrecognized posture still renders, labeled by its raw key.
 function analystPanes(thinking: Record<string, string> | undefined): { posture: string; label: string; text: string }[] {
   if (!thinking) return [];
   const known = ANALYST_ORDER.filter((p) => thinking[p]);
@@ -230,8 +199,8 @@ function analystPanes(thinking: Record<string, string> | undefined): { posture: 
   }));
 }
 
-// Auto-follow the stream: keep the view pinned to the newest content while the
-// user is at the bottom, but never yank them back if they've scrolled up to read.
+// Auto-follow: pinned to the newest content while the user is at the bottom,
+// never yanked back once they've scrolled up to read.
 const scroller = ref<HTMLElement | null>(null);
 const pinned = ref(true);
 
@@ -241,8 +210,8 @@ function onScroll() {
   pinned.value = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
 }
 
-// A cheap signal that grows as content arrives (request rows + streamed chars +
-// step count), so the watcher fires on any new content without deep-watching.
+// Grows as content arrives, so the watcher fires on new content without
+// deep-watching.
 const contentSignature = computed(() => {
   let n = props.trace.steps.length + props.trace.unattributed.length;
   for (const s of props.trace.steps) {
@@ -263,12 +232,11 @@ watch(contentSignature, async () => {
 
 <template>
   <main class="tracker-pane">
-    <!-- Seam matches the report toolbar (height/padding/divider) so the view
-         swap is invisible at the boundary. -->
+    <!-- Seam matches the report toolbar so the view swap is invisible at the
+         boundary. -->
     <div class="toolbar">
-      <!-- aria-live on the heading (not just the label) so the terminal outcome
-           tag, which is inserted on completion, is announced alongside the
-           headline change — a screen-reader user hears whether the run passed. -->
+      <!-- aria-live on the heading, not just the label, so the terminal tag
+           inserted on completion is announced with the headline change. -->
       <div class="toolbar-heading" aria-live="polite">
         <span class="toolbar-label">{{ headline }}</span>
         <span
@@ -304,15 +272,12 @@ watch(contentSignature, async () => {
         </template>
       </div>
     </div>
-    <!-- The resumability read for a stopped Portfolio run: what resume keeps,
-         or why it is unavailable — announced politely, since it appears with
-         the terminal state. -->
     <p v-if="resumeNote" class="resume-note" aria-live="polite">
       {{ resumeNote }}
     </p>
 
-    <!-- Keyboard-scrollable region; the live agent text and request rows stream
-         in here. role+label+tabindex make it reachable and operable by keyboard. -->
+    <!-- role + label + tabindex make the scroll region reachable and operable by
+         keyboard. -->
     <div
       ref="scroller"
       class="tracker-scroll"
@@ -341,22 +306,20 @@ watch(contentSignature, async () => {
                 name="warning"
                 :size="13"
               />
-              <!-- running / pending / unknown use a CSS box (filled, hollow
-                   hairline, hollow ink) — the visible status text carries
-                   unknown's meaning, never the marker alone -->
+              <!-- running / pending / unknown use a CSS box; the status text
+                   carries unknown's meaning, never the marker alone -->
             </span>
             <span class="step-label">{{ step.label }}</span>
             <span v-if="stepStatusText(step.status)" class="step-status">{{
               stepStatusText(step.status)
             }}</span>
-            <!-- ok / pending carry their state through the (aria-hidden) marker
-                 only; give a screen reader the word so done ≠ not-yet-started. -->
+            <!-- ok / pending have only the aria-hidden marker; give a screen
+                 reader the word. -->
             <span v-else class="sr-only">{{
               step.status === "ok" ? "Completed" : "Not started"
             }}</span>
           </div>
 
-          <!-- Failure / stop reason for a step that didn't complete cleanly. -->
           <p
             v-if="step.detail && (step.status === 'failed' || step.status === 'cancelled')"
             class="step-detail"
@@ -364,7 +327,6 @@ watch(contentSignature, async () => {
             {{ step.detail }}
           </p>
 
-          <!-- One row per actual HTTP request, streamed in-flight then resolved. -->
           <ul v-if="step.requests.length" class="req-list">
             <li
               v-for="(r, i) in step.requests"
@@ -374,9 +336,6 @@ watch(contentSignature, async () => {
             >
               <span class="req-provider">{{ r.provider }}</span>
               <span class="req-name" :title="r.name">{{ r.name }}</span>
-              <!-- What a research request asked for — the search query or the
-                   page address — beside the topic it served. Only research
-                   rows carry one. The button reveals clipped text below. -->
               <button
                 v-if="r.target"
                 type="button"
@@ -390,9 +349,6 @@ watch(contentSignature, async () => {
                 <span class="req-target-kind">{{ r.target.kind }}</span>
                 <span class="req-target-text">{{ r.target.text }}</span>
               </button>
-              <!-- A completed row's short outcome note ("12 hits", "served from
-                   document cache"); a failure's cause takes the detail line
-                   below instead. -->
               <span
                 v-if="reqTone(r.status) === 'ok' && r.detail"
                 class="req-note"
@@ -416,10 +372,6 @@ watch(contentSignature, async () => {
                 <template v-else>{{ r.status }}</template>
               </span>
               <span v-if="r.target && expandedTargets.has(r)" class="req-target-full">{{ r.target.text }}</span>
-              <!-- The failure's cause (the transport error or HTTP status +
-                   provider sentence the backend leaves on the row) — rendered,
-                   not tooltip-only, so the diagnosis no longer needs a
-                   screenshot or stderr. -->
               <span
                 v-if="reqTone(r.status) === 'fail' && r.detail"
                 class="req-detail"
@@ -430,9 +382,8 @@ watch(contentSignature, async () => {
             </li>
           </ul>
 
-          <!-- Each analyst's streamed reasoning (thoughts only — the review body never
-               streams), one pane per analyst that surfaces thinking, labeled by posture.
-               Absent for analyst models that don't surface thinking. -->
+          <!-- Thoughts only: the review body never streams. Absent for models that
+               don't surface thinking. -->
           <ReasoningPane
             v-for="pane in analystPanes(step.analystThinking)"
             :key="pane.posture"
@@ -441,11 +392,8 @@ watch(contentSignature, async () => {
             :text="pane.text"
           />
 
-          <!-- The step's streamed reasoning (the main agent's extended thinking, or
-               a local job's per-step stream), shown above any report text as a
-               quieter, subordinate stream. Absent for models that don't surface
-               thinking — the block simply doesn't render. The accessible name carries
-               the step label so a long run's panes don't all read "Reasoning". -->
+          <!-- The accessible name carries the step label so a long run's panes
+               don't all read "Reasoning". -->
           <ReasoningPane
             v-if="step.agentThinking"
             label="Reasoning"
@@ -453,15 +401,13 @@ watch(contentSignature, async () => {
             :text="step.agentThinking"
           />
 
-          <!-- The main agent's report text, streamed live (decoded Markdown). -->
           <pre v-if="step.agentText" class="agent-stream">{{ step.agentText }}</pre>
         </li>
       </ol>
 
-      <!-- Requests whose events carried no owning-step stamp (a request fired
-           with no step open). Rendered as their own neutral trailing list —
-           never synthesized into a step, so an unowned row can never read as a
-           failed stage. Absent in every well-bracketed run. -->
+      <!-- Requests with no owning step, never synthesized into a step so an
+           unowned row can't read as a failed stage. Absent in every
+           well-bracketed run. -->
       <section
         v-if="trace.unattributed.length"
         class="unattributed"
@@ -524,7 +470,6 @@ watch(contentSignature, async () => {
         </ul>
       </section>
 
-      <!-- Edge state: the run has started but no step events have landed yet. -->
       <p v-if="!trace.steps.length" class="tracker-starting">Starting…</p>
     </div>
   </main>
@@ -539,8 +484,8 @@ watch(contentSignature, async () => {
   background: var(--paper);
 }
 
-/* Mirrors LatestReportView's toolbar seam exactly so swapping the pane for the
-   tracker leaves the boundary unchanged (composition coherence). */
+/* Mirrors LatestReportView's toolbar seam so swapping the pane leaves the
+   boundary unchanged. */
 .toolbar {
   display: flex;
   align-items: center;
@@ -551,9 +496,6 @@ watch(contentSignature, async () => {
   gap: var(--s-4);
 }
 
-/* The stopped-run resumability line: quiet ui-sm ink-2 prose under the toolbar,
-   aligned to its padding — the same register as the request rows' detail text,
-   no new tokens. */
 .resume-note {
   margin: 0;
   padding: var(--s-3) var(--s-8);
@@ -569,10 +511,8 @@ watch(contentSignature, async () => {
   min-width: 0;
 }
 
-/* The headline is dynamic content (a live step label, then "Run log"), not a fixed
-   pane name, so sentence case at neutral tracking — caps + --track-caption are
-   reserved for static surface titles (see the surface-title note in
-   colors_and_type.css). Matches LatestReportView's sentence-case toolbar-label. */
+/* Dynamic content, so sentence case at neutral tracking; caps + --track-caption
+   are reserved for static surface titles (colors_and_type.css). */
 .toolbar-label {
   font-family: var(--font-sans);
   font-size: var(--t-ui-sm);
@@ -583,8 +523,6 @@ watch(contentSignature, async () => {
   white-space: nowrap;
 }
 
-/* Visually-hidden text for screen readers — conveys a step's done/pending state
-   that the (aria-hidden) marker otherwise shows only visually. */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -624,17 +562,11 @@ watch(contentSignature, async () => {
   flex: 1;
   overflow-y: auto;
   padding: var(--s-7) var(--s-8) var(--s-10);
-  /* Positioning context for the per-step `.sr-only` spans. They are
-     `position: absolute`; without a positioned ancestor their containing block
-     is <html>, so each is laid out at its static position deep inside this tall
-     list and — though 1px and clipped — extends the *document* scrollHeight,
-     producing a second, page-level scrollbar alongside this region's own. Making
-     the scroll container the containing block keeps them within it (which clips),
-     so only this region scrolls. */
+  /* Positioning context for the `.sr-only` spans: absolutely positioned with
+     <html> as their containing block, each would extend the document
+     scrollHeight and produce a second, page-level scrollbar. */
   position: relative;
 }
-/* Keyboard focus on the scroll region itself (it's tabbable so it can be
-   scrolled by keyboard) — a quiet inset ring, not the button outline. */
 .tracker-scroll:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
@@ -678,8 +610,7 @@ watch(contentSignature, async () => {
   position: relative;
   top: 2px;
 }
-/* running / pending markers are CSS boxes: a filled accent box vs a hollow
-   hairline box. Shape + position carry meaning, not color alone. */
+/* Filled vs hollow: shape carries the meaning, not color alone. */
 .step-marker[data-status="running"]::before,
 .step-marker[data-status="pending"]::before {
   content: "";
@@ -697,9 +628,8 @@ watch(contentSignature, async () => {
 .step-marker[data-status="cancelled"] {
   color: var(--accent-text);
 }
-/* The quick check's sweep outcomes. Flagged reuses the sanctioned grade-D
-   "amber" pair's text token (the Portfolio attention-flag treatment); unknown
-   stays quiet — a hollow ink box, its meaning carried by the status text. */
+/* Flagged reuses the grade-D amber text token (the Portfolio attention-flag
+   treatment); unknown is a hollow ink box, its meaning in the status text. */
 .step-marker[data-status="flagged"] {
   color: var(--grade-d-tx);
 }
@@ -750,7 +680,6 @@ watch(contentSignature, async () => {
   overflow-wrap: anywhere;
 }
 
-/* Per-series request rows under the baseline step. */
 .req-list {
   list-style: none;
   margin: var(--s-4) 0 0 0;
@@ -787,7 +716,6 @@ watch(contentSignature, async () => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The name dims for anything that isn't a clean success. */
 .req:not([data-tone="ok"]) .req-name {
   color: var(--ink-2);
 }
@@ -800,8 +728,6 @@ watch(contentSignature, async () => {
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
 }
-/* Success and benign non-results (no data for a probe) read muted, not alarming;
-   only true failures take the accent text alongside their reason word. */
 .req-status[data-tone="ok"],
 .req-status[data-tone="benign"] {
   color: var(--ink-3);
@@ -810,19 +736,14 @@ watch(contentSignature, async () => {
   color: var(--accent-text);
 }
 
-/* A research row's subject — the search query or the page address — as its own
-   column between the topic and the status (ruled 2026-09-15: one line, not a
-   second line under the row). Such a row is an explicit five-column grid
-   rather than the wrapping flex row — provider, topic, subject, note, status
-   — so at any width the status marker holds the right edge and nothing wraps
-   to the row's left edge. The provider track is `auto` so the span's own 9ch
-   (set in its caption size) sizes it, keeping the topic flush with the plain
-   rows' names. Under pressure the tracks yield in this order: the subject
-   keeps a 12ch floor, the topic (20ch fits every agenda key) and the note
-   share what remains, and the subject takes everything past that — so a
-   note clips before a subject ever falls below its floor. The kind token
-   takes the provider column's caption register; the text takes the name's
-   clip treatment; the disclosure reveals a long address on a full-width line. */
+/* A research row is an explicit five-column grid (provider, topic, subject,
+   note, status) rather than the wrapping flex row, so at any width the status
+   marker holds the right edge and nothing wraps to the left edge. The provider
+   track is `auto` so the span's own 9ch sizes it, keeping the topic flush with
+   the plain rows' names. Under pressure the subject keeps a 12ch floor, the
+   topic (20ch fits every agenda key) and the note share what remains, and the
+   subject takes everything past that, so a note clips before a subject falls
+   below its floor. */
 .req:has(.req-target) {
   display: grid;
   grid-template-columns: auto minmax(0, 20ch) minmax(12ch, 1fr) minmax(0, max-content) auto;
@@ -833,11 +754,8 @@ watch(contentSignature, async () => {
 .req:has(.req-target) .req-target {
   grid-column: 3;
 }
-/* The subject is a `.btn-ghost` stripped to the row's own metrics: no padding
-   and no border (the kit button's transparent 1px border would add 2px to a
-   research row and break the hairline list's shared rhythm), the row's font,
-   so it sits on the same baseline as the topic beside it. Hover keeps the
-   ghost's paper-soft fill; focus keeps the kit's accent outline. */
+/* A `.btn-ghost` stripped to the row's metrics: the kit button's transparent
+   1px border would add 2px to the row and break the hairline list's rhythm. */
 .req-target {
   min-width: 0;
   display: inline-flex;
@@ -853,8 +771,7 @@ watch(contentSignature, async () => {
 .req-target-chevron {
   flex-shrink: 0;
 }
-/* The revealed full text starts at the topic column, like the failure-cause
-   line below it, never under the provider column. */
+/* Starts at the topic column, never under the provider column. */
 .req-target-full {
   grid-column: 2 / -1;
   min-width: 0;
@@ -884,12 +801,10 @@ watch(contentSignature, async () => {
   grid-column: 1 / -1;
 }
 
-/* A completed row's short outcome note ("12 hits", "served from document
-   cache") in the caption register beside the status; the cap bounds its
-   track's max-content so a long note can never push the marker off the row.
-   The column placement is scoped to the research-row grid: today only
-   research rows resolve ok with a detail, but a plain flex row that ever
-   does must not carry a stray grid-column. */
+/* The max-width bounds the note track's max-content so a long note can never
+   push the marker off the row. The column placement is scoped to the
+   research-row grid: a plain flex row that ever resolves ok with a detail must
+   not carry a stray grid-column. */
 .req:has(.req-target) .req-note {
   grid-column: 4;
 }
@@ -904,9 +819,7 @@ watch(contentSignature, async () => {
   font-variant-numeric: tabular-nums;
 }
 
-/* The failure's cause sentence — a quiet full-width line under the row,
-   clamped to two lines (the backend caps the text; a long HTML body head
-   still must not swallow the list), full text on hover. */
+/* Clamped to two lines: a long HTML body head must not swallow the list. */
 .req-detail {
   flex-basis: 100%;
   min-width: 0;
@@ -920,10 +833,7 @@ watch(contentSignature, async () => {
   line-clamp: 2;
 }
 
-/* In-flight indicator: a small accent square, matching the step running marker and
-   the system's "accent marks the active item" convention. Carries the liveness
-   breathe (see the file header note) so an in-flight request reads as active even
-   during a long single call; reduced-motion users get it static. */
+/* Carries the liveness breathe (see the header note). */
 .req-dot {
   width: 6px;
   height: 6px;
@@ -931,9 +841,7 @@ watch(contentSignature, async () => {
   background: var(--accent);
 }
 
-/* The shared liveness breathe — a single slow opacity oscillation on the active
-   indicators only. Gated so reduced-motion users see a steady (full-opacity) marker
-   and no animation at all. */
+/* Gated so reduced-motion users see a steady, full-opacity marker. */
 @media (prefers-reduced-motion: no-preference) {
   @keyframes ms-breathe {
     0%,
@@ -950,13 +858,8 @@ watch(contentSignature, async () => {
   }
 }
 
-/* The streamed-reasoning well (the subordinate stream above the report text)
-   is ReasoningPane.vue, which owns its look and its bound. */
-
-/* The main agent's streamed report text — the system's inset-well code block
-   idiom (mono on paper-edge, hairline border), here growing as the model writes
-   and softly wrapping its Markdown source. Deliberately left unbounded — it is
-   the deliverable and there is one per run — unlike the reasoning wells. */
+/* Deliberately unbounded, unlike the reasoning wells: it is the deliverable and
+   there is one per run; the outer tracker scroll auto-follows the newest tokens. */
 .agent-stream {
   margin: var(--s-4) 0 0 0;
   padding: var(--s-4) var(--s-5);
@@ -969,15 +872,8 @@ watch(contentSignature, async () => {
   color: var(--ink-2);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  /* No inner scroll: the block grows with the streamed text and the outer
-     tracker scroll auto-follows to the newest tokens, so the latest writing is
-     always in view (the user can scroll up to re-read). */
 }
 
-/* The unattributed-requests list: the same hairline request rows, held outside
-   the step spine under a caption label (the eyebrow idiom), aligned to the
-   step list's measure. Neutral by construction — no step marker, no status
-   word of its own. */
 .unattributed {
   margin: var(--s-6) auto 0;
   max-width: var(--measure-wide);

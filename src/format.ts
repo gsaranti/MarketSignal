@@ -1,16 +1,9 @@
-// Shared display formatters. Kept in one place so the report-date convention has
-// a single home — the earlier per-component duplication is what let the date
-// drift between surfaces.
+// Shared display formatters, so the report-date convention has a single home.
 
-// Render an ISO-8601 (UTC) instant as its `YYYY-MM-DD` date in the user's local
-// time zone — the calendar date that matches their wall clock. Reports are
-// local-time artifacts (generated and dated in the user's local time;
-// docs/scheduling.md), and the backend already names report files by local date
-// (pipeline::canonical_report_filename / export_basename via chrono::Local), so
-// deriving the displayed date the same way keeps the sidebar/toolbar datelines,
-// the Markdown export name, and the PDF export name in agreement. A naive
-// `iso.slice(0, 10)` would instead show the UTC calendar date, which can be a
-// day off near midnight.
+// The `YYYY-MM-DD` local-time date of a UTC ISO-8601 instant. Reports are dated
+// in local time (docs/scheduling.md) and the backend names report files by local
+// date, so the displayed date derives the same way; `iso.slice(0, 10)` would
+// show the UTC date, a day off near midnight.
 export function localDate(iso: string): string {
   const d = new Date(iso);
   const year = d.getFullYear();
@@ -19,11 +12,7 @@ export function localDate(iso: string): string {
   return `${year}-${month}-${day}`;
 }
 
-// Render an ISO-8601 (UTC) instant as `YYYY-MM-DD HH:MM` in the user's local time
-// zone — the local calendar date plus 24-hour wall-clock time. Used on the report
-// datelines (sidebar rows, the toolbar) so two reports generated on the same day
-// are distinguishable; the date-only `localDate` still backs the export filename,
-// whose 8-char id already disambiguates same-day files.
+// `YYYY-MM-DD HH:MM` (24-hour) in the user's local time zone.
 export function localDateTime(iso: string): string {
   const d = new Date(iso);
   const hours = String(d.getHours()).padStart(2, "0");

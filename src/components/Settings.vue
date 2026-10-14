@@ -20,74 +20,49 @@ import type {
   WebResearchSettings,
 } from "../types";
 
-// Configuration surface — agent models, API tokens, provider credentials, and
-// the local-analysis-models config (docs/configuration.md, docs/interface.md
-// §Settings). Presentational: state lives in App.vue, which fetches via
-// `get_settings` and persists via the three independent save commands. Visual
-// idiom from the design kit's Settings.jsx (single column, label-above-field,
-// open bottom-border inputs); the data is the spec's real configuration, not
-// the kit's mock. Secrets never arrive here — a credential is shown only as
-// "configured" or not; the user types a new value to replace one, and an
-// untouched field is left unchanged on save. Three independent submissions
-// (docs/configuration.md §API Tokens): the token-gated cloud form (models +
-// API tokens), the ungated provider credentials, and the ungated local
-// analysis models — so a cloud-keyless machine completes local-suite setup.
+// Configuration surface (docs/configuration.md, docs/interface.md §Settings),
+// translated from the design kit's Settings.jsx. Presentational: App owns the
+// state and the save commands. Secrets never arrive here: a credential shows
+// only as configured or not, and an untouched field is left unchanged on save.
+// The submissions are independent (docs/configuration.md §API Tokens): only
+// the cloud form is token-gated, so a cloud-keyless machine completes
+// local-suite setup.
 const props = defineProps<{
   settings: SettingsView | null;
   loading: boolean;
   saving: boolean;
   error: string | null;
-  // Appearance (Light/Dark) — applied + persisted by App via ./theme; this just
-  // drives the switch state. Independent of the config form's gated Save.
+  // Applied and persisted by App; independent of the gated Save.
   dark: boolean;
-  // Per-credential "Test connection" state, owned by App (the single invoke
-  // home): which credential is mid-test, and the last result for each.
   testing: Record<CredKey, boolean>;
   testResults: Record<CredKey, ConnectionTestResult | null>;
-  // The provider-credential submission's own channels — independent of the
-  // token-gated cloud save above (docs/configuration.md §API Tokens).
   savingProviders: boolean;
   providersError: string | null;
-  // The local-analysis-models submission's channels + the daemon Test
-  // Connection state (docs/interface.md §Connection status). `localDaemon` is
-  // the last probe result, null until tested — the indicator reads untested
-  // until the user tests or runs.
+  // `localDaemon` is the last probe result, null until tested
+  // (docs/interface.md §Connection status).
   savingLocal: boolean;
   localError: string | null;
   localTesting: boolean;
   localDaemon: LocalDaemonStatus | null;
-  // The web-research submission's channels + the SearXNG connection-row state
-  // (docs/configuration.md §Web Research). `searxngStatus` is the last probe
-  // result, null until tested — SearXNG is off every gate, so the row reads
-  // untested rather than warning.
+  // `searxngStatus` is the last probe result, null until tested; SearXNG is
+  // off every gate (docs/configuration.md §Web Research).
   savingWebResearch: boolean;
   webResearchError: string | null;
   searxngTesting: boolean;
   searxngStatus: WebResearchPreflight | null;
-  // Read-only truncation telemetry for the diagnostics section. `null` =
-  // unavailable / not yet loaded (the section is omitted); a populated all-zero
-  // aggregate renders the "none recorded" empty state.
+  // `null` omits the section; an all-zero aggregate renders the empty state.
   truncationStats: TruncationStats | null;
-  // The fixed investor-profile preset for the read-only display section
-  // (docs/configuration.md §Investor Profile). `null` = not yet loaded /
-  // unavailable (the section is omitted, like diagnostics). Display strings
-  // arrive ready-to-render from the backend — the same label source the
-  // per-holding action call's prompt uses.
+  // docs/configuration.md §Investor Profile. `null` omits the section; the
+  // strings arrive ready-to-render from the backend.
   investorProfile: InvestorProfileDisplay | null;
-  // Charles Schwab connection (docs/schwab-integration.md, docs/interface.md
-  // §Connection status). `null` = not yet loaded / unavailable (the section is
-  // omitted, like diagnostics). `schwabConnecting` is true while the interactive
-  // browser login is in flight; `schwabBusy` is true when any run holds the global
-  // slot (so Connect — which takes that slot — is disabled). `schwabError` carries a
-  // connect/save failure.
+  // docs/schwab-integration.md. `null` omits the section. `schwabBusy`: any
+  // run holds the global slot, which Connect also takes.
   schwabStatus: SchwabStatus | null;
   schwabConnecting: boolean;
   schwabBusy: boolean;
   schwabError: string | null;
-  // Data portability (docs/data-portability.md): whole-corpus export/import.
-  // `dataBusy` names which operation is in flight (null = idle); `slotBusy` is
-  // true when any run holds the global slot (export/import take it too). Status
-  // and error are App-owned channels on the Schwab-section pattern.
+  // docs/data-portability.md. `slotBusy`: any run holds the global slot, which
+  // export/import also take.
   dataBusy: "export" | "import" | null;
   slotBusy: boolean;
   dataError: string | null;
@@ -131,9 +106,6 @@ const credentialFields: { key: CredKey; label: string }[] = [
   { key: "tavily", label: "Tavily" },
 ];
 
-// Local, editable form state. Models pre-select the saved slugs; credential
-// inputs always start empty (the secret is never sent to the webview). The
-// local-models values are not secrets, so they round-trip in full.
 const local = ref<AgentModels>({ main: "", bull: "", bear: "", balanced: "" });
 const creds = ref<Record<CredKey, string>>({
   openai: "",
@@ -153,13 +125,10 @@ const providersJustSaved = ref(false);
 const localJustSaved = ref(false);
 const webResearchJustSaved = ref(false);
 
-// Initialise the form when the view FIRST arrives (mount, or a recovery from a
-// failed load). Later reloads — App re-fetches after every save — deliberately
-// do NOT reset form state: the three submissions are independent, so saving one
-// section must never discard another section's typed-but-unsaved edits. The
-// dirty computeds compare against `props.settings` directly, so a reload that
-// persists a section's values makes that section read clean on its own; each
-// save's *own* secret fields are cleared on its completion edge below.
+// Seed the form only when the view first arrives. App re-fetches after every
+// save, and a reload must not reset form state: saving one section must never
+// discard another section's unsaved edits. Each save clears its own secret
+// fields on its completion edge below.
 watch(
   () => props.settings,
   (s, prev) => {
@@ -172,10 +141,8 @@ watch(
   { immediate: true }
 );
 
-// A new save starting clears a stale confirmation; a clean completion sets it —
-// and clears that submission's OWN typed fields (a persisted secret must not
-// linger in its input; the other sections' edits are untouched). One watch per
-// independent submission, on its own saving/error channels.
+// A clean completion clears that submission's own typed fields: a persisted
+// secret must not linger in its input.
 watch(
   () => props.saving,
   (now, was) => {
@@ -202,8 +169,7 @@ watch(
     if (now && !was) localJustSaved.value = false;
     if (was && !now && props.localError === null) {
       localJustSaved.value = true;
-      // Adopt what the backend persisted (values are written trimmed), so the
-      // form reads clean against the reloaded baseline.
+      // The backend persists trimmed values; adopt them so the form reads clean.
       localModels.value = {
         daemon_endpoint: localModels.value.daemon_endpoint.trim(),
         reasoner_model: localModels.value.reasoner_model.trim(),
@@ -225,7 +191,6 @@ watch(
   }
 );
 
-// Model dropdown options, grouped by provider (order preserved from the backend).
 const providerGroups = computed<{ provider: string; options: ModelOption[] }[]>(() => {
   const groups: { provider: string; options: ModelOption[] }[] = [];
   for (const opt of props.settings?.available_models ?? []) {
@@ -251,9 +216,6 @@ const modelsDirty = computed(() => {
   );
 });
 
-// The cloud form's typed-token dirtiness vs the provider section's — two
-// independent submissions, each with its own Save (docs/configuration.md §API
-// Tokens: the token gate is scoped to the cloud submission alone).
 const tokensTyped = computed(
   () => creds.value.openai.trim() !== "" || creds.value.anthropic.trim() !== ""
 );
@@ -266,11 +228,8 @@ const providersDirty = computed(
 
 const dirty = computed(() => modelsDirty.value || tokensTyped.value);
 
-// Saving the cloud form is disabled until both API tokens are present
-// (docs/configuration.md §API Tokens) — either already stored (configured) or
-// entered now. The backend enforces the same gate; this just keeps the Save
-// control honest. Scoped to this form: the provider credentials and the local
-// models save ungated below.
+// Both API tokens, stored or typed (docs/configuration.md §API Tokens); the
+// backend enforces the same gate.
 const tokensSatisfied = computed(() => {
   const c = props.settings?.credentials;
   const openai = creds.value.openai.trim() !== "" || !!c?.openai;
@@ -292,12 +251,10 @@ const canSaveProviders = computed(
   () => !!props.settings && !props.savingProviders && providersDirty.value
 );
 
-// Appearance toggle — flips and applies instantly (App owns the apply+persist).
 function toggleDark() {
   emit("set-dark", !props.dark);
 }
 
-// "Saved" shows only while the form is at rest and unchanged since the save.
 const showSaved = computed(
   () => justSaved.value && !dirty.value && !props.saving && props.error === null
 );
@@ -334,9 +291,8 @@ function onSaveProviders() {
 }
 
 // --- Local analysis models ---------------------------------------------------
-// Daemon endpoint + roster ids (docs/configuration.md §Local Models). Ungated
-// values that round-trip; presence of endpoint + reasoner is what clears the
-// "local models not configured" warning (App re-checks after save).
+// docs/configuration.md §Local Models. Presence of endpoint + reasoner is what
+// clears the "local models not configured" warning.
 
 const localDirty = computed(() => {
   const s = props.settings?.local_models;
@@ -366,9 +322,7 @@ function onSaveLocal() {
   emit("save-local", { ...localModels.value });
 }
 
-// Test Connection probes the *saved* endpoint + roster (like the credential
-// rows), so it is offered only when an endpoint is saved and the form has no
-// unsaved edits.
+// Test Connection probes the *saved* endpoint + roster, so unsaved edits block it.
 const localEndpointConfigured = computed(
   () => (props.settings?.local_models.daemon_endpoint.trim() ?? "") !== ""
 );
@@ -384,10 +338,8 @@ const localTestTitle = computed(() => {
 });
 
 // --- Web research ------------------------------------------------------------
-// The SearXNG endpoint (docs/configuration.md §Web Research). Off every gate:
-// unreachable means a degraded run behind a pre-run notice, never a lock or a
-// warning-area category, so this section carries a connection row but no
-// warning semantics.
+// docs/configuration.md §Web Research. Off every gate: unreachable degrades a
+// run behind a pre-run notice, never a lock or a warning category.
 
 const webResearchDirty = computed(() => {
   const s = props.settings?.web_research;
@@ -412,8 +364,7 @@ function onSaveWebResearch() {
   emit("save-web-research", { ...webResearch.value });
 }
 
-// Test connection probes the *saved* endpoint (the credential-row idiom), so
-// it is offered only when one is saved and the form has no unsaved edits.
+// Test connection probes the *saved* endpoint, so unsaved edits block it.
 const searxngConfigured = computed(
   () => (props.settings?.web_research.searxng_endpoint.trim() ?? "") !== ""
 );
@@ -451,19 +402,15 @@ const searxngStatusLine = computed<{ tone: LocalStatusTone; text: string }>(() =
   };
 });
 
-// Whether the *saved* required roster — the reasoner, the one required slot —
-// is filled: a reachable daemon with an empty roster must not read as fully
-// set up (the probe only checks the ids that are configured, so an empty
-// roster has nothing to be "missing").
+// A reachable daemon with an empty roster must not read as fully set up: the
+// probe only checks the ids that are configured.
 const savedRosterComplete = computed(() => {
   const lm = props.settings?.local_models;
   return !!lm && lm.reasoner_model.trim() !== "";
 });
 
-// The connection indicator's four states (docs/interface.md §Connection
-// status): untested (no probe yet), unreachable, daemon-up-but-model-missing
-// (a distinct state), and connected. Shown only while the form is at rest —
-// a result describes the saved config, not unsaved edits.
+// The indicator's states (docs/interface.md §Connection status). A result
+// describes the saved config, so unsaved edits read untested.
 type LocalStatusTone = "pending" | "ok" | "err";
 const localStatus = computed<{ tone: LocalStatusTone; text: string }>(() => {
   if (props.localTesting) return { tone: "pending", text: "Testing…" };
@@ -498,35 +445,24 @@ const localStatus = computed<{ tone: LocalStatusTone; text: string }>(() => {
   return { tone: "ok", text: "Daemon reachable — all rostered models available." };
 });
 
-// Whether a credential field holds a typed (unsaved) value — drives the test
-// row's gating (it validates the saved credential, not what's typed).
 function credDirty(key: CredKey): boolean {
   return creds.value[key].trim() !== "";
 }
 
-// Whether any truncation has ever been recorded — a populated aggregate with a
-// zero count renders the "none recorded" empty state instead of the readout.
 const hasTruncations = computed(
   () => (props.truncationStats?.total_truncations ?? 0) > 0
 );
 
-// Group an integer with thousands separators, locale-independent so the readout
-// is deterministic across environments (and tabular-figure aligned per the
-// design system's numeric idiom).
+// Locale-independent so the readout is deterministic across environments.
 function fmtNum(n: number): string {
   return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-// The truncation rate as a "X of Y (Z%)" readout — the numerator over its
-// parsed-documents denominator. Falls back to the bare count whenever the
-// denominator can't support an honest rate:
-//   - missing (0) — would render a nonsensical "of 0";
-//   - smaller than the numerator — would render an over-100% rate (the two are
-//     written on independent best-effort channels, so a truncation can briefly
-//     lead its parse-run);
-//   - incomplete — some truncations predate the denominator (`unaligned_truncations`),
-//     so a rate over them would mix cohorts. Self-heals as those rows age out.
-// Only consulted inside the `hasTruncations` block, so the numerator is > 0 here.
+// "X of Y (Z%)", falling back to the bare count whenever the denominator can't
+// support an honest rate: missing (0); smaller than the numerator (the two are
+// written on independent best-effort channels, so a truncation can briefly
+// lead its parse-run); or incomplete (`unaligned_truncations` predate the
+// denominator, so a rate would mix cohorts; self-heals as those rows age out).
 const truncatedDocsValue = computed(() => {
   const s = props.truncationStats;
   if (!s) return "";
@@ -542,24 +478,10 @@ const truncatedDocsValue = computed(() => {
   return `${truncated} of ${fmtNum(s.total_docs_parsed)} (${pct.toFixed(1)}%)`;
 });
 
-// The chars-dropped ratio as a "X of Y (Z%)" readout — chars cut over total
-// original chars across all parsed docs (the share of ingested text lost to
-// truncation). Mirrors `truncatedDocsValue`: falls back to the bare count
-// whenever the denominator can't support an honest ratio:
-//   - missing (0) — would render a nonsensical "of 0";
-//   - smaller than the numerator — would render an over-100% ratio (the two are
-//     written on independent best-effort channels, so a drop can briefly lead
-//     its parse-run);
-//   - incomplete — the numerator counts chars the denominator never did. Two
-//     distinct cohort gaps both produce this, and both must withhold the ratio:
-//       · a truncation whose report has no parse-run row at all
-//         (`unaligned_truncations` — the same gap that withholds the doc rate;
-//         that report's original chars are absent from `total_original_chars`
-//         while its dropped chars are in `total_chars_dropped`), and
-//       · a parse-run row that predates the chars column
-//         (`parse_runs_missing_original_chars`, NULL → skipped by SUM).
-//     Self-heals as those legacy rows age out of the retention window.
-// Only consulted inside the `hasTruncations` block, so the numerator is > 0 here.
+// Chars cut over total original chars, with `truncatedDocsValue`'s fallbacks
+// plus one more cohort gap: a parse-run row with no original-chars value
+// (`parse_runs_missing_original_chars`, NULL → skipped by SUM) leaves the
+// denominator short of the numerator's cohort, so the ratio is withheld.
 const charsDroppedValue = computed(() => {
   const s = props.truncationStats;
   if (!s) return "";
@@ -577,16 +499,13 @@ const charsDroppedValue = computed(() => {
 });
 
 // --- Charles Schwab connection ---------------------------------------------
-// The developer-app credentials + the connect/disconnect controls. Local, editable
-// form state mirrors the credential fields: the non-secret client_id round-trips its
-// saved value, while the secret input starts empty and is write-only (its stored
-// presence shows only as a placeholder).
+// The non-secret client_id round-trips its saved value; the secret input starts
+// empty and is write-only.
 const schwabClientId = ref("");
 const schwabSecret = ref("");
 
-// (Re)seed the form whenever a fresh status arrives — on load and after a
-// save/connect/disconnect (App re-fetches). Clears the typed secret and resets the
-// dirty baseline to what was just persisted.
+// Reseed on every fresh status (App re-fetches after save/connect/disconnect):
+// clears the typed secret and resets the dirty baseline.
 watch(
   () => props.schwabStatus,
   (s) => {
@@ -597,26 +516,22 @@ watch(
   { immediate: true }
 );
 
-// The secret placeholder mirrors the API-token idiom: a stored secret shows as saved
-// (type to replace), an absent one as "Not set".
 const schwabSecretPlaceholder = computed(() =>
   props.schwabStatus?.secret_configured
     ? "•••• saved — type a new value to replace"
     : "Not set"
 );
 
-// Unsaved edits: a changed client_id, or any typed secret. Connect reads the *saved*
-// credentials, so an edit must be saved before connecting (mirrors the credential
-// "save before testing" rule).
+// Connect reads the *saved* credentials, so an edit must be saved first.
 const schwabDirty = computed(() => {
   const saved = props.schwabStatus?.client_id ?? "";
   return schwabClientId.value.trim() !== saved || schwabSecret.value.trim() !== "";
 });
 
-// Saving needs a non-empty client_id and something actually changed — and is blocked
-// while a connect or run holds the slot. That guards the mid-login race: `schwab_connect`
-// captures the client_id up front but reads the secret from the Keychain later, so a save
-// during the login could pair the old id with a new secret and fail the token exchange.
+// Blocked while a connect holds the slot: `schwab_connect` captures the
+// client_id up front but reads the secret from the Keychain later, so a
+// mid-login save could pair the old id with a new secret and fail the token
+// exchange.
 const canSaveSchwab = computed(
   () =>
     schwabClientId.value.trim() !== "" &&
@@ -625,8 +540,6 @@ const canSaveSchwab = computed(
     !props.schwabBusy
 );
 
-// Both credentials present on the backend — the precondition for a connect attempt
-// (the loopback reads them from storage / Keychain).
 const schwabCredsConfigured = computed(
   () =>
     !!props.schwabStatus &&
@@ -634,8 +547,6 @@ const schwabCredsConfigured = computed(
     props.schwabStatus.secret_configured
 );
 
-// Connect is offered only when the saved credentials are complete, the form has no
-// unsaved edits, and no run holds the global slot (Connect takes it — see App).
 const canConnect = computed(
   () =>
     schwabCredsConfigured.value &&
@@ -644,8 +555,6 @@ const canConnect = computed(
     !props.schwabBusy
 );
 
-// Why Connect is unavailable, surfaced as its title (frontend-craft: never a dead
-// control with no explanation).
 const connectTitle = computed(() => {
   if (props.schwabConnecting) return "Completing the Schwab login…";
   if (!schwabCredsConfigured.value)
@@ -659,15 +568,11 @@ const schwabConnection = computed(
   () => props.schwabStatus?.connection ?? "not-connected"
 );
 
-// Disconnect is shown only when a session exists (connected or lapsed); it clears the
-// tokens but keeps the saved credentials.
 const showDisconnect = computed(() => schwabConnection.value !== "not-connected");
 const canDisconnect = computed(
   () => !props.schwabConnecting && !props.schwabBusy
 );
 
-// The connection status line — plain, declarative copy (the design system's voice),
-// with the weekly-re-login date as a heads-up when connected.
 const schwabStatusText = computed(() => {
   switch (schwabConnection.value) {
     case "connected": {
@@ -683,9 +588,6 @@ const schwabStatusText = computed(() => {
   }
 });
 
-// The status line's tone class, reusing ConnectionTestRow's status vocabulary
-// (ink-2 + check for a live connection; accent-text for a lapsed one; ink-3 for the
-// neutral not-connected state) — no new tokens, no analytical palette.
 const schwabStatusClass = computed(() => {
   switch (schwabConnection.value) {
     case "connected":
@@ -697,8 +599,6 @@ const schwabStatusClass = computed(() => {
   }
 });
 
-// The connect control's label: first-time "Connect", else "Reconnect" (the weekly
-// re-login, or re-running after a lapse).
 const connectLabel = computed(() => {
   if (props.schwabConnecting) return "Connecting…";
   return schwabConnection.value === "not-connected" ? "Connect" : "Reconnect";
@@ -708,21 +608,18 @@ function onSaveSchwab() {
   if (!canSaveSchwab.value) return;
   emit("save-schwab", {
     client_id: schwabClientId.value.trim(),
-    // Null (not "") leaves the stored secret untouched — the write-only field idiom.
+    // Null leaves the stored secret untouched.
     client_secret: schwabSecret.value.trim() ? schwabSecret.value : null,
   });
 }
 
 // --- Data portability --------------------------------------------------------
-// One optional passphrase field serves both directions: export encrypts with
-// it (blank = plaintext archive), import decrypts an encrypted archive with it.
-// Never stored, never round-tripped.
+// One passphrase serves both directions: export encrypts with it (blank =
+// plaintext archive), import decrypts with it. Never stored.
 const dataPassphrase = ref("");
 
 const canUseData = computed(() => props.dataBusy === null && !props.slotBusy);
 
-// Why the action is unavailable, as its title (the connectTitle idiom: never a
-// dead control with no explanation).
 const exportDataTitle = computed(() => {
   if (props.dataBusy) return "An export or import is already in progress";
   if (props.slotBusy) return "Another job is running — export once it finishes";
@@ -746,10 +643,8 @@ const importDataLabel = computed(() =>
   <main class="settings-pane">
     <div class="toolbar">
       <div class="toolbar-label">Settings</div>
-      <!-- Appearance toggle is hosted in the toolbar (a utility/chrome control),
-           deliberately apart from the gated config form below — so it reads as
-           instant-applying chrome, not a field governed by the form's Save. Always
-           rendered with the toolbar, so it works even if settings fail to load. -->
+      <!-- Hosted in the toolbar, apart from the gated form, so it reads as
+           instant-applying chrome and works even when settings fail to load. -->
       <div class="toolbar-appearance">
         <span id="appearance-label" class="toolbar-appearance-label">Dark surface</span>
         <button
@@ -781,8 +676,6 @@ const importDataLabel = computed(() =>
         </div>
 
         <form v-else-if="settings" class="settings-form" @submit.prevent="onSave">
-          <!-- First section under the toolbar now that Appearance moved up: take the
-               lead treatment (no top rule / top padding) so it sits flush at the seam. -->
           <section
             class="settings-section settings-section--lead"
             aria-labelledby="sec-models"
@@ -830,9 +723,9 @@ const importDataLabel = computed(() =>
             </p>
             <div v-for="field in tokenFields" :key="field.key" class="field">
               <label class="label" :for="`cred-${field.key}`">{{ field.label }}</label>
-              <!-- Disabled while THIS section's save is in flight: the clean
+              <!-- Disabled while this section's save is in flight: the clean
                    completion clears these fields, so text typed mid-save would
-                   be lost — locking the input closes that window. -->
+                   be lost. -->
               <input
                 :id="`cred-${field.key}`"
                 v-model="creds[field.key]"
@@ -882,11 +775,9 @@ const importDataLabel = computed(() =>
           </div>
         </form>
 
-        <!-- Data provider credentials — an independent submission, deliberately
-             outside the token-gated form above (docs/configuration.md §External
-             Data Provider Credentials): a cloud-keyless machine persists FMP /
-             FRED for the local suite. Own Save + error/saved channels, the
-             Schwab-section idiom. -->
+        <!-- An independent submission outside the token-gated form
+             (docs/configuration.md §External Data Provider Credentials), so a
+             cloud-keyless machine persists FMP / FRED for the local suite. -->
         <form
           v-if="settings"
           class="settings-form"
@@ -943,14 +834,9 @@ const importDataLabel = computed(() =>
           </section>
         </form>
 
-        <!-- Local analysis models (docs/configuration.md §Local Models,
-             docs/interface.md §Connection status). The in-app clear path for the
-             "local models not configured" warning: presence of endpoint +
-             reasoner unlocks the local-suite Run buttons the moment
-             it saves (App re-checks the presence gate). Ungated like the
-             provider credentials — no cloud token needed. Connectivity is a
-             separate, manual Test Connection: never probed at startup, so the
-             indicator reads untested until tested or a run starts. -->
+        <!-- docs/configuration.md §Local Models, docs/interface.md §Connection
+             status. Connectivity is never probed at startup, so the indicator
+             reads untested until tested or a run starts. -->
         <form v-if="settings" class="settings-form" @submit.prevent="onSaveLocal">
           <section class="settings-section" aria-labelledby="sec-local-models">
             <h3 id="sec-local-models" class="section-eyebrow">Local analysis models</h3>
@@ -1001,9 +887,6 @@ const importDataLabel = computed(() =>
               />
             </div>
 
-            <!-- The daemon connection row — the ConnectionTestRow pattern with
-                 the richer LocalDaemonStatus vocabulary (reachability AND
-                 per-roster-model presence are distinct states). -->
             <div class="cred-test local-test">
               <button
                 type="button"
@@ -1051,12 +934,9 @@ const importDataLabel = computed(() =>
           </section>
         </form>
 
-        <!-- Web research (docs/configuration.md §Web Research,
-             docs/web-research.md §Search backend). Off every gate: an
-             unreachable SearXNG degrades a run behind a pre-run notice, never
-             a lock or a warning category — so this section saves ungated and
-             its connection row carries no warning semantics. The local suite is
-             SearXNG-only — there is no Tavily fallback here. -->
+        <!-- docs/configuration.md §Web Research, docs/web-research.md §Search
+             backend. The local suite is SearXNG-only; there is no Tavily
+             fallback. -->
         <form v-if="settings" class="settings-form" @submit.prevent="onSaveWebResearch">
           <section class="settings-section" aria-labelledby="sec-web-research">
             <h3 id="sec-web-research" class="section-eyebrow">Web research</h3>
@@ -1084,7 +964,6 @@ const importDataLabel = computed(() =>
               />
             </div>
 
-            <!-- The SearXNG connection row — the local-daemon row's idiom. -->
             <div class="cred-test local-test">
               <button
                 type="button"
@@ -1132,14 +1011,8 @@ const importDataLabel = computed(() =>
           </section>
         </form>
 
-        <!-- Investor profile: the fixed preset shown read-only (docs/configuration.md
-             §Investor Profile; docs/interface.md Settings tree). No inputs and no
-             save — the preset is not user-configured until a configurable profile
-             ships — so it sits outside every form, on its own data channel like
-             diagnostics (omitted while unavailable). Values arrive ready-to-render
-             from the backend, the same label source the per-holding action call's
-             prompt uses.
-             Generic-chrome register: monochrome, no analytical palette. -->
+        <!-- docs/configuration.md §Investor Profile. Read-only, outside every
+             form, on its own data channel like diagnostics. -->
         <section
           v-if="investorProfile"
           class="settings-section"
@@ -1175,13 +1048,9 @@ const importDataLabel = computed(() =>
           </dl>
         </section>
 
-        <!-- Charles Schwab connection (docs/schwab-integration.md, docs/interface.md
-             §Connection status). Its own section outside the config form — its
-             Save/Connect/Disconnect are independent of the gated model+credential
-             Save above, and it renders on its own status channel (like diagnostics),
-             so it appears even if the cloud settings fail to load. Omitted while the
-             status is unavailable. Generic-chrome register: monochrome, no analytical
-             palette. -->
+        <!-- docs/schwab-integration.md, docs/interface.md §Connection status.
+             Outside the config form on its own status channel, so it appears
+             even if the cloud settings fail to load. -->
         <section
           v-if="schwabStatus"
           class="settings-section"
@@ -1219,8 +1088,7 @@ const importDataLabel = computed(() =>
             />
           </div>
 
-          <!-- Persistent live region (node stays mounted, text changes) so a screen
-               reader announces connection changes reliably. -->
+          <!-- Persistent live region, so connection changes are announced reliably. -->
           <p
             class="schwab-status"
             :class="schwabStatusClass"
@@ -1278,12 +1146,9 @@ const importDataLabel = computed(() =>
           </div>
         </section>
 
-        <!-- Data portability (docs/data-portability.md): whole-corpus
-             backup/restore. Its own section outside the config form on the Schwab
-             pattern — own props, own error/status channels, an action row
-             independent of the gated Save — and always rendered (it needs no
-             loaded settings; the store itself is the subject). The destructive
-             import path is confirmed by App's ConfirmDialog, not here. -->
+        <!-- docs/data-portability.md. Always rendered: it needs no loaded
+             settings. The destructive import is confirmed by App's
+             ConfirmDialog, not here. -->
         <section class="settings-section" aria-labelledby="sec-data">
           <h3 id="sec-data" class="section-eyebrow">Data</h3>
           <p class="section-note">
@@ -1343,11 +1208,8 @@ const importDataLabel = computed(() =>
           </div>
         </section>
 
-        <!-- Diagnostics: read-only truncation telemetry (docs/agents.md §Data
-             Extraction). Renders independent of the config form's load state and
-             on its own data channel, so it appears even when settings fail to
-             load. Omitted entirely while the aggregate is unavailable; a populated
-             all-zero aggregate is the "overflow is rare" empty state. -->
+        <!-- Truncation telemetry (docs/agents.md §Data Extraction), on its own
+             data channel so it appears even when settings fail to load. -->
         <section
           v-if="truncationStats"
           class="settings-section"
@@ -1413,10 +1275,8 @@ const importDataLabel = computed(() =>
   background: var(--paper);
 }
 
-/* Toolbar geometry matches the report/inbox panes so the views share a seam.
-   min-height keeps that seam uniform whether or not a toolbar carries a button
-   (the inbox's "Add files…" sets the reference height), so a button-less title
-   gets the same top/bottom breathing room. */
+/* Geometry matches the report/inbox panes so the views share a seam; min-height
+   keeps it uniform whether or not a toolbar carries a button. */
 .toolbar {
   display: flex;
   align-items: center;
@@ -1426,8 +1286,6 @@ const importDataLabel = computed(() =>
   border-bottom: var(--border);
 }
 
-/* Surface title: stronger than the section eyebrows below it — 13px ink semibold
-   (a deliberate step up from the 11px caption used for sub-headings). */
 .toolbar-label {
   font-family: var(--font-sans);
   font-size: var(--t-ui-sm);
@@ -1452,9 +1310,8 @@ const importDataLabel = computed(() =>
   padding: var(--s-7) var(--s-8) var(--s-12);
 }
 
-/* The lead section sits directly under the toolbar seam, so it drops the section
-   rule + top padding that separate the stacked sections below it. Compound
-   selector so it beats `.settings-section` regardless of source order. */
+/* Flush at the toolbar seam. Compound selector so it beats `.settings-section`
+   regardless of source order. */
 .settings-section.settings-section--lead {
   border-top: 0;
   padding-top: 0;
@@ -1502,16 +1359,12 @@ const importDataLabel = computed(() =>
   margin-bottom: 0;
 }
 
-/* The <label> uses the global `.label` token; only spacing is nudged here so
-   the field reads as label-over-control. */
 .field :deep(.label) {
   margin-bottom: var(--s-2);
 }
 
-/* Native <select> isn't styled by the design system; this extends the open
-   bottom-border `.input` idiom to it (transparent field, hairline underline,
-   accent on focus) with the kit's chevron glyph overlaid. Noted as a system
-   extension in the scope report. */
+/* System extension: the package doesn't style a native <select>; this extends
+   the open bottom-border `.input` idiom to it with the kit's chevron overlaid. */
 .select-wrap {
   position: relative;
 }
@@ -1547,7 +1400,6 @@ const importDataLabel = computed(() =>
   pointer-events: none;
 }
 
-/* Mono, tabular figures for the credential fields (long opaque keys). */
 .mono {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums lining-nums;
@@ -1582,8 +1434,8 @@ const importDataLabel = computed(() =>
   gap: var(--s-5);
   padding-top: var(--s-3);
   border-top: var(--border);
-  /* Match the section rhythm below the button so the next section's top rule
-     (e.g. Document truncations) doesn't hug the Save button's bottom edge. */
+  /* Section rhythm below the button, so the next section's top rule doesn't
+     hug it. */
   margin-bottom: var(--s-7);
 }
 
@@ -1596,15 +1448,11 @@ const importDataLabel = computed(() =>
   color: var(--ink-2);
 }
 
-/* Why Save is disabled — a muted hint, not an error (it's a gating affordance). */
+/* A gating hint, not an error. */
 .save-status--hint {
   color: var(--ink-3);
 }
 
-/* Schwab connection status line — reuses ConnectionTestRow's status vocabulary
-   (no new tokens, no analytical palette; this is generic chrome): ink-3 for the
-   neutral not-connected state, ink-2 (+ check) for a live connection, accent-text
-   for a lapsed one. */
 .schwab-status {
   display: flex;
   align-items: center;
@@ -1629,8 +1477,6 @@ const importDataLabel = computed(() =>
   color: var(--accent-text);
 }
 
-/* The while-connecting heads-up (browser login + one-time cert warning): a quiet
-   informational line, not an error. */
 .schwab-hint {
   margin: var(--s-3) 0 0;
   font-family: var(--font-sans);
@@ -1639,8 +1485,8 @@ const importDataLabel = computed(() =>
   color: var(--ink-3);
 }
 
-/* Section-local action row — save / connect / disconnect. Unlike `.settings-actions`
-   it carries no top rule (it sits mid-section, not at the form's foot). */
+/* No top rule, unlike `.settings-actions`: these sit mid-section, not at the
+   form's foot. */
 .schwab-actions,
 .data-actions,
 .section-actions {
@@ -1651,9 +1497,8 @@ const importDataLabel = computed(() =>
   margin-top: var(--s-6);
 }
 
-/* The local-daemon test row reuses ConnectionTestRow's visual vocabulary (that
-   component's styles are scoped, so the classes are re-declared here for the
-   one richer row whose status carries reachability + per-model presence). */
+/* ConnectionTestRow's styles are scoped, so its classes are re-declared here
+   for the richer daemon and SearXNG rows. */
 .cred-test {
   display: flex;
   align-items: baseline;
@@ -1716,23 +1561,19 @@ const importDataLabel = computed(() =>
   color: var(--accent-text);
 }
 
-/* The passphrase caution reads in the section-note voice but sits *after* its
-   field, so it drops the note's bottom rhythm in favor of a tight top one. */
+/* Sits after its field, so a tight top rhythm instead of the note's bottom one. */
 .data-caution {
   margin: var(--s-2) 0 var(--s-5);
 }
 
-/* The export success line carries the archive's absolute path — a long
-   unbroken string that must wrap inside the column, not overflow it. */
+/* Carries the archive's absolute path, which must wrap inside the column. */
 .data-status {
   align-items: baseline;
   overflow-wrap: anywhere;
   min-width: 0;
 }
 
-/* Appearance toggle hosted in the toolbar — a compact label + the kit switch,
-   right-aligned opposite the surface title. flex-shrink:0 so it never collapses;
-   the title truncates first on a narrow pane (see .toolbar-label). */
+/* flex-shrink:0 so it never collapses; the title truncates first. */
 .toolbar-appearance {
   flex-shrink: 0;
   display: flex;
@@ -1747,10 +1588,8 @@ const importDataLabel = computed(() =>
   white-space: nowrap;
 }
 
-/* Boxy switch (design kit Settings.jsx Toggle): 44×22, 1px ink edge, 2px radius,
-   a sliding ink block — no pill, no rounded slider. A <button> so it is
-   keyboard-operable (Enter/Space) with a focus ring. This is the toggle's only
-   instance now that the footer no longer carries one. */
+/* The kit's boxy switch (design kit Settings.jsx Toggle): no pill, no rounded
+   slider. */
 .switch {
   flex-shrink: 0;
   display: inline-flex;
@@ -1764,9 +1603,7 @@ const importDataLabel = computed(() =>
   cursor: pointer;
 }
 
-/* The knob is always filled — muted ink-3 when off, solid ink when on — so the
-   control reads as a switch in both states (a transparent off-knob looked like
-   an empty box). State = fill weight + position. */
+/* The knob is always filled: a transparent off-knob read as an empty box. */
 .switch-knob {
   width: 18px;
   height: 16px;
@@ -1796,10 +1633,6 @@ const importDataLabel = computed(() =>
   background: var(--hairline);
 }
 
-/* Investor-profile readout: the read-only preset as label-above-value rows —
-   the Settings form's label-above-field posture without inputs. Prose values,
-   so sans (not the mono numeric idiom); flat and hairline-free like the
-   diagnostics block. */
 .profile-rows {
   margin: 0;
   display: flex;
@@ -1824,9 +1657,6 @@ const importDataLabel = computed(() =>
   color: var(--ink);
 }
 
-/* Diagnostics readout: a label/value list in mono tabular figures (the system's
-   numeric idiom), flat and hairline-free — it's a quiet telemetry block, not a
-   card. */
 .trunc-stats {
   margin: 0;
   display: flex;
@@ -1841,8 +1671,6 @@ const importDataLabel = computed(() =>
   gap: var(--s-5);
 }
 
-/* Label idiom matches the sibling .trunc-formats-label so the diagnostics block
-   reads as one system (was 13px sentence-case, an in-block inconsistency). */
 .trunc-row dt {
   font-family: var(--font-sans);
   font-size: var(--t-caption);
@@ -1903,8 +1731,7 @@ const importDataLabel = computed(() =>
   color: var(--ink);
 }
 
-/* Empty state mirrors the section note's serif-italic voice (ink-2 for AA at
-   13px). */
+/* ink-2 for AA at 13px. */
 .trunc-empty {
   margin: 0;
   font-family: var(--font-serif);

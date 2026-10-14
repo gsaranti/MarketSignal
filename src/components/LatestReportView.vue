@@ -9,43 +9,31 @@ import type { GeneratedReport } from "../types";
 const props = defineProps<{
   report: GeneratedReport | null;
   error: string | null;
-  // A load failure when opening a selected issue (distinct from a generation
-  // failure) — e.g. the Markdown file was removed out-of-band.
+  // Opening a selected issue failed, as distinct from `error` (generation failed).
   loadError: string | null;
-  // Whether the shown report is the newest one — drives the "Latest" tag.
   isLatest: boolean;
-  // Markdown export is in flight (the parent owns the invoke); drives the
-  // "Share as Markdown" button's busy/disabled state.
   exportingMarkdown: boolean;
-  // A failed Markdown export, surfaced as a slim inline alert under the toolbar.
-  // PDF export is handled locally here and has no parent-tracked error channel.
+  // Markdown export only; PDF export is handled here and has no error channel.
   exportError: string | null;
 }>();
 
 const emit = defineEmits<{
-  // Ask the parent to run the Markdown export (Save dialog + write live in the
-  // backend command; the parent owns the invoke and the error/busy state).
   (e: "export-markdown"): void;
 }>();
 
-// html:false — the Markdown is our own trusted report body, and we never want
-// raw HTML from it leaking into the rendered surface.
+// html:false: raw HTML from the report body never reaches the rendered surface.
 const md = new MarkdownIt({ html: false, linkify: true, typographer: true });
 
-// Wrap rendered tables in a horizontal-scroll container so a wide or
-// many-column report table scrolls locally instead of pushing the whole
-// reading column sideways (frontend-craft overflow handling — reports
-// routinely contain tables, e.g. the watchlist). The wrapper keeps the
-// table's width:100% stretch for narrow tables; only wide ones scroll.
+// Wrap tables so a wide one scrolls locally instead of pushing the reading
+// column sideways; a narrow table keeps its width:100% stretch.
 md.renderer.rules.table_open = (tokens, idx, options, _env, self) =>
   `<div class="prose-table-wrap">${self.renderToken(tokens, idx, options)}`;
 md.renderer.rules.table_close = (tokens, idx, options, _env, self) =>
   `${self.renderToken(tokens, idx, options)}</div>`;
 
-// Intercept ```chart fences and render their JSON body as a restrained inline-SVG
-// line figure (see ../renderChart). On any parse/validation failure renderChart
-// returns null and we fall back to the default code-block rendering, so a
-// malformed chart degrades to its raw source rather than blanking the report.
+// ```chart fences render through renderChart; on a parse failure it returns null
+// and the fence falls back to a code block, so a malformed chart degrades to its
+// source rather than blanking the report.
 const defaultFence =
   md.renderer.rules.fence ??
   ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
@@ -62,39 +50,29 @@ const renderedHtml = computed(() =>
   props.report ? md.render(props.report.markdown) : ""
 );
 
-// The toolbar reflects which issue is shown: its per-issue headline (the agent's
-// `title`), so the open report reads the same as its sidebar row. Falls back to the
-// product name for a legacy report with no title, and to "Latest report" when none
-// is loaded.
+// The per-issue headline, so the open report reads the same as its sidebar row.
 const toolbarLabel = computed(() =>
   props.report
     ? props.report.summary.title?.trim() || "Market Signal Report"
     : "Latest report"
 );
-// The date-time + short id ride alongside the headline as a quiet caption,
-// mirroring the sidebar row's title + meta split.
 const toolbarMeta = computed(() =>
   props.report
     ? `${localDateTime(props.report.summary.created_at)} · #${props.report.report_id.slice(0, 8)}`
     : ""
 );
 
-// Export is only meaningful when a report is actually on screen — not while an
-// error/load-error block is showing in its place, and not on the empty state.
 const canExport = computed(
   () => props.report !== null && props.error === null && props.loadError === null
 );
 
-// Export the rendered report as PDF via the webview's native print-to-PDF (the
-// macOS print panel's "Save as PDF"; there is no silent print-to-PDF API in
-// Tauri/wry on macOS — wry#707). On macOS, Tauri replaces `window.print` with a
-// shim that dispatches the `core:webview:allow-print` command (hence it is async
-// and requires that capability — granted in capabilities/default.json). The
-// `@media print` stylesheet isolates the report article; `document.title` seeds
-// the panel's suggested filename, so set it to the spec's basename (docs/export.md
-// §Export Naming — no internal id suffix) for the duration of the print, then
-// restore. The date is the local-calendar date (see ../format), matching the
-// Markdown export name and the toolbar dateline so all three agree.
+// PDF export goes through the print panel: Tauri/wry on macOS has no silent
+// print-to-PDF (wry#707), and Tauri shims `window.print` to dispatch
+// `core:webview:allow-print` (async; the capability is granted in
+// capabilities/default.json). `document.title` seeds the panel's suggested
+// filename, so it holds the spec's basename (docs/export.md §Export Naming) for
+// the print's duration. The date is the local-calendar date, matching the
+// Markdown export name.
 async function exportPdf() {
   if (!props.report) return;
   const base = `${localDate(props.report.summary.created_at)}-market-signal-report`;
@@ -110,9 +88,8 @@ async function exportPdf() {
 
 <template>
   <main class="report-pane">
-    <!-- A quiet reading toolbar: generation lives in the empty-state CTA and the
-         footer's "Generate now"; export lives here (kit ReportToolbar). The label
-         reflects the selected issue, with a tag when it's the newest. -->
+    <!-- Kit ReportToolbar: export lives here; generation lives in the empty-state
+         CTA and the footer's "Generate now". -->
     <div class="toolbar">
       <div class="toolbar-heading">
         <span class="toolbar-label">{{ toolbarLabel }}</span>
@@ -144,8 +121,7 @@ async function exportPdf() {
       </div>
     </div>
 
-    <!-- A failed Markdown export: a slim, non-destructive alert under the toolbar
-         that leaves the report on screen (export is an action, not a load). -->
+    <!-- Export is an action, not a load: the alert leaves the report on screen. -->
     <p v-if="exportError" class="export-error" role="alert">
       Couldn't export: {{ exportError }}
     </p>
@@ -196,7 +172,6 @@ async function exportPdf() {
   border-bottom: var(--border);
 }
 
-/* The label and its "Latest" tag share a baseline-aligned row. */
 .toolbar-heading {
   display: flex;
   align-items: baseline;
@@ -204,9 +179,8 @@ async function exportPdf() {
   min-width: 0;
 }
 
-/* Surface title — the issue headline: 13px ink semibold, sentence case (matches
-   the sidebar row-title so the open report and its sidebar entry read the same;
-   deliberately not the uppercase caption treatment used for the meta/eyebrows). */
+/* Matches the sidebar row-title; deliberately not the caption treatment of the
+   meta and eyebrows. */
 .toolbar-label {
   font-family: var(--font-sans);
   font-size: var(--t-ui-sm);
@@ -218,8 +192,6 @@ async function exportPdf() {
   white-space: nowrap;
 }
 
-/* The date-time + short id beside the headline: the same quiet caption as the
-   "Latest" tag and the sidebar row-meta, so it recedes behind the title. */
 .toolbar-meta {
   flex-shrink: 0;
   font-family: var(--font-sans);
@@ -229,8 +201,6 @@ async function exportPdf() {
   color: var(--ink-3);
 }
 
-/* "Latest" tag: a quiet caption next to the dateline, marking the newest issue
-   without competing with the title. */
 .toolbar-tag {
   flex-shrink: 0;
   font-family: var(--font-sans);
@@ -240,18 +210,14 @@ async function exportPdf() {
   color: var(--ink-3);
 }
 
-/* The export pair (Export PDF · Share as Markdown), matching the kit's
-   ReportToolbar action group and the inbox/archive toolbars' button row.
-   flex-shrink:0 keeps the buttons whole when the dateline label is long. */
+/* flex-shrink:0 keeps the buttons whole when the label is long. */
 .toolbar-actions {
   flex-shrink: 0;
   display: flex;
   gap: var(--s-3);
 }
 
-/* Slim export-failure alert under the toolbar seam — uses the same caption-scale
-   sans as the report's load-error label, but as a one-line strip so the report
-   underneath stays visible (export is an action, not a load failure). */
+/* A one-line strip so the report underneath stays visible. */
 .export-error {
   margin: 0;
   padding: var(--s-2) var(--s-8);
@@ -268,8 +234,8 @@ async function exportPdf() {
   overflow-y: auto;
 }
 
-/* Keyboard-scrollable: tabbable so arrow keys scroll a long report that has no
-   in-flow focusable content. Inset ring so it isn't clipped by the scroll edge. */
+/* Tabbable so arrow keys scroll a report with no focusable content; inset ring
+   so the scroll edge doesn't clip it. */
 .report-scroll:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;

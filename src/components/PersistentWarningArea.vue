@@ -3,24 +3,20 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import Icon from "./Icon.vue";
 import type { ValidationReport, WarningCategory } from "../types";
 
-// Persistent Warning Area (docs/interface.md). Deliberately rendered in the
-// chrome/status register — sans type on an inset-well (paper-edge) band with an
-// accent header — NOT the serif reading register, so it can never be mistaken
-// for report content. This extends the design kit's WarningBar: the kit's "plain
-// serif prose, no header" treatment was indistinguishable from the report body
-// (the reading surface uses the same serif), so a coding-agent review promoted it
-// to a labelled status band. Each active category is one line inside one block.
+// Persistent Warning Area (docs/interface.md). Rendered in the chrome/status
+// register (sans type on an inset band with an accent header), never the serif
+// reading register, so it can't be mistaken for report content. An extension of
+// the kit's WarningBar, whose plain-serif treatment was indistinguishable from
+// the report body.
 const props = defineProps<{
   report: ValidationReport | null;
   error: string | null;
 }>();
 
-// Dismiss is offered only for the non-blocking failed-job category; the blocking
-// config gaps are gate state, not dismissible notices, so they carry no dismiss
-// control (mirrors `WarningKind::is_blocking` on the backend). The dismiss carries
-// the row's rendered `dismiss_id` so the backend suppresses *this* warning, not a
-// newer one it would re-derive; the parent runs `dismiss_warning` with both and
-// re-checks the config to refresh the band.
+// Dismiss is offered only for the non-blocking failed-job kind; blocking config
+// gaps are gate state, not notices (mirrors `WarningKind::is_blocking`). The
+// dismiss carries the row's rendered `dismiss_id` so the backend suppresses
+// *this* warning, not a newer one it would re-derive.
 const emit = defineEmits<{ (e: "dismiss", kind: string, dismissId: string): void }>();
 
 const DISMISSIBLE_KINDS = new Set(["failed-job"]);
@@ -28,8 +24,7 @@ function isDismissible(kind: string): boolean {
   return DISMISSIBLE_KINDS.has(kind);
 }
 
-// A category gets a dismiss control only when it is a dismissible kind *and* carries
-// an identity to dismiss (the backend always pairs the two; this stays defensive).
+// The backend always pairs a dismissible kind with an id; this stays defensive.
 function canDismiss(cat: WarningCategory): boolean {
   return isDismissible(cat.kind) && cat.dismiss_id != null;
 }
@@ -40,21 +35,17 @@ function dismiss(cat: WarningCategory): void {
 // Only the backend's non-empty categories are ever present in the report.
 const categories = computed(() => props.report?.categories ?? []);
 
-// Show the area when there is something to say. While the first check is still
-// loading and nothing is known yet, stay silent rather than flash a row.
+// Silent while the first check is still loading, rather than flashing a row.
 const visible = computed(
   () => props.error !== null || categories.value.length > 0
 );
 
-// Collapse state (session-scoped — the component stays mounted across view
-// switches, so this persists until the app restarts).
+// Session-scoped: the component stays mounted across view switches.
 const collapsed = ref(false);
 
-// One row per active category, plus the config-check error row when present.
 const issueCount = computed(() => (props.error ? 1 : 0) + categories.value.length);
 
-// A signature of which warnings are present, so we can re-expand when a NEW one
-// appears even if the user had collapsed the band.
+// Re-expand when a NEW warning appears, even if the user had collapsed the band.
 const signature = computed(
   () => (props.error ? "err," : "") + categories.value.map((c) => c.kind).join(",")
 );
@@ -68,11 +59,9 @@ function formatItems(items: string[]): string {
   return items.join("; ");
 }
 
-// The list scrolls inside a bounded height, so a long failed-job error can't push
-// the view below the band out of sight. Only while it actually overflows does it
-// take a tab stop (so it scrolls by keyboard); a short list adds no stop to the
-// global chrome. A resize re-measures through the observer, a content change
-// through the watch.
+// The list is height-bounded and takes a tab stop only while it overflows (so it
+// scrolls by keyboard); a short list adds no stop to the global chrome. A resize
+// re-measures through the observer, a content change through the watch.
 const list = ref<HTMLUListElement | null>(null);
 const overflowing = ref(false);
 function measure(): void {
@@ -95,9 +84,8 @@ onBeforeUnmount(() => observer?.disconnect());
 </script>
 
 <template>
-  <!-- The live-region wrapper is ALWAYS mounted so the first warning (absent →
-       present) is announced — a live region must pre-exist in the DOM for inserted
-       content to be read. The band itself toggles with v-if inside it. -->
+  <!-- Always mounted: a live region must pre-exist in the DOM for inserted
+       content to be announced. -->
   <div class="warning-live" aria-live="polite">
   <section
     v-if="visible"
@@ -136,10 +124,8 @@ onBeforeUnmount(() => observer?.disconnect());
           Couldn't check configuration — {{ error }}
         </span>
       </li>
-      <!-- Keyed on kind AND position: the band merges two independent validation
-           reports, so uniqueness by kind alone depends on that merge holding
-           (App.vue). A future producer reintroducing a duplicate should render
-           two rows, not collide into one. -->
+      <!-- Keyed on kind AND position: uniqueness by kind alone depends on App.vue's
+           merge of two validation reports holding. -->
       <li
         v-for="(cat, i) in categories"
         :key="`${cat.kind}-${i}`"
@@ -165,28 +151,22 @@ onBeforeUnmount(() => observer?.disconnect());
 </template>
 
 <style scoped>
-/* An inset-well band (one tonal step below the paper reading surface) so the
-   warning area reads as system status, not report content. Left padding matches
-   the toolbar/footer (var(--s-8)) so the left edge still aligns across regions. */
+/* Inset-well band so the area reads as system status, not report content. Left
+   padding matches the toolbar/footer so the left edge aligns across regions. */
 .warning-area {
   background: var(--paper-edge);
   border-bottom: var(--border);
   padding: var(--s-4) var(--s-8);
-  /* Collapsed, this matches the sidebar header's height so the two bottom seams
-     line up across the column gutter; centered so the single summary line sits
-     mid-band. Expanded, the content exceeds the min and the band grows up to the
-     list's bound (.warning-list). */
+  /* Collapsed, matches the sidebar header's height so the bottom seams line up
+     across the column gutter. */
   min-height: 44px;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  /* Query container so rows can adapt to the content column's width (viewport
-     minus the fixed sidebar), not the viewport. */
+  /* Rows adapt to the content column's width, not the viewport's. */
   container-type: inline-size;
 }
 
-/* The header doubles as the collapse control: full-width row, head on the left,
-   disclosure chevron pushed to the right. A <button> so it is keyboard-operable. */
 .warning-toggle {
   display: flex;
   align-items: center;
@@ -204,19 +184,12 @@ onBeforeUnmount(() => observer?.disconnect());
   outline-offset: 1px;
 }
 
-/* Hover affordance on the full-width disclosure header — a quiet deepen of the
-   accent head so pointer users see the whole row is interactive (cursor:pointer
-   alone isn't a visible state). The head is already --accent-text at rest, so the
-   hover deliberately uses --accent-press — the one deeper-oxblood step — as text
-   (no "darker accent-text" token exists); it AA-clears on the band in both themes.
-   The chevron stroke is set via its color prop. */
+/* Hover uses --accent-press as text: no darker accent-text token exists, and it
+   clears AA on the band in both themes. */
 .warning-toggle:hover .warning-head {
   color: var(--accent-press);
 }
 
-/* Accent header is the alert signal — no saturated red, just the system's
-   oxblood used the way it already marks error labels elsewhere. Sized to the
-   strengthened surface-title scale (13px) so it reads as a region heading. */
 .warning-head {
   font-family: var(--font-sans);
   font-size: var(--t-ui-sm);
@@ -226,14 +199,12 @@ onBeforeUnmount(() => observer?.disconnect());
   color: var(--accent-text);
 }
 
-/* Count summary shown only when collapsed. */
 .warning-count {
   font-family: var(--font-sans);
   font-size: var(--t-ui-sm);
   color: var(--ink-2);
 }
 
-/* Chevron points down when collapsed, flips up when open. */
 .warning-chevron {
   margin-left: auto;
   transition: transform var(--dur-fast) var(--ease);
@@ -243,14 +214,12 @@ onBeforeUnmount(() => observer?.disconnect());
   transform: rotate(180deg);
 }
 
-/* One block: the categories are a single list grouped by spacing, with no
-   inter-row hairlines (those made one warning area look like three sections).
-   The bound: about eight lines of the body type plus the list's own padding
-   (box-sizing is border-box app-wide), derived like the run tracker's reasoning
-   wells, so a long error scrolls inside the band instead of growing it over the
-   view below. The --s-3 padding gutter keeps the dismiss control's negative-margin
-   hit area and its focus outline inside the scroll box, and the matching negative
-   margins hold the text where it sat before the bound. */
+/* No inter-row hairlines: those made one area look like three sections. The
+   bound is about eight lines of the body type plus the list's padding
+   (border-box app-wide), so a long error scrolls inside the band instead of
+   growing it over the view below. The --s-3 padding gutter keeps the dismiss
+   control's negative-margin hit area and focus outline inside the scroll box;
+   the matching negative margins hold the text in place. */
 .warning-list {
   list-style: none;
   margin: 0 calc(-1 * var(--s-3)) calc(-1 * var(--s-3));
@@ -262,24 +231,20 @@ onBeforeUnmount(() => observer?.disconnect());
   overflow-y: auto;
 }
 
-/* Keyboard focus on the list while it scrolls — the same quiet inset ring as the
-   run tracker's scroll region. */
 .warning-list:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
-/* Default to a stacked label-over-body row: this never crushes the body, and it
-   is the graceful-degradation layout if container queries are unsupported. */
+/* Stacked by default: the fallback where container queries are unsupported. */
 .warning-row {
   display: flex;
   flex-direction: column;
   gap: var(--s-1);
 }
 
-/* Wide enough: lay the whole list out as a two-column grid so every body shares
-   one left edge regardless of label length (column 1 auto-sizes to the widest
-   label). display:contents lets each row's label + body join the list grid. */
+/* display:contents lets each row's label + body join the list grid, so every
+   body shares one left edge regardless of label length. */
 @container (min-width: 32rem) {
   .warning-list {
     display: grid;
@@ -302,10 +267,9 @@ onBeforeUnmount(() => observer?.disconnect());
   color: var(--ink-2);
 }
 
-/* Sans, not serif-italic: keeps the status text out of the reading register. The
-   body is a flex row so a dismiss control (when present) sits at the trailing edge
-   without breaking the wide-mode two-column grid — each row still has exactly two
-   grid children (label + body), and the button lives inside the body cell. */
+/* Sans keeps the status text out of the reading register. A flex row so the
+   dismiss control sits at the trailing edge without breaking the two-column
+   grid: each row keeps exactly two grid children. */
 .warning-body {
   min-width: 0;
   display: flex;
@@ -324,9 +288,8 @@ onBeforeUnmount(() => observer?.disconnect());
   overflow-wrap: anywhere;
 }
 
-/* A quiet ghost icon button — muted ink at rest, accent on hover/focus. The
-   negative margins let its padded hit area extend to the row edges without adding
-   visible height to the band. */
+/* Negative margins let the padded hit area reach the row edges without adding
+   height to the band. */
 .warning-dismiss {
   flex: none;
   display: inline-flex;
@@ -342,9 +305,7 @@ onBeforeUnmount(() => observer?.disconnect());
   transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 
-/* Hover keeps the glyph legible: the dismiss reveals its accent (destructive)
-   tone on a faint paper tone, instead of the former oxblood-on-oxblood fill that
-   made the close icon nearly vanish at the moment of interaction. */
+/* Accent glyph on a faint paper tone, not a fill, keeps the close icon legible. */
 .warning-dismiss:hover {
   color: var(--accent-text);
   background: var(--paper-soft);

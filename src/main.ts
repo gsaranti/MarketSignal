@@ -1,10 +1,8 @@
 import { createApp } from "vue";
 import App from "./App.vue";
 
-// Self-hosted typefaces — bundled locally so the app never fetches fonts over
-// the network (local-first). Replaces the design system's former remote
-// Google Fonts @import. Latin subset only (the app's content language); weights
-// match the design tokens in colors_and_type.css.
+// Fonts are bundled locally so the app never fetches them over the network;
+// Latin subset only, weights matching colors_and_type.css.
 import "@fontsource/source-serif-4/latin-400.css";
 import "@fontsource/source-serif-4/latin-500.css";
 import "@fontsource/source-serif-4/latin-600.css";
@@ -19,9 +17,7 @@ import "../market-signal-design-system/colors_and_type.css";
 
 import { applyTheme, readDark } from "./theme";
 
-// Apply the saved appearance before mount so a dark-preference launch never
-// flashes the light theme — localStorage is synchronous, so the webview's first
-// paint already has `data-theme` set.
+// Before mount, so a dark-preference launch never flashes the light theme.
 applyTheme(readDark());
 
 createApp(App).mount("#app");

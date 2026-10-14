@@ -1,17 +1,13 @@
-// Shared frontend types mirroring the Rust `GeneratedReport` / `ReportSummary`
-// structs returned by the `generate_report_manual` command.
+// Shared frontend types mirroring the Rust structs the Tauri commands return.
 
-// Which main surface is showing. A plain string union driving a ref switch in
-// App.vue (no router) — the app has a small, fixed set of destinations.
+// The main surface showing — a ref switch in App.vue, no router.
 export type AppView = "report" | "portfolio" | "inbox" | "archive" | "settings";
 
 export interface ReportSummary {
   report_id: string;
   report_type: string;
   created_at: string;
-  // The agent-written per-issue headline, shown as the report's label in the
-  // sidebar. Empty for reports persisted before this field existed; the UI falls
-  // back to the product name "Market Signal Report" in that case.
+  // The agent-written headline; "" falls back to the product name in the UI.
   title: string;
   risk_posture: string;
   market_cycle: string;
@@ -29,15 +25,14 @@ export interface GeneratedReport {
   summary: ReportSummary;
 }
 
-// Mirrors the Rust `config::ValidationReport` / `WarningCategory` returned by
-// the `check_configuration` command and used to gate report generation.
+// Mirrors the Rust `config::ValidationReport` / `WarningCategory`
+// (`check_configuration`).
 export interface WarningCategory {
   kind: string;
   title: string;
   items: string[];
-  // The identity of the shown warning, echoed back to `dismiss_warning` so the
-  // dismissal targets this row and not a newer one the backend would re-derive.
-  // Present only for the non-blocking (dismissible) failed-jobs category; null otherwise.
+  // Echoed back to `dismiss_warning` so the dismissal targets this rendered row,
+  // never a re-derived one; null except for the dismissible failed-jobs category.
   dismiss_id: string | null;
 }
 
@@ -46,14 +41,10 @@ export interface ValidationReport {
   is_blocked: boolean;
 }
 
-// Mirrors the Rust `research::ResearchDocument` returned by the
-// `list_research_inbox` command (docs/research-documents.md). The inbox is a
-// flat folder of user-supplied files; `supported` flags the formats the
-// pipeline can parse. `modified` is a canonical UTC RFC3339 string (or null when
-// the platform couldn't report one); the UI renders it in local time.
-// `parse_error` is the last job pass's parse-failure reason, set only while the
-// file on disk is still the one that failed (§Parse Failures — the row renders
-// in an error state so the user can fix or delete it); always null for the
+// Mirrors the Rust `research::ResearchDocument` (`list_research_inbox`;
+// docs/research-documents.md). `modified` is UTC RFC3339 rendered in local
+// time, null when the platform couldn't report one. `parse_error` is set only
+// while the file on disk is still the one that failed; always null for the
 // archive listing.
 export interface ResearchDocument {
   name: string;
@@ -64,9 +55,8 @@ export interface ResearchDocument {
   parse_error: string | null;
 }
 
-// One section's "last X" stamps — mirrors the Rust `jobs::SectionStamps`
-// (docs/scheduling.md §Job Status Visibility). Timestamps are canonical UTC
-// RFC3339 strings; the UI renders them in local time.
+// Mirrors the Rust `jobs::SectionStamps` (docs/scheduling.md §Job Status
+// Visibility). Timestamps are UTC RFC3339, rendered in local time.
 export interface SectionStamps {
   last_successful_at: string | null;
   last_failed_at: string | null;
@@ -75,14 +65,12 @@ export interface SectionStamps {
   last_cancelled_at: string | null;
 }
 
-// Mirrors the Rust `jobs::JobStatus` returned by the `job_status` command
-// (docs/scheduling.md §Job Status Visibility). The run-slot fields are global
-// (one shared slot); the stamps come per section, keyed by job_type, and the
-// footer renders the active section's group.
+// Mirrors the Rust `jobs::JobStatus` (`job_status`; docs/scheduling.md §Job
+// Status Visibility). The run slot is global; the stamps come per section.
 export interface JobStatus {
   is_running: boolean;
-  // Which workflow holds the single run slot while is_running — drives the
-  // footer's running label (a Schwab connect must not read as a report run).
+  // Which workflow holds the run slot, so a Schwab connect never reads as a
+  // report run in the footer.
   running_kind:
     | "report"
     | "portfolio"
@@ -101,7 +89,6 @@ export interface JobStatus {
 
 // What an export wrote (`export_data` returns null on a cancelled Save dialog).
 export interface ExportSummary {
-  // Where the archive landed — surfaced with the counts.
   path: string;
   reports: number;
   learnings: number;
@@ -112,8 +99,8 @@ export interface ExportSummary {
   encrypted: boolean;
 }
 
-// What an import loaded. `skipped_reports` counts report records whose Markdown
-// body was missing from the archive (skipped, never imported as shells).
+// `skipped_reports` counts report records whose Markdown body was missing from
+// the archive, never imported as shells.
 export interface ImportSummary {
   reports: number;
   learnings: number;
@@ -138,29 +125,25 @@ export interface ArchiveInfo {
   files: number;
 }
 
-// `import_data_inspect`'s result (null on a cancelled Open dialog): the picked
-// path, whether the target store is empty (empty → straight load; non-empty →
-// the replace-all confirmation), and the archive's manifest read.
+// `import_data_inspect`'s result, null on a cancelled Open dialog; a non-empty
+// store means the replace-all confirmation.
 export interface ImportInspection {
   path: string;
   store_empty: boolean;
   info: ArchiveInfo;
 }
 
-// Mirrors the Rust `settings::*` structs (docs/configuration.md). The Settings
-// view shows the four agent model selections and, per credential, only whether
-// one is configured — the raw key never leaves the backend (settings.rs).
+// Mirrors the Rust `settings::*` structs (docs/configuration.md). A credential
+// is reported only as configured or not — the raw key never leaves the backend.
 
-// One option in the model dropdown, sourced from the Rust `AgentModel` so slugs
-// and display names have a single backend home.
+// Sourced from the Rust `AgentModel`, the single home for slugs and labels.
 export interface ModelOption {
   slug: string;
   label: string;
   provider: string; // "OpenAI" | "Anthropic" — used to group the dropdown
 }
 
-// The four agent slots' current model slugs ("" when unset). Round-trips: the
-// form pre-selects these and submits them back to `save_settings`.
+// The four agent slots' model slugs, "" when unset.
 export interface AgentModels {
   main: string;
   bull: string;
@@ -177,43 +160,32 @@ export interface CredentialStatus {
   tavily: boolean;
 }
 
-// The five testable credentials — the keys shared by CredentialStatus /
-// CredentialUpdate and used to drive per-credential "Test connection" state.
 export type CredentialKey = "openai" | "anthropic" | "fmp" | "fred" | "tavily";
 
-// Returned by `test_connection`: whether the saved credential was accepted by a
-// single live authenticated request, plus a short message. Mirrors the Rust
-// `connection_test::ConnectionTestResult`. Never carries the secret.
+// Mirrors the Rust `connection_test::ConnectionTestResult` (`test_connection`);
+// never carries the secret.
 export interface ConnectionTestResult {
   ok: boolean;
   detail: string;
 }
 
-// The local-analysis-models values (docs/configuration.md §Local Models):
-// daemon endpoint + roster ids. Not secrets, so unlike credentials they
-// round-trip in full ("" when unset) and the form submits all three verbatim
-// to `save_local_model_settings`. The reasoner is the one presence-gated slot;
-// the fast tier is optional and never gates.
+// docs/configuration.md §Local Models. Not secrets, so they round-trip in full,
+// "" when unset.
 export interface LocalModelSettings {
   daemon_endpoint: string;
   reasoner_model: string;
   fast_model: string;
 }
 
-// The web-research settings (docs/configuration.md §Web Research): the local
-// SearXNG endpoint. Not a secret (a loopback service address), so it
-// round-trips in full ("" when unset) to `save_web_research_settings`. The
-// local suite is SearXNG-only — Tavily is reserved for the report job — so
-// there is no local-suite fallback credential here.
+// docs/configuration.md §Web Research. Not a secret, so it round-trips in full,
+// "" when unset.
 export interface WebResearchSettings {
   searxng_endpoint: string;
 }
 
-// Returned by `test_searxng` — the Settings connection row and the pre-run
-// web-research notice share this one read (docs/web-research.md §Tavily
-// fallback; docs/interface.md §Pre-run web-research notice). Never a gate:
-// `degraded` is the notice trigger, and because the local suite is SearXNG-only
-// (no Tavily fallback) a degraded run is always flagged "not recommended".
+// Returned by `test_searxng` (docs/web-research.md §Tavily fallback;
+// docs/interface.md §Pre-run web-research notice). Never a gate: `degraded`
+// triggers the notice.
 export interface WebResearchPreflight {
   status: "ok" | "unreachable" | "not_configured";
   detail: string | null;
@@ -229,39 +201,26 @@ export interface SettingsView {
   available_models: ModelOption[];
 }
 
-// Returned by `test_local_daemon` (the local suite's parallel to
-// ConnectionTestResult): endpoint reachability plus any configured roster ids
-// the daemon doesn't have pulled — "daemon up but the model isn't pulled" is a
-// distinct state (docs/interface.md §Connection status).
+// Returned by `test_local_daemon` (docs/interface.md §Connection status);
+// `missing_models` lists configured roster ids the daemon hasn't pulled.
 export interface LocalDaemonStatus {
   reachable: boolean;
   detail: string | null;
   missing_models: string[];
 }
 
-// Mirrors the Rust `storage::TruncationStats` returned by the `truncation_stats`
-// command — aggregate telemetry for how often the Step-6 inbox parser had to
-// head-truncate an oversized document, accumulated across reports
-// (docs/agents.md §Data Extraction). Two rates are derivable: `total_truncations`
-// over `total_docs_parsed` (share of documents truncated), and `total_chars_dropped`
-// over `total_original_chars` (share of ingested text cut). An all-zero aggregate
-// (empty table) is the "overflow is rare" signal the Settings diagnostics section
-// renders as its empty state.
+// Mirrors the Rust `storage::TruncationStats` (`truncation_stats`;
+// docs/agents.md §Data Extraction). Two rates derive: `total_truncations` over
+// `total_docs_parsed` and `total_chars_dropped` over `total_original_chars`.
 export interface TruncationStats {
   total_truncations: number;
-  // Documents parsed across all recorded runs — the doc-rate denominator. 0 before
-  // any run with a parsed document has been recorded.
   total_docs_parsed: number;
-  // Truncations whose report has no parse-run denominator (typically recorded
-  // before the denominator existed). > 0 means the rate would mix cohorts, so
-  // the readout withholds it; 0 once every truncation report has a denominator.
+  // Truncations with no parse-run denominator; > 0 and the readout withholds
+  // the doc rate rather than mix cohorts.
   unaligned_truncations: number;
-  // Total original (pre-truncation) chars across all parse runs — the chars-rate
-  // denominator. 0 before any run with a char count has been recorded.
   total_original_chars: number;
-  // Parse-run rows with no recorded char count (the pre-migration cohort). > 0
-  // means the chars denominator omits some rows whose truncations the numerator
-  // may still count, so the chars ratio withholds; 0 once every row has a count.
+  // Parse-run rows with no char count; > 0 and the readout withholds the chars
+  // rate rather than mix cohorts.
   parse_runs_missing_original_chars: number;
   reports_affected: number;
   total_chars_dropped: number;
@@ -269,17 +228,14 @@ export interface TruncationStats {
   latest_captured_at: string | null;
 }
 
-// One row of the per-format breakdown in TruncationStats.
 export interface FormatCount {
   format: string;
   count: number;
 }
 
-// Mirrors the Rust `portfolio::InvestorProfileDisplay` returned by the
-// `get_investor_profile` command — the fixed investor-profile preset as
-// ready-to-render read-only Settings rows (docs/configuration.md §Investor
-// Profile). The strings are composed backend-side from the same label source
-// the per-holding action call's prompt renders, so the two surfaces cannot drift.
+// Mirrors the Rust `portfolio::InvestorProfileDisplay` (`get_investor_profile`;
+// docs/configuration.md §Investor Profile). Composed backend-side from the same
+// label source the action call's prompt renders, so the two cannot drift.
 export interface InvestorProfileDisplay {
   objective: string;
   risk_tolerance: string;
@@ -288,19 +244,15 @@ export interface InvestorProfileDisplay {
   cash: string;
 }
 
-// The API-token half of a `save_settings` submission (the token-gated cloud
-// save). A field is set only when the user entered a new value; null/"" leaves
-// the stored secret unchanged. The FMP/FRED/Tavily provider credentials save
-// separately through `save_provider_credentials`, outside the token gate
-// (docs/configuration.md §API Tokens).
+// The token-gated half of a `save_settings` submission; null or "" leaves the
+// stored secret unchanged (docs/configuration.md §API Tokens).
 export interface CredentialUpdate {
   openai: string | null;
   anthropic: string | null;
 }
 
-// The provider credentials' own `save_provider_credentials` submission —
-// ungated by the cloud tokens, so a cloud-keyless machine persists FMP/FRED for
-// the local suite. Same null/"" = leave-unchanged semantics.
+// The `save_provider_credentials` submission, ungated by the cloud tokens; the
+// same null/"" = unchanged semantics.
 export interface ProviderCredentialUpdate {
   fmp: string | null;
   fred: string | null;
@@ -308,48 +260,39 @@ export interface ProviderCredentialUpdate {
 }
 
 // --- Charles Schwab connection ---------------------------------------------
-// Mirrors the Rust `schwab_oauth::{SchwabConnection, SchwabStatus}` returned by
-// the `schwab_status` command (docs/schwab-integration.md, docs/interface.md
-// §Connection status). Kept a parallel shape rather than folded into the closed
-// credential machinery above: the client_id is a non-secret identifier that
-// round-trips its value, the client secret rides the Keychain, and connection
-// state is a third axis the CredentialStatus boolean can't carry.
+// Mirrors the Rust `schwab_oauth::{SchwabConnection, SchwabStatus}`
+// (`schwab_status`; docs/schwab-integration.md, docs/interface.md §Connection
+// status). A parallel shape rather than the credential machinery above: the
+// client id is a non-secret that round-trips its value, and connection state is
+// a third axis.
 
-// The connection state derived from the stored token set without a network probe:
-// never linked, a live connection, or a lapsed 7-day refresh window.
+// Derived from the stored token set without a network probe; "expired" is a
+// lapsed 7-day refresh window.
 export type SchwabConnection = "not-connected" | "connected" | "expired";
 
 export interface SchwabStatus {
-  // The developer-app client id — a non-secret identifier, so it round-trips its
-  // actual value (unlike the secret-only credentials, shown as a boolean).
   client_id: string;
-  // Whether the client secret is present on the Keychain rail — never its value.
+  // Presence only, never the value.
   secret_configured: boolean;
   connection: SchwabConnection;
-  // Canonical UTC RFC3339 string (or null when not connected); the UI renders it
-  // in local time for the weekly-re-login heads-up.
+  // UTC RFC3339, null when not connected; rendered in local time.
   refresh_expires_at: string | null;
 }
 
-// The payload the "Charles Schwab connection" surface emits on save. The client_id
-// round-trips in full; client_secret is set only when a new value is entered
-// (null leaves the stored secret unchanged, like a CredentialUpdate field).
+// The Schwab surface's save payload; a null `client_secret` leaves the stored
+// secret unchanged.
 export interface SchwabCredentialUpdate {
   client_id: string;
   client_secret: string | null;
 }
 
 // --- Portfolio Analysis ------------------------------------------------------
-// Mirrors the Rust `portfolio::*` / `schwab::*` structs returned by the
-// `latest_portfolio_run`, `generate_portfolio_manual`, `pull_holdings`, and
-// `latest_holdings_pull` commands (docs/portfolio-analysis.md §Storage and
-// display, §Triggering). Enum wire shapes are kebab-case (pinned backend-side).
+// Mirrors the Rust `portfolio::*` / `schwab::*` structs (docs/portfolio-analysis.md
+// §Storage and display, §Triggering). Enum wire shapes are kebab-case.
 
-// The tracker's resumability read for a failed / cancelled Portfolio run
-// (`portfolio_resume_status` — docs/portfolio-analysis.md §Failure posture:
-// resume is offered from the tracker's terminal state only while the
-// interrupted run's checkpoints exist and its pinned pull is inside the
-// resume window). camelCase wire shape (pinned backend-side).
+// The tracker's resume read for a failed or cancelled Portfolio run
+// (`portfolio_resume_status`; docs/portfolio-analysis.md §Failure posture).
+// camelCase wire shape.
 export interface PortfolioResumeStatus {
   available: boolean;
   runId: string | null;
@@ -368,9 +311,8 @@ export type AssetClass =
   | "cash"
   | "other";
 
-// One position in the account. Cost basis and market value are account-currency
-// totals (not per-share), Schwab-reported — the sort bar's engine-computed keys
-// derive from these two, never a naive quote × shares.
+// `cost_basis` and `market_value` are Schwab-reported account-currency totals,
+// not per-share; the sort keys derive from them, never quote × shares.
 export interface Position {
   symbol: string;
   description: string;
@@ -387,16 +329,15 @@ export interface Holdings {
   account_total: number;
 }
 
-// The latest standalone Pull-holdings snapshot — view-only page state, distinct
-// from the snapshot persisted inside each run (which is the diff baseline).
-// `pulled_at` is canonical UTC RFC3339; the UI renders local time.
+// The latest standalone pull, distinct from the snapshot persisted inside each
+// run (the diff baseline). `pulled_at` is UTC RFC3339, rendered in local time.
 export interface HoldingsPull {
   pulled_at: string;
   holdings: Holdings;
 }
 
-// How a position changed vs the prior run's snapshot — the app's deterministic
-// quantity diff, never re-derived in the frontend.
+// The backend's deterministic quantity diff vs the prior run's snapshot, never
+// re-derived in the frontend.
 export type PositionChange = "new" | "increased" | "decreased" | "unchanged";
 
 export type PortfolioGrade = "A" | "B" | "C" | "D" | "F";
@@ -420,17 +361,17 @@ export interface SubScores {
 // The metric class a stock's factors were chosen by (portfolio::factors).
 export type MetricClass = "general" | "bank" | "other-financial" | "equity-reit";
 
-// What a stock's letter was scored against: its metric class, the anchor row
-// its banded factors read (the sector, "market-wide", "Banks" or "REITs") and
-// whether most factors scored on their bands alone.
+// `anchor_row` is the row the banded factors read (the sector, "market-wide",
+// "Banks" or "REITs"); `thin_own_history` means most factors scored on their
+// bands alone.
 export interface GradeBasis {
   class: MetricClass;
   anchor_row: string;
   thin_own_history: boolean;
 }
 
-// One scenario target with its methodology exposed; the engine computed the
-// figures, the model selected and justified the base case.
+// The engine computed the figures; the model selected and justified the base
+// case.
 export interface PriceTarget {
   base: number;
   bear: number;
@@ -438,22 +379,20 @@ export interface PriceTarget {
   methodology: string;
 }
 
-// The engine's bands at three months, twelve months and three years — rolling
-// windows from the run date (docs/portfolio-analysis.md §Starting parameters).
-// The backend always emits all three fields, each null where underivable.
+// Rolling windows from the run date (docs/portfolio-analysis.md §Starting
+// parameters); each null where underivable.
 export interface PriceTargets {
   three_month: PriceTarget | null;
   twelve_month: PriceTarget | null;
   three_year: PriceTarget | null;
 }
 
-// The deterministic per-branch risk tier and the three-state capital-efficiency
-// (dead-money) read — engine-computed on every priced verdict.
+// Engine-computed on every priced verdict; `HurdleState` is the dead-money read.
 export type RiskTier = "low" | "medium" | "high";
 export type HurdleState = "clears" | "indeterminate" | "fails" | "unscorable";
 
-// The per-stock options-activity signal — an activity proxy, not positioning
-// truth; any field null when the chain lacked the data.
+// An activity proxy, not positioning truth; any field null when the chain
+// lacked the data.
 export interface OptionsSignal {
   put_call_volume: number | null;
   put_call_open_interest: number | null;
@@ -462,10 +401,8 @@ export interface OptionsSignal {
 }
 
 // The typed appendix of the thesis document (docs/portfolio-analysis.md §The
-// holding verdict): the conviction and the expected share price at three
-// months, twelve months and three years, transcribed from the document by the
-// conversation's second message and persisted exactly as authored. Every field
-// is null where the document states no value; a null renders as none.
+// holding verdict), persisted exactly as transcribed; null where the document
+// states no value.
 export interface ThesisAppendix {
   conviction: PortfolioConviction | null;
   expected_price_3m: number | null;
@@ -473,32 +410,26 @@ export interface ThesisAppendix {
   expected_price_3y: number | null;
 }
 
-// Spot's relationship to the engine's twelve-month band at authoring — stamped
-// on the engine arm so the quick check's band monitor fires on a change in the
-// relationship, never on the standing state.
+// Spot vs the engine's twelve-month band at authoring, stamped so the quick
+// check's band monitor fires on a change in the relationship, never on the
+// standing state.
 export type BandRelation = "inside" | "below-band" | "above-band";
 
 export interface GradedVerdict {
   grade: PortfolioGrade;
   sub_scores: SubScores;
-  // The per-holding portfolio action — rung-only, authored by the dedicated
-  // action call from the holding's own evidence plus the investor profile
-  // (tunnel vision; the whole-book reconciliation is the future planner's job).
+  // Authored by the dedicated action call from the holding's own evidence plus
+  // the investor profile, never the whole book.
   action: PortfolioAction;
-  // The action call's one-line rationale.
   action_rationale: string;
-  // The model arm: the thesis document as the model wrote it — prose, never
-  // rewritten — and its typed appendix.
+  // The thesis document as the model wrote it, never rewritten.
   thesis_document: string;
   appendix: ThesisAppendix;
   price_targets: PriceTargets;
   options_signal: OptionsSignal;
-  // Engine reads added by the fund slice.
   risk_tier: RiskTier;
   dead_money: HurdleState;
-  // True when the letter rests on an imputed (neutral-50) sub-score — rendered as
-  // the visible low-confidence marker beside the letter (every priced fund, per
-  // the fund-grade contract).
+  // True when the letter rests on an imputed (neutral-50) sub-score.
   low_confidence_grade: boolean;
   // The priced fund's deterministic strategy classification; null for a stock.
   fund_class_label: string | null;
@@ -511,41 +442,34 @@ export interface GradedVerdict {
   authored_band_relation: BandRelation | null;
 }
 
-// One exposure weight (a sector or country label and its fraction of the fund).
+// A sector or country label and its fraction of the fund.
 export interface ExposureWeight {
   label: string;
   weight: number;
 }
 
-// The role_risk_only branch of an analyzed verdict: a structurally unpriceable
-// vehicle class — no letter, no targets, no conviction; the thesis document,
-// the readout and the per-holding action (docs/portfolio-analysis.md
-// §Intrinsic verdict).
+// The role-risk-only branch: a structurally unpriceable vehicle class — no
+// letter, no targets, no conviction (docs/portfolio-analysis.md §Intrinsic
+// verdict).
 export interface RoleRiskVerdict {
   class_label: string;
-  // The thesis document as the model wrote it — no prices, no conviction.
   thesis_document: string;
   exposure_tilt: ExposureWeight[];
   expense_drag: number | null;
   observable_risk: number | null;
   structural_flag: boolean;
-  // The closed-end structure marker (the CEF leg).
   is_cef: boolean;
-  // Price vs NAV (market price ÷ NAV − 1; positive = premium), rendered only on
-  // the closed-end form; null is the named gap, carried in evidence_gaps.
+  // Market price ÷ NAV − 1, positive = premium; null is the named gap, carried
+  // in evidence_gaps.
   nav_premium: number | null;
   evidence_gaps: string[];
-  // Authored by the dedicated action call from the branch's own attributes plus
-  // the profile — the full ladder open; the engine set stays the reduced
-  // {sell-all, trim, hold} as annotated evidence.
+  // Authored by the dedicated action call with the full ladder open; the
+  // engine's reduced {sell-all, trim, hold} set rides as evidence only.
   action: PortfolioAction;
-  // The action call's one-line rationale.
   action_rationale: string;
 }
 
-// Internally tagged on `status` (serde `tag = "status"`): the analyzed verdict is
-// a two-branch union — `priced` (the full record) and `role-risk-only` — beside
-// the two abstention arms.
+// Internally tagged on `status` (serde `tag = "status"`).
 export type VerdictDisposition =
   | ({ status: "priced" } & GradedVerdict)
   | ({ status: "role-risk-only" } & RoleRiskVerdict)
@@ -554,16 +478,13 @@ export type VerdictDisposition =
   // the holding stays tracked across it; null on a debut abstention.
   | { status: "insufficient-evidence"; reason: string; prior_thesis_document: string | null };
 
-// How a verdict's action came to be — the canonical vocabulary from
-// docs/portfolio-analysis.md §Outcome learning: model-chosen (a model pass
-// actually chose it — the default) or rule-demoted (an over-age carried
-// add-family action demoted to hold at the roll-up — §Triggering).
+// docs/portfolio-analysis.md §Outcome learning: "rule-demoted" is an over-age
+// carried add-family action demoted to hold at the roll-up.
 export type ActionSource = "model-chosen" | "rule-demoted";
 
-// Which way an increase moved the average cost per share, with the average
-// on the prior pull and on this one (docs/portfolio-analysis.md §Holdings
-// change tracking). Null on every other change and wherever an average is
-// undefined on either pull.
+// Set on an increase: which way it moved the average cost per share, with the
+// average on the prior pull and this one (docs/portfolio-analysis.md §Holdings
+// change tracking). Null otherwise, or where either average is undefined.
 export type BasisDirection = "paid-up" | "averaged-down";
 export interface BasisMove {
   direction: BasisDirection;
@@ -577,23 +498,17 @@ export interface HoldingVerdict {
   position_change: PositionChange;
   basis_move: BasisMove | null;
   disposition: VerdictDisposition;
-  // The analysis vintage (UTC RFC3339) of the full pass that produced this
-  // verdict — differs from the run's created_at on a verdict a selective run
-  // carried forward. Null on a debut insufficient-evidence exit, which keeps
-  // the vintage of a prior it does not have (its vintage is the run's
-  // created_at).
+  // UTC RFC3339 vintage of the full pass that produced this verdict; differs
+  // from the run's created_at on a carried verdict. Null on a debut
+  // insufficient-evidence exit.
   analyzed_at: string | null;
   action_source: ActionSource;
   // Set on a carried verdict whose position's net side reversed since it was
-  // written (docs/portfolio-analysis.md §Triggering) — the carried thesis is for
-  // the opposite position, badged so the stale wrong-direction advice is visible.
-  // A selective run no longer force-includes on a reversal (ruled 2026-08-16);
-  // false on fresh passes.
+  // written (docs/portfolio-analysis.md §Triggering); false on fresh passes.
   side_reversed: boolean;
 }
 
-// A position present last run but absent now — surfaced in the roll-up only,
-// never a card in the sortable stack.
+// Present last run, absent now; surfaced in the roll-up only, never a card.
 export interface ExitedPosition {
   symbol: string;
   description: string;
@@ -602,12 +517,8 @@ export interface ExitedPosition {
   prior_market_value: number;
 }
 
-// The run-level data-health aggregate: how the target surface was actually
-// sourced (rate-anchored vs the fallbacks) plus the deep-history and DGS10
-// degradations — computed deterministically from the persisted audits, so a
-// degraded-but-successful run is visible at a glance. `attention` marks
-// infrastructure degradation (any deep-history failure, any current-multiple
-// carry, a run-wide DGS10 history gap).
+// The run-level data-health aggregate, computed from the persisted audits;
+// `attention` marks infrastructure degradation.
 export interface DataHealth {
   prompt_usage: PromptUsage[];
   targets_total: number;
@@ -617,49 +528,37 @@ export interface DataHealth {
   dispersion_floor_count: number;
   deep_history_failures: number;
   dgs10_history_gap: boolean;
-  // The house view was omitted for staleness (latest report older than the pinned
-  // window — docs/portfolio-workflow.md §Step 5); informational, rides `summary`.
+  // The house view was omitted for staleness (docs/portfolio-workflow.md
+  // §Step 5); informational only.
   house_view_omitted: boolean;
-  // Run-level enriching-feed gaps (commodity context / CFTC positioning / the
-  // CBOE backdrop / FINRA short interest / sector-benchmark series) — counted
-  // and named in `summary`, never attention triggers (the feeds are fail-soft
-  // and additive).
+  // Enriching-feed gaps: named in `summary`, never attention triggers.
   commodity_gaps: number;
   positioning_gaps: number;
   cboe_gap: boolean;
   finra_gap: boolean;
   ma_gap: boolean;
-  // The accuracy pass hit an episode-store read or write error — the scores
-  // read unavailable where the store could not be read (fail-soft).
+  // The accuracy pass hit an episode-store error; the scores read unavailable.
   accuracy_gap: boolean;
   benchmark_gaps: number;
-  // Persisted research coverage gaps, folded from per-holding research audits
-  // without matching their human-readable gap strings. Counted and named in
-  // the roll-up summary, never an attention trigger (research is fail-soft).
+  // Research coverage gaps: named in `summary`, never an attention trigger.
   research_degraded_holdings: number;
   research_gap_count: number;
-  // Local chat calls under context pressure (the digest-compression covenant's
-  // detection leg) — near-full (≥ 90% of num_ctx) or likely front-truncated (a
-  // reported count too small to cover the chars actually sent; Ollama's count
-  // is post-truncation and lands far below num_ctx, so fill alone can't see
-  // it). Named in `summary` and an attention trigger; `peak_prompt` is the
-  // run's fullest prompt regardless, the big-run prompt-fit watch's measurement.
+  // Local chat calls under context pressure: near-full (≥ 90% of num_ctx) or
+  // likely front-truncated (Ollama's reported count is post-truncation, so fill
+  // alone can't see it). An attention trigger. `peak_prompt` is the run's
+  // fullest prompt regardless.
   context_pressure: PromptUsage[];
   peak_prompt: PromptUsage | null;
-  // Model calls the bounded retry-once recovered (docs/local-models.md §The
-  // local-model adapter seam) — each fired retry's stage and failure class.
-  // Named in `summary` and an attention trigger.
+  // Retries the bounded retry-once fired (docs/local-models.md §The local-model
+  // adapter seam); an attention trigger.
   model_retries: RetryEvent[];
   attention: boolean;
   summary: string;
 }
 
-// One fired bounded-retry: which stage re-attempted and why — the failure
-// class followed by the failed attempt's full error chain, so a parse
-// failure names its innermost cause. In a persisted run the re-attempt
-// succeeded (a second failure is not
-// listed — the Portfolio job drops a failed holding's retry events as it
-// isolates it), so entries measure the absorbed transient rate.
+// One fired retry: the stage and the failure class with the failed attempt's
+// error chain. Only recovered retries persist (a failed holding's are dropped
+// with it), so entries measure the absorbed transient rate.
 export interface RetryEvent {
   stage: string;
   cause: string;
@@ -696,12 +595,9 @@ export interface PortfolioRollUp {
   graded_count: number;
   not_rated_count: number;
   insufficient_evidence_count: number;
-  // Analyzed holdings on the role_risk_only branch — counted beside the priced
-  // holdings, never pooled with them.
+  // Counted beside the priced holdings, never pooled with them.
   role_risk_only_count: number;
-  // Holdings whose fresh analysis failed this run and was isolated
-  // (docs/portfolio-analysis.md §Failure posture) — the length of
-  // PortfolioRun.failed_holdings, counted apart from the analyzed counts above.
+  // The length of PortfolioRun.failed_holdings, apart from the analyzed counts.
   failed_count: number;
   top_position_weight: number;
   cash_weight: number;
@@ -716,14 +612,10 @@ export interface PortfolioRun {
   holdings: Holdings;
   verdicts: HoldingVerdict[];
   roll_up: PortfolioRollUp;
-  // The per-holding audit records (sources, metrics, model ids…) — persisted
-  // for traceability; not rendered by the Portfolio page in this slice.
+  // Per-holding audit records, persisted for traceability; not rendered.
   audit: unknown[];
-  // Per-holding analysis failures the run isolated rather than aborting on
-  // (docs/portfolio-analysis.md §Failure posture). A symbol here renders a failed
-  // card — its prior verdict carried into `verdicts` when `carried_prior` (the
-  // card shows that stale data beside a failed badge), or an empty debut-failure
-  // card otherwise. Empty on a clean run.
+  // Holdings whose analysis failed while the run continued
+  // (docs/portfolio-analysis.md §Failure posture).
   failed_holdings: HoldingFailure[];
   // The run's accuracy record (docs/portfolio-analysis.md §Outcome learning).
   accuracy: AccuracyRecord;
@@ -743,17 +635,14 @@ export interface HorizonAccuracy {
   engine: ArmScore | null;
 }
 
-// A holding's six accuracy scores — per horizon, per arm.
 export interface AccuracyScores {
   three_month: HorizonAccuracy;
   twelve_month: HorizonAccuracy;
   three_year: HorizonAccuracy;
 }
 
-// The run's accuracy record: each holding's scores keyed by symbol (`null`
-// when the episode store could not be read this run), plus the episodes the
-// run opened and the checks it wrote — persisted for the audit; the card
-// reads the scores alone.
+// `scores` is null when the episode store could not be read this run; `opened`
+// and `checks` persist for the audit only.
 export interface AccuracyRecord {
   scores: Record<string, AccuracyScores> | null;
   opened: unknown[];
@@ -761,24 +650,21 @@ export interface AccuracyRecord {
 }
 
 // A per-holding analysis failure the run isolated (docs/portfolio-analysis.md
-// §Failure posture). The model/grade half is fail-hard per holding, not per run.
+// §Failure posture).
 export interface HoldingFailure {
   symbol: string;
-  // The concise, user-legible failure read — the failing operation plus its root
-  // cause; the full chain rides the run tracker + logs.
+  // The failing operation plus its root cause; the full chain rides the tracker
+  // and logs.
   cause: string;
-  // Whether a prior successful verdict was carried forward — the card shows that
-  // vintage-stamped data beside the failed badge (true), or is an empty
-  // debut-failure card (false).
+  // True when a prior verdict was carried forward and shows vintage-stamped
+  // beside the failed badge; false is an empty debut-failure card.
   carried_prior: boolean;
 }
 
 // --- Portfolio quick check ---------------------------------------------------
-// The engine-only between-run sweep's persisted state, returned by
-// `latest_quick_check` (docs/portfolio-analysis.md §The quick check). Rendered
-// as the Portfolio page's card overlay: the amber attention flag, the quiet
-// evidence-event badge, and the degraded-sweep note. Cleared by the next
-// successful full run, so `null` is the common state.
+// The engine-only between-run sweep's persisted state (`latest_quick_check`;
+// docs/portfolio-analysis.md §The quick check). Cleared by the next successful
+// full run, so `null` is the common state.
 
 export type SweepFamily =
   | "market-data"
@@ -836,28 +722,24 @@ export interface QuickCheckState {
   holdings: HoldingQuickState[];
 }
 
-// One sidebar row of the Portfolio-runs history, returned by
-// `list_portfolio_runs` (docs/interface.md §Main Layout — the shared-history
-// sidebar's run list). Light by design: identity, timestamp, and the two counts
-// a readable row renders (an unreadable row hides them — its zeros are
-// placeholders); opening a run fetches the full record via `get_portfolio_run`.
+// One sidebar row of the Portfolio-runs history (`list_portfolio_runs`;
+// docs/interface.md §Main Layout). An unreadable row's zero counts are
+// placeholders; opening a run fetches the full record via `get_portfolio_run`.
 export interface PortfolioRunSummary {
   run_id: string;
   // Canonical UTC RFC3339; rendered in local time.
   created_at: string;
   holdings_count: number;
   graded_count: number;
-  // False marks a row whose persisted blob no longer decodes: it still lists
-  // (identity comes from store columns, counts are zero) but cannot open, and
-  // ages out of retention like any other row.
+  // False when the persisted blob no longer decodes: the row lists but cannot
+  // open.
   readable: boolean;
 }
 
 // --- Live job tracker -------------------------------------------------------
 // Mirrors the Rust `progress::ProgressMessage` streamed over the "job-progress"
-// Tauri event while a run is in flight. Discriminated by `kind`; every message
-// also carries `run_id` (to discard stragglers from a prior run) and a monotonic
-// `seq`. Fields beyond those two are present only on the variants that use them.
+// event. Discriminated by `kind`; every message carries `run_id` (to discard
+// stragglers from a prior run) and a monotonic `seq`.
 export type ProgressKind =
   | "run-started"
   | "step-started"
@@ -867,14 +749,13 @@ export type ProgressKind =
   | "agent-token"
   | "agent-thinking"
   | "analyst-thinking"
-  // stream-restarted: a streaming agent call is about to re-attempt under its
-  // bounded retry, so its live panes clear — the main agent's report text and
-  // reasoning when `posture` is absent, otherwise that analyst's reasoning pane.
+  // stream-restarted: a streaming call re-attempts under its bounded retry, so
+  // its live panes clear — the main agent's when `posture` is absent, otherwise
+  // that analyst's.
   | "stream-restarted"
   | "step-thinking"
-  // model-call-started / model-call-finished: a local-model call's diagnostic
-  // boundaries, consumed by the backend's thought-log sink and stderr tee. The
-  // tracker deliberately ignores them (they carry no rendered field).
+  // model-call-started / model-call-finished: diagnostic boundaries for the
+  // backend's thought-log sink; the tracker deliberately ignores them.
   | "model-call-started"
   | "model-call-finished"
   | "run-finished";
@@ -885,13 +766,10 @@ export interface ProgressMessage {
   kind: ProgressKind;
   // run-started: a short human title for the run.
   label?: string;
-  // step-started / step-finished: the stable step key + its human label.
-  // step-thinking: the key of the step the reasoning chunk belongs to (the
-  // portfolio per-holding steps), folded into that step's reasoning pane.
-  // request-started / request-finished: the row's owning step, stamped by the
-  // backend at the progress seam (the run's active step) — never inferred
-  // here. Absent when the request fired with no step open; such rows render
-  // in the trace's unattributed list.
+  // step-started / step-finished: the stable step key. step-thinking: the step
+  // the reasoning chunk folds into. request-started / request-finished: the
+  // row's owning step, stamped by the backend, never inferred here; absent when
+  // the request fired with no step open.
   step?: string;
   // step-finished ("ok" | "failed" | "cancelled"), request-finished ("ok" or a
   // gap reason), run-finished ("successful" | "failed" | "cancelled").
@@ -902,36 +780,29 @@ export interface ProgressMessage {
   group?: string;
   series_id?: string;
   name?: string;
-  // request-started / request-finished: what a research request asked for
-  // (the query or page address); absent on every other row.
+  // request-started / request-finished: present on research rows only.
   target?: RequestTarget;
   // agent-token / agent-thinking / analyst-thinking / step-thinking: a coalesced
-  // chunk of the streamed report text, the main agent's reasoning, one analyst's
-  // reasoning, or a step-scoped stage's reasoning, respectively.
+  // chunk of the streamed text or reasoning.
   delta?: string;
-  // analyst-thinking: which analyst the reasoning chunk belongs to (bull / bear /
-  // balanced), so the tracker routes the three concurrent analysts to distinct panes.
-  // stream-restarted: the analyst whose pane restarts; absent for the main agent.
+  // analyst-thinking: which analyst (bull / bear / balanced) the chunk belongs
+  // to. stream-restarted: the analyst whose pane restarts; absent for the main
+  // agent.
   posture?: string;
   // run-finished: the new report's id, on success only.
   report_id?: string | null;
 }
 
-// What a research request asked for — the search query or the page address —
-// shown beside the topic its row is named for. `kind` is "search" or "fetch".
-// Mirrors the Rust `progress::RequestTarget`; only the research loop's rows
-// carry one.
+// Mirrors the Rust `progress::RequestTarget`; `kind` is "search" or "fetch".
+// Only the research loop's rows carry one.
 export interface RequestTarget {
   kind: string;
   text: string;
 }
 
-// One baseline data request, as shown in the tracker (one row per actual HTTP
-// call). `status` is "running" while in-flight, then "ok", "empty" (a 2xx with no
-// usable data), or a gap reason (unavailable / rejected / malformed / out-of-scope).
-// `target` is the research row's subject (null on every other row); `detail` is
-// the failure's cause, or a completed row's short outcome note where the
-// request left one ("12 hits", "served from document cache").
+// One request row in the tracker. `status` is "running", then "ok", "empty" (a
+// 2xx with no usable data) or a gap reason; `target` is null off the research
+// rows; `detail` is the failure's cause or a short outcome note.
 export interface TrackerRequest {
   provider: string;
   group: string;
@@ -942,10 +813,9 @@ export interface TrackerRequest {
   target: RequestTarget | null;
 }
 
-// `flagged` / `unknown` are the quick check's per-holding sweep outcomes
-// (docs/portfolio-analysis.md §The quick check): the step completed, but the
-// sweep raised an attention flag / could not vouch for a signal family — the
-// tracker renders them as completed-with-outcome, never as a failure.
+// `flagged` / `unknown` are the quick check's sweep outcomes
+// (docs/portfolio-analysis.md §The quick check): completed-with-outcome, never
+// a failure.
 export type StepStatus =
   | "pending"
   | "running"
@@ -955,15 +825,9 @@ export type StepStatus =
   | "flagged"
   | "unknown";
 
-// One pipeline step in the tracker. `requests` carries the baseline step's
-// per-series rows; `agentText` accumulates the main-agent step's streamed report;
-// `agentThinking` accumulates its streamed reasoning (extended-thinking summary),
-// shown as a quieter stream above the report — and, via step-thinking events, a
-// step-scoped stage's reasoning on its own step (the portfolio per-holding
-// interpretation). Empty for non-thinking models.
-// `analystThinking` maps each analyst posture (bull / bear / balanced) to its streamed
-// reasoning, accumulated under the "analysts" step — one pane per analyst that surfaces
-// thinking; empty for non-thinking analyst models.
+// `agentThinking` is the step's streamed reasoning (the main agent's, or a
+// step-scoped stage's via step-thinking); `analystThinking` maps each analyst
+// posture to its own. Both empty for non-thinking models.
 export interface TrackerStep {
   key: string;
   label: string;
@@ -975,13 +839,10 @@ export interface TrackerStep {
   analystThinking: Record<string, string>;
 }
 
-// The assembled trace for one run, built in App.vue from the event stream and
-// rendered by JobTrackerView. `terminal` is null until the run finishes; it then
-// carries the outcome so the trace can linger (reopenable) after the run ends.
-// `unattributed` holds request rows whose events carried no owning-step stamp
-// (a request fired with no step open): they render as their own neutral
-// trailing list, never synthesized into a step — so an unowned row can never
-// paint a failed stage into a run's record.
+// Built in App.vue from the event stream. `terminal` is null until the run
+// finishes. `unattributed` rows carried no owning-step stamp; they render as
+// their own trailing list, never synthesized into a step, so an unowned row can
+// never paint a failed stage into a run's record.
 export interface RunTrace {
   runId: string;
   label: string;

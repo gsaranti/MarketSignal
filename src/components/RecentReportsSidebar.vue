@@ -4,22 +4,17 @@ import Icon from "./Icon.vue";
 import { localDateTime } from "../format";
 import type { AppView, PortfolioRunSummary, ReportSummary } from "../types";
 
-// The ONE shared-history sidebar (design kit Sidebar.jsx): same structure and
-// treatment everywhere, only the history content swaps per feature — recent
-// report issues on the report (and inbox/archive/settings) views, recent
-// Portfolio runs on the Portfolio view. Same density, same oxblood
-// leading-edge selection accent — a scoped extension of the report-history
-// sidebar, not a new navigation pattern.
+// The one shared-history sidebar (design kit Sidebar.jsx): only the history
+// content swaps per feature (Portfolio runs on the Portfolio view, report
+// issues everywhere else); structure and treatment never do.
 const props = defineProps<{
   reports: ReportSummary[];
   selectedReportId: string | null;
-  // A failure to list the reports (sidebar-level). Only surfaces when there's no
-  // list to fall back on — a refresh failure with an existing list keeps the
-  // stale list silently rather than flashing an error.
+  // Surfaces only with no list to fall back on; a refresh failure keeps the
+  // stale list silently.
   reportsError: string | null;
-  // The Portfolio-runs history (docs/interface.md §Main Layout): the retained
-  // runs' summaries, the selected run (the latest, or an opened past run), and
-  // the same no-list-to-fall-back-on error posture as the reports.
+  // Portfolio-runs history (docs/interface.md §Main Layout); its error has the
+  // reports' posture.
   portfolioRuns: PortfolioRunSummary[];
   selectedRunId: string | null;
   portfolioRunsError: string | null;
@@ -34,15 +29,12 @@ defineEmits<{
   (e: "select-run", runId: string): void;
 }>();
 
-// Which feature's history the list shows (the kit's featureOf): the Portfolio
-// view swaps in its runs; every other view keeps the report list visible.
 const feature = computed<"portfolio" | "report">(() =>
   props.view === "portfolio" ? "portfolio" : "report"
 );
 
-// The row's report date and time in local time, matching the report toolbar's
-// dateline — the time is included so two reports generated on the same day are
-// distinguishable (the export filename stays date-only; see ../format).
+// Date and time: two reports from the same day must be distinguishable (the
+// export filename stays date-only).
 function shortStamp(iso: string): string {
   return localDateTime(iso);
 }
@@ -51,15 +43,12 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-// The row's label: the agent's per-issue headline, falling back to the product
-// name for reports persisted before titles existed (an empty title).
 function rowTitle(r: ReportSummary): string {
   return r.title?.trim() || "Market Signal Report";
 }
 
-// A run row's label (kit RunRow): every run is a full-book pass in this slice.
-// An unreadable row's counts are unknown (its blob no longer decodes; the
-// zeros in the summary are placeholders, not facts), so no count renders.
+// An unreadable run's blob no longer decodes; its summary zeros are
+// placeholders, not facts, so no count renders.
 function runTitle(r: PortfolioRunSummary): string {
   if (!r.readable) return "Full book";
   const n = r.holdings_count;
@@ -69,15 +58,9 @@ function runTitle(r: PortfolioRunSummary): string {
 
 <template>
   <aside class="sidebar">
-    <!-- Shared history — content swaps per feature (design kit Sidebar.jsx):
-         Portfolio runs on the Portfolio view, report issues everywhere else. -->
     <template v-if="feature === 'portfolio'">
       <div class="sidebar-header">Portfolio runs · last 30</div>
       <div class="sidebar-list">
-        <!-- One row per retained run, newest first. Selecting a row opens that
-             run on the Portfolio page (the newest readable run = the live latest
-             view; any other — older — the read-only historical view — App
-             decides). -->
         <template v-if="portfolioRuns.length > 0">
           <button
             v-for="r in portfolioRuns"
@@ -101,16 +84,11 @@ function runTitle(r: PortfolioRunSummary): string {
                 }}<template v-if="r.readable">
                   · graded {{ r.graded_count }}</template
                 >
-                <!-- An unreadable row — the persisted blob no longer decodes;
-                     it lists from its column identity (no counts — the
-                     summary's zeros are placeholders, not facts) and cannot
-                     open (the button disables). -->
                 <span v-if="!r.readable" class="ana-tag row-tag">unreadable</span>
               </div>
             </div>
           </button>
         </template>
-        <!-- Empty / list-failure state, mirroring the report list's posture. -->
         <button
           v-else
           type="button"
@@ -135,8 +113,6 @@ function runTitle(r: PortfolioRunSummary): string {
     <template v-else>
       <div class="sidebar-header">Recent reports · last 30</div>
       <div class="sidebar-list">
-        <!-- One row per persisted report, newest first. Selecting a row loads that
-             issue into the report pane (App handles the load + view switch). -->
         <template v-if="reports.length > 0">
           <button
             v-for="r in reports"
@@ -161,11 +137,8 @@ function runTitle(r: PortfolioRunSummary): string {
             </div>
           </button>
         </template>
-        <!-- Empty state keeps the list region occupied with a path back to the
-             (empty) report view — the bottom nav's report entry is the durable
-             target, this row mirrors it at the spot a report row would occupy.
-             Clickable and keyboard-operable like a real row. When listing
-             failed (and there's no list to show), the meta says so rather than
+        <!-- The empty row is a path back to the report view at the spot a row
+             would occupy; on a listing failure the meta says so rather than
              misreporting an empty library as "No reports yet". -->
         <button
           v-else
@@ -192,8 +165,8 @@ function runTitle(r: PortfolioRunSummary): string {
 
     <nav class="sidebar-nav" aria-label="Views">
       <!-- The report target leads the nav (docs/interface.md §Main Layout): on
-           the Portfolio view the history list swaps to runs, so without this
-           entry no report row exists and the view is a navigation dead-end. -->
+           the Portfolio view the history swaps to runs, so without this entry
+           the view is a navigation dead-end. -->
       <button
         type="button"
         class="nav-item"
@@ -251,9 +224,6 @@ function runTitle(r: PortfolioRunSummary): string {
 </template>
 
 <style scoped>
-/* Recessed chrome: the sidebar sits one tonal step below the paper reading
-   surface so the boundary between navigation and report content is legible
-   without leaning on the hairline alone. */
 .sidebar {
   width: 280px;
   flex-shrink: 0;
@@ -264,8 +234,8 @@ function runTitle(r: PortfolioRunSummary): string {
   background: var(--paper-soft);
 }
 
-/* Header row: fixed height + centered so its bottom seam aligns with the
-   collapsed warning band's across the column gutter (both are the "header" tier). */
+/* Fixed height so the bottom seam aligns with the collapsed warning band's
+   across the column gutter. */
 .sidebar-header {
   display: flex;
   align-items: center;
@@ -285,11 +255,9 @@ function runTitle(r: PortfolioRunSummary): string {
   overflow-y: auto;
 }
 
-/* The report row reuses the global `.row` (accent edge + hover) but is a
-   <button>; reset the button chrome `.row` doesn't set so only the leading
-   accent edge and bottom hairline read. */
-/* Item row: matched to the report toolbar's height (the "item/title" tier) and
-   centered, so its bottom seam lines up with the toolbar's across the gutter. */
+/* A <button> reusing the global `.row`: reset the button chrome `.row` doesn't
+   set. min-height matches the report toolbar so the seams line up across the
+   gutter. */
 .report-row {
   width: 100%;
   min-height: 50px;
@@ -307,18 +275,15 @@ function runTitle(r: PortfolioRunSummary): string {
   outline-offset: -2px;
 }
 
-/* The global `.row` hover/current is paper-soft, which now matches the sidebar
-   background — step it one deeper so selection still reads. */
+/* The global `.row` hover/current is paper-soft, the sidebar's own background;
+   step one deeper so selection reads. */
 .report-row:hover,
 .report-row.is-current {
   background: var(--paper-edge);
 }
 
-/* An unreadable run row: present but unavailable — no hover invitation, the
-   default cursor, and the muted ink the row's placeholder identity deserves.
-   The `unreadable` tag carries the words; disabled carries the behavior. The
-   title needs its own override: `.row-title` sets `--ink` explicitly, which
-   would otherwise beat the inherited disabled color. */
+/* `.row-title` sets `--ink` explicitly, which would beat the inherited
+   disabled color, so the title needs its own override. */
 .report-row:disabled {
   cursor: default;
   color: var(--ink-3);
@@ -339,10 +304,8 @@ function runTitle(r: PortfolioRunSummary): string {
   font-size: var(--t-ui-sm);
   font-weight: 600;
   color: var(--ink);
-  /* The title is now an agent-written, variable-length headline. Clamp it to two
-     lines with an ellipsis so a long one can't blow up the row height, and break
-     a long unbroken token rather than overflow the column (frontend-craft overflow
-     handling; no new tokens). */
+  /* Clamp the agent-written headline to two lines so a long one can't blow up
+     the row height. */
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -356,31 +319,24 @@ function runTitle(r: PortfolioRunSummary): string {
   font-size: var(--t-caption);
   letter-spacing: var(--track-caption);
   text-transform: uppercase;
-  /* The stamp + short-id are figures that stack down the column; tabular/lining
-     numerals keep digits aligned row-to-row and steady on selection. */
+  /* Tabular/lining numerals keep the stacked stamps aligned row-to-row. */
   font-variant-numeric: tabular-nums lining-nums;
   color: var(--ink-3);
   margin-top: var(--s-1);
 }
 
-/* List-load failure: accent draws the eye to a problem, matching the report
-   pane's error-label treatment rather than reading as quiet caption metadata. */
 .row-meta.is-error {
   color: var(--accent-text);
 }
 
-/* The degraded-run marker inside the meta line — the kit's quiet status tag
-   beside the caption figures. */
 .row-meta .row-tag {
   margin-left: var(--s-1);
   vertical-align: top;
 }
 
-/* Bottom nav — targets at the foot of the panel (design kit Sidebar.jsx).
-   Geometry mirrors `.row` (2px edge + 14px content offset) so a nav item's
-   label aligns with the report-row title above it. */
-/* No top padding: the first nav item's selected highlight (and its accent edge)
-   meets the divider flush, rather than leaving a sliver of gap above it. */
+/* Nav geometry mirrors `.row` (2px edge + 14px offset) so a label aligns with
+   the row titles above; no top padding so the first item's highlight meets the
+   divider flush. */
 .sidebar-nav {
   border-top: var(--border);
 }

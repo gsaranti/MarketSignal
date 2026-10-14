@@ -1,14 +1,10 @@
-// Light/Dark appearance preference — the design kit's "Dark surface" switch.
-// The dark token set lives in colors_and_type.css under `:root[data-theme="dark"]`;
-// this module is the only thing that toggles that attribute, so flipping it
-// cascades the whole token-driven UI at once.
+// Light/Dark appearance preference. The dark token set in colors_and_type.css
+// hangs off `:root[data-theme="dark"]`; this module is the only thing that
+// toggles that attribute.
 //
-// Persisted in localStorage on purpose: it is synchronous, so main.ts can apply
-// the stored choice *before* Vue mounts and the first paint never flashes the
-// wrong theme. Appearance is deliberately kept out of the token-gated
-// `save_settings` flow — it has no backend consumer (agents never see HTML; PDF
-// export reuses this same DOM and inherits the theme), and a backend round-trip
-// would reintroduce the launch flash this avoids.
+// Persisted in localStorage rather than through `save_settings` on purpose: it
+// is synchronous, so main.ts applies the stored choice before Vue mounts and the
+// first paint never flashes the wrong theme. Appearance has no backend consumer.
 
 const STORAGE_KEY = "appearance";
 
@@ -21,7 +17,6 @@ export function readDark(): boolean {
   }
 }
 
-/** Reflect the choice onto <html> so the dark token block cascades (or not). */
 export function applyTheme(dark: boolean): void {
   const root = document.documentElement;
   if (dark) {
@@ -31,13 +26,12 @@ export function applyTheme(dark: boolean): void {
   }
 }
 
-/** Persist the choice and apply it in one step. */
 export function writeDark(dark: boolean): void {
   try {
     localStorage.setItem(STORAGE_KEY, dark ? "dark" : "light");
   } catch {
-    // Best-effort persistence — apply regardless so the toggle still works this
-    // session even when storage is unavailable.
+    // Storage may be unavailable; apply regardless so the toggle still works
+    // this session.
   }
   applyTheme(dark);
 }

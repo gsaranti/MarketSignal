@@ -53,66 +53,47 @@ import type {
 import { readDark, writeDark } from "./theme";
 import { localDate } from "./format";
 
-// Which main surface is showing. A plain ref switch (no router) — the app has a
-// small fixed set of destinations and the kit models this as top-level state,
-// not routes (see AppView in types.ts).
+// The main surface showing — a ref switch, no router.
 const view = ref<AppView>("report");
 
-// App version for the titlebar masthead ("Desk · v1.0.0"); falls back to "Desk"
-// if the version can't be read.
 const appVersion = ref("");
 const versionLabel = computed(() =>
   appVersion.value ? `Desk · v${appVersion.value}` : "Desk"
 );
 
-// The recent-reports list (newest first, capped at 30 by the backend) and the
-// currently-selected report. `reports` drives the sidebar; `selectedReport`
-// carries the loaded Markdown for the report pane. Selection is held by id so the
-// sidebar highlight and the pane stay in sync from one source of truth.
+// Newest first, capped by the backend. Selection is held by id so the sidebar
+// highlight and the pane share one source of truth.
 const reports = ref<ReportSummary[]>([]);
 const selectedReportId = ref<string | null>(null);
 const selectedReport = ref<GeneratedReport | null>(null);
-// Two distinct error channels, deliberately kept apart: `reportError` is a
-// failure to OPEN the selected report (feeds the report pane's load-error
-// state); `reportsError` is a failure to LIST the sidebar (a sidebar-level
-// problem). Conflating them lets a transient list refresh mask a perfectly-valid
-// loaded report — so the list error never reaches the report pane.
+// Kept apart on purpose: `reportError` is a failure to open the selected
+// report, `reportsError` a failure to list the sidebar, so a transient list
+// refresh never masks a loaded report.
 const reportError = ref<string | null>(null);
 const reportsError = ref<string | null>(null);
 const generating = ref(false);
 const error = ref<string | null>(null);
 
 // --- Live job tracker ------------------------------------------------------
-// While a run is in flight the report pane shows the tracker instead of a report.
-// `reportPaneMode` is the toggle; `runTrace` is the assembled event stream for the
-// latest run (in-session, latest-run-only); `runActive` is true between
-// run-started and run-finished; `cancelRequested` disables Cancel after a click.
+// While a run is in flight the owning page shows the tracker; `runTrace` is
+// in-session, latest-run-only.
 const reportPaneMode = ref<"report" | "tracker">("report");
 const runTrace = ref<RunTrace | null>(null);
 const runActive = ref(false);
 const cancelRequested = ref(false);
-// Which kind of run the current trace belongs to (set by whichever starter
-// kicked it off). The tracker is one shared component placed on the owning
-// page — a portfolio run's log shows in the Portfolio view, a report run's in
-// the report pane (docs/run-tracking.md) — and the footer's determinate /8
-// fill applies only to the report's fixed pipeline.
+// The tracker renders on the run's owning page (docs/run-tracking.md); the
+// footer's determinate fill applies only to the report's fixed pipeline.
 const runTraceKind = ref<"report" | "portfolio" | "portfolio-quick-check" | null>(null);
-// The Portfolio view's pane toggle, mirroring reportPaneMode: while a portfolio
-// run is in flight (or its log is reopened) the page shows the tracker.
 const portfolioPaneMode = ref<"results" | "tracker">("results");
-// Wall-clock start of the in-flight run (epoch ms), stamped at `run-started`. Drives
-// the footer's live elapsed timer; null when no run has started this session.
+// Epoch ms, stamped at run-started; null until a run starts this session.
 const runStartedAt = ref<number | null>(null);
 
-// The synthetic first step: the run only ever starts once the execution gate has
-// passed (`check_configuration`), so we show that as a completed step rather than
-// emitting a backend event for an instant, already-done check.
+// The synthetic first step: the execution gate passed before the run existed,
+// so it shows as already complete rather than as a backend event.
 const GATE_STEP_LABEL = "Credentials & configuration";
 
-// The canonical coarse pipeline steps, in the order the backend emits them
-// (`pipeline.rs` step_started calls) plus the synthesized `gate`. Used only as the
-// denominator for the footer's determinate progress fill — the fine-grained per-
-// request rows live in the tracker, not here.
+// The backend's step order (pipeline.rs) plus the synthesized gate; only the
+// footer's progress denominator.
 const PIPELINE_STEP_KEYS = [
   "gate",
   "baseline",
@@ -124,11 +105,7 @@ const PIPELINE_STEP_KEYS = [
   "persist",
 ] as const;
 
-// Determinate run progress for the footer status row (the design kit's long-job
-// component: a 1px fill whose width tracks real step completion, plus a "step N of T"
-// caption). The fill credits completed steps fully and the in-flight step a half
-// step, so it advances as each step begins yet never reads 100% until the run
-// actually finishes. Honest — never a faked sweep. Null unless a run is in flight.
+// The footer's determinate progress; null unless a report run is in flight.
 const runProgress = computed<{
   fraction: number;
   stepNumber: number;
@@ -137,9 +114,8 @@ const runProgress = computed<{
 } | null>(() => {
   const trace = runTrace.value;
   if (!trace || !runActive.value) return null;
-  // The fixed 8-step denominator is the report pipeline's; a portfolio run's
-  // steps are dynamic (one per holding), so it gets the running label + elapsed
-  // timer without a bogus fraction.
+  // A portfolio run's steps are dynamic (one per holding), so it gets no
+  // fraction.
   if (runTraceKind.value !== "report") return null;
   const total = PIPELINE_STEP_KEYS.length;
   let completed = 0; // count of canonical steps in a terminal state (steps finish in order)
@@ -154,9 +130,8 @@ const runProgress = computed<{
   }
   const current = running ?? lastTouched;
   if (!current) return null;
-  // The in-flight step counts as a half step — credit for being underway, not for
-  // finishing — so a running final "Saving the report" tops out below 100%; the bar
-  // fills completely only when the run actually completes.
+  // The in-flight step counts a half step, so the bar never reads 100% until
+  // the run actually completes.
   const fraction = (completed + (running ? 0.5 : 0)) / total;
   return {
     fraction,
@@ -166,8 +141,7 @@ const runProgress = computed<{
   };
 });
 
-// Find or create a step by key. step-started always precedes its requests/tokens
-// and step-finished, so the lookup normally hits; the create is a safety net.
+// step-started always precedes a step's other events, so the create is a safety net.
 function ensureStep(trace: RunTrace, key: string, label: string): TrackerStep {
   let step = trace.steps.find((s) => s.key === key);
   if (!step) {
@@ -186,22 +160,13 @@ function ensureStep(trace: RunTrace, key: string, label: string): TrackerStep {
   return step;
 }
 
-// The list a request row lives in: the stamped owning step's rows, or the
-// trace-level unattributed list when the event carries no stamp. Ownership is
-// something the run STATES — stamped onto request events at the backend's
-// progress seam (progress.rs, the run's active step) — never something this
-// fold infers: the old group-name routing, follow-the-running-step default,
-// and synthesized-step fallback are retired, so an unowned row renders
-// neutrally in its own list and can never conjure a step that later paints
-// FAILED onto a successful run. The step's step-started always precedes its
-// stamped rows in the stream, so the ensureStep lookup normally hits; the
-// create (keyed and labeled by the stamp) is a safety net.
+// Ownership is stamped onto request events by the backend (progress.rs), never
+// inferred here: an unstamped row renders in the unattributed list and can never
+// conjure a step that later paints FAILED onto a successful run.
 function requestHome(trace: RunTrace, step: string | undefined): TrackerRequest[] {
   return step ? ensureStep(trace, step, step).requests : trace.unattributed;
 }
 
-// Fold one streamed progress message into the trace. Events are filtered to the
-// current run by `run_id`, so a straggler from a prior run can't corrupt it.
 function handleProgress(msg: ProgressMessage) {
   if (msg.kind === "run-started") {
     runTrace.value = {
@@ -209,7 +174,6 @@ function handleProgress(msg: ProgressMessage) {
       label: msg.label ?? "Report run",
       steps: [
         {
-          // Synthesized pre-completed: the gate ran before the run existed.
           key: "gate",
           label: GATE_STEP_LABEL,
           status: "ok",
@@ -236,8 +200,7 @@ function handleProgress(msg: ProgressMessage) {
     case "step-started": {
       const step = ensureStep(trace, msg.step ?? "", msg.label ?? msg.step ?? "");
       step.status = "running";
-      // A safety-net-created step carries its key as its label; the real
-      // step-started upgrades it to the backend's human label.
+      // Upgrade a safety-net step's key-as-label to the backend's label.
       step.label = msg.label ?? step.label;
       break;
     }
@@ -248,10 +211,7 @@ function handleProgress(msg: ProgressMessage) {
       break;
     }
     case "request-started": {
-      // One row per actual HTTP request, shown in-flight ("running") until it
-      // resolves. Skipped (no-request) series never emit this, so rows stay
-      // one-to-one with network calls. The owning step rides on the event's
-      // stamp (`requestHome`), never on group names or arrival order.
+      // One row per actual HTTP request; skipped series never emit this.
       requestHome(trace, msg.step).push({
         provider: msg.provider ?? "",
         group: msg.group ?? "",
@@ -265,9 +225,8 @@ function handleProgress(msg: ProgressMessage) {
     }
     case "request-finished": {
       const home = requestHome(trace, msg.step);
-      // Resolve the matching in-flight row. Requests are sequential within a
-      // step, so the running row for this group+series is the one to update;
-      // fall back to appending a resolved row if a started was somehow missed.
+      // Requests are sequential within a step, so the running row for this
+      // group+series is the one; append if its start was missed.
       const row = home.find(
         (r) =>
           r.status === "running" &&
@@ -297,16 +256,14 @@ function handleProgress(msg: ProgressMessage) {
       ensureStep(trace, "agent", "Main agent").agentThinking += msg.delta ?? "";
       break;
     case "analyst-thinking": {
-      // Route each analyst's reasoning to its own pane under the "analysts" step, keyed
-      // by posture so the three concurrent streams stay separate.
       const step = ensureStep(trace, "analysts", "Running the analyst agents");
       const posture = msg.posture ?? "";
       step.analystThinking[posture] = (step.analystThinking[posture] ?? "") + (msg.delta ?? "");
       break;
     }
     case "stream-restarted": {
-      // A streaming agent call's bounded retry: clear the call's live panes so the
-      // re-attempt streams into an empty pane rather than after the failed attempt.
+      // Clear the panes so the re-attempt doesn't stream after the failed
+      // attempt's text.
       if (msg.posture) {
         const step = ensureStep(trace, "analysts", "Running the analyst agents");
         step.analystThinking[msg.posture] = "";
@@ -318,10 +275,6 @@ function handleProgress(msg: ProgressMessage) {
       break;
     }
     case "step-thinking": {
-      // Step-scoped reasoning (the portfolio per-holding interpretation): fold the
-      // chunk into the owning step's reasoning pane. step-started always precedes
-      // the stage's stream, so the lookup normally hits; the key doubles as the
-      // fallback label on the ensureStep safety net.
       const key = msg.step ?? "";
       ensureStep(trace, key, key).agentThinking += msg.delta ?? "";
       break;
@@ -329,11 +282,9 @@ function handleProgress(msg: ProgressMessage) {
     case "run-finished": {
       trace.terminal = { status: msg.status ?? "", detail: msg.detail ?? null };
       runActive.value = false;
-      // Reconcile any step still "running" at the end so it doesn't read as
-      // in-progress forever, mirroring the terminal status: a cancel mid-step
-      // reads "cancelled", a failure "failed" — and a successful run closes a
-      // still-running step "ok", so a stage that never emitted step-finished
-      // can no longer paint FAILED onto a successful run's record.
+      // Close any step still "running" with the terminal status, so a stage
+      // that never emitted step-finished can't read in-progress forever or
+      // paint FAILED onto a successful run.
       const fallback: StepStatus =
         msg.status === "cancelled" ? "cancelled" : msg.status === "successful" ? "ok" : "failed";
       for (const step of trace.steps) {
@@ -344,33 +295,26 @@ function handleProgress(msg: ProgressMessage) {
   }
 }
 
-// Request cancellation of the in-flight run. The backend stops at its next
-// checkpoint and emits run-finished{cancelled}; we mark cancelRequested so the
-// Cancel button reads "Cancelling…" until then.
+// The backend stops at its next checkpoint and emits run-finished{cancelled};
+// until then Cancel reads "Cancelling…".
 async function cancelRun() {
   if (!runActive.value) return;
   cancelRequested.value = true;
   try {
     await invoke("cancel_run");
   } catch (e) {
-    // A failed cancel invoke is rare; surface it on the run-status channel and let
-    // the user retry. Re-enable the button.
+    // Surface on the run-status channel and re-enable the button for a retry.
     cancelRequested.value = false;
     jobStatusError.value = String(e);
   }
 }
 
-// Return to the report from the run log, leaving the log behind. It stays
-// reopenable from the footer ("Latest run log") for the rest of the session; it is
-// only replaced when the next run begins (latest-run-only) or cleared when the app
-// quits — never discarded by this action.
+// The log stays reopenable from the footer; only the next run replaces it.
 function closeRunLog() {
   reportPaneMode.value = "report";
 }
 
-// Open the tracker for the current/last run (the footer's "View progress" /
-// "Latest run log" handle). Routes to the run's owning page — the tracker
-// replaces the page whose job is running (docs/run-tracking.md).
+// The tracker replaces the page whose job is running (docs/run-tracking.md).
 function viewTracker() {
   if (
     runTraceKind.value === "portfolio" ||
@@ -384,15 +328,11 @@ function viewTracker() {
   }
 }
 
-// Markdown export state, kept on its own channel (like the others above):
-// `exportingMarkdown` drives the toolbar button's busy state; `exportError`
-// surfaces a failed save as a slim alert under the report toolbar. PDF export is
-// handled inside LatestReportView (window.print) and needs no state here.
+// Markdown export only; PDF export lives in LatestReportView (window.print).
 const exportingMarkdown = ref(false);
 const exportError = ref<string | null>(null);
 
-// Whether the selected report is the newest one — drives the toolbar's "Latest"
-// tag. The list is newest-first, so the head is the latest.
+// The list is newest-first, so the head is the latest.
 const selectedIsLatest = computed(
   () =>
     selectedReportId.value !== null &&
@@ -400,17 +340,14 @@ const selectedIsLatest = computed(
     reports.value[0].report_id === selectedReportId.value
 );
 
-// Research inbox state lives here (not in the inbox view) so the sidebar badge
-// can show the count regardless of which view is active, and a single load path
-// keeps badge and list in sync.
+// Held here, not in the inbox view, so the sidebar badge counts regardless of
+// the active view.
 const documents = ref<ResearchDocument[]>([]);
 const documentsLoading = ref(false);
 const documentsError = ref<string | null>(null);
 const inboxCount = computed(() => documents.value.length);
 
-// Research archive state — the read-only twin of the inbox: the pipeline files
-// processed documents here. Loaded up front (like the inbox) so the sidebar badge
-// is populated regardless of which view is active.
+// The inbox's read-only twin, loaded up front for the sidebar badge.
 const archiveDocuments = ref<ResearchDocument[]>([]);
 const archiveLoading = ref(false);
 const archiveError = ref<string | null>(null);
@@ -419,57 +356,47 @@ const archiveCount = computed(() => archiveDocuments.value.length);
 const validation = ref<ValidationReport | null>(null);
 const validationError = ref<string | null>(null);
 
-// The local-suite presence gate (check_local_configuration — docs/interface.md
-// §Persistent Warning Area), kept apart from the cloud `validation`: its
-// categories join the warning band, but its is_blocked gates only the local
-// jobs' triggers, never the report's Generate.
+// The local-suite gate (check_local_configuration; docs/interface.md
+// §Persistent Warning Area): its categories join the band, but its is_blocked
+// gates only the local jobs, never the report.
 const localValidation = ref<ValidationReport | null>(null);
 
 const jobStatus = ref<JobStatus | null>(null);
 const jobStatusError = ref<string | null>(null);
 
 // --- Portfolio page state ----------------------------------------------------
-// The latest persisted analysis run + the latest standalone holdings pull
-// (docs/portfolio-analysis.md §Storage and display, §Triggering), read on
-// startup and on page entry; PortfolioView is presentational.
+// docs/portfolio-analysis.md §Storage and display, §Triggering; PortfolioView
+// is presentational.
 const portfolioRun = ref<PortfolioRun | null>(null);
 const holdingsPull = ref<HoldingsPull | null>(null);
 const portfolioLoading = ref(false);
 const portfolioLoadError = ref<string | null>(null);
-// A run-gate block or run/pull failure — the page's inline (ephemeral) error,
-// never a persistent warning.
+// The page's inline, ephemeral error — never a persistent warning.
 const portfolioError = ref<string | null>(null);
 const portfolioRunning = ref(false);
-// The tracker's resumability read after a failed / cancelled portfolio run
-// (docs/portfolio-analysis.md §Failure posture) — probed when such a run ends,
-// cleared when any portfolio run starts. `null` = nothing to offer.
+// Probed when a failed or cancelled run ends, cleared when any run starts
+// (docs/portfolio-analysis.md §Failure posture); null = nothing to offer.
 const portfolioResume = ref<PortfolioResumeStatus | null>(null);
 const pullingHoldings = ref(false);
-// The engine-only quick check (docs/portfolio-analysis.md §The quick check):
-// the latest persisted sweep state (null until one runs; cleared by the next
-// full run) and the in-flight session flag.
+// docs/portfolio-analysis.md §The quick check; null until one runs, cleared by
+// the next full run.
 const quickCheck = ref<QuickCheckState | null>(null);
 const quickChecking = ref(false);
 
-// The sidebar's Portfolio-runs history (docs/interface.md §Main Layout): the
-// retained runs' summaries, plus the opened past run when the user selects one
-// that isn't the latest — the Portfolio page then renders it read-only.
+// The sidebar's runs history (docs/interface.md §Main Layout);
 // `historicalRun === null` means the page shows the live latest view.
 const portfolioRuns = ref<PortfolioRunSummary[]>([]);
 const portfolioRunsError = ref<string | null>(null);
-// A history row whose blob couldn't be decoded makes the empty-state read
-// "unreadable" rather than "never ran": it would otherwise be the latest view.
+// An unreadable history row makes the empty state read "unreadable" rather
+// than "never ran".
 const unreadableHistory = computed(() =>
   portfolioRuns.value.some((r) => !r.readable)
 );
 const historicalRun = ref<PortfolioRun | null>(null);
-// A past-run OPEN failure — its own channel (never `portfolioError`, whose
-// pane block reads "Couldn't run"), cleared by the next selection or by
-// returning to the latest view so it can't outlive the click it described.
+// Its own channel (never `portfolioError`, whose block reads "Couldn't run");
+// cleared by the next selection or back-to-latest.
 const historicalError = ref<string | null>(null);
 
-// The run the Portfolio page renders (a past run wins while one is open) and
-// the sidebar's highlighted row (the open past run, else the latest).
 const displayedPortfolioRun = computed(
   () => historicalRun.value ?? portfolioRun.value
 );
@@ -477,15 +404,15 @@ const sidebarRunId = computed(
   () => historicalRun.value?.run_id ?? portfolioRun.value?.run_id ?? null
 );
 
-// Fail-safe like the cloud `blocked`: until the local check resolves, treat the
-// local jobs as blocked so their triggers are never briefly clickable.
+// Fail-safe: until the local check resolves the local jobs read blocked, so
+// their triggers are never briefly clickable.
 const localBlocked = computed(() => localValidation.value?.is_blocked ?? true);
 const localCategories = computed(() => localValidation.value?.categories ?? []);
 const schwabCategory = computed(
   () => localCategories.value.find((c) => c.kind === "schwab") ?? null
 );
-// The view-only pull needs only the Schwab connection (no model call), so it
-// gates on that category alone — usable before local models are configured.
+// The view-only pull needs only the Schwab connection, so it gates on that
+// category alone.
 const pullBlocked = computed(() =>
   localValidation.value === null ? true : schwabCategory.value !== null
 );
@@ -497,26 +424,15 @@ const pullBlockedReason = computed(
   () => schwabCategory.value?.items.join(" ") ?? null
 );
 
-// The warning band shows both gates' categories in one de-duplicated block; the
-// cloud is_blocked keeps its report-gate meaning (the local one never blocks
-// the report — docs/interface.md §Persistent Warning Area).
-//
-// The de-duplication is by KIND, and it is load-bearing rather than defensive: the
-// two gates are independent reports that legitimately name the same missing
-// credential — an unset FMP key is a cloud provider-credentials failure AND a local
-// one — so a plain concatenation rendered the same category twice, against
-// interface.md's one-row-per-category contract (and, since the list keys on kind,
-// as a duplicate Vue key). Items merge in first-seen order with **byte-identical**
-// lines collapsed; the first `dismiss_id` wins, which is well-defined because only
-// the cloud gate produces the one dismissible category.
-//
-// The collapse is exact-string, not semantic: each gate composes its own sentence
-// ("Missing for Financial Modeling Prep, FRED, and Tavily."), so two gates naming an
-// overlapping — but not identical — set leave a verbose row where each clause is
-// still true. Fixing that properly means both gates emitting the missing credentials
-// as structured items rather than composed prose, which is a `WarningCategory`
-// contract change and not this merge's job. Parsing the sentences here would invert
-// the composition boundary.
+// Both gates' categories in one block, de-duplicated by kind: the two gates
+// legitimately name the same category (an unset FMP key fails both), and a
+// plain concatenation would render it twice — a duplicate Vue key, against
+// interface.md's one-row-per-category contract. Items merge in first-seen
+// order with byte-identical lines collapsed (each gate composes its own
+// sentence, so overlapping-but-different sets leave a verbose row; fixing that
+// is a `WarningCategory` contract change, not this merge's job). The first
+// `dismiss_id` wins; only the cloud gate produces the dismissible category.
+// The cloud is_blocked keeps its report-gate meaning.
 const displayedValidation = computed<ValidationReport | null>(() => {
   if (validation.value === null && localValidation.value === null) return null;
   const byKind = new Map<string, WarningCategory>();
@@ -546,17 +462,14 @@ async function refreshLocalValidation() {
       "check_local_configuration"
     );
   } catch {
-    // Fail-safe: an unreadable local gate reads as blocked (localBlocked's
-    // null fallback) rather than silently unlocked; the cloud validationError
-    // channel already surfaces config-check faults.
+    // An unreadable local gate reads as blocked (localBlocked's null fallback)
+    // rather than silently unlocked; validationError already surfaces the fault.
     localValidation.value = null;
   }
 }
 
-// Invalidates in-flight portfolio reads: bumped when a refresh starts and when
-// fresher state lands directly (a run's inline result, a completed pull), so an
-// older latest_portfolio_run / latest_holdings_pull response resolving late can
-// never overwrite newer state — the selectReport / settingsEpoch pattern.
+// Invalidates in-flight portfolio reads so an older response resolving late
+// never overwrites newer state.
 let portfolioEpoch = 0;
 
 async function refreshPortfolio() {
@@ -577,8 +490,7 @@ async function refreshPortfolio() {
     if (epoch !== portfolioEpoch) return;
     portfolioLoadError.value = String(e);
   }
-  // The runs-history list rides its own channel (a listing hiccup must never
-  // blank the page's run/pull state above). Same epoch guard.
+  // Its own channel: a listing hiccup must never blank the run/pull state above.
   try {
     const runs = await invoke<PortfolioRunSummary[]>("list_portfolio_runs");
     if (epoch !== portfolioEpoch) return;
@@ -596,27 +508,19 @@ async function refreshPortfolio() {
     if (epoch !== portfolioEpoch) return;
     portfolioRunsError.value = String(e);
   }
-  // Loading clears only once BOTH the page state and the history listing have
-  // landed: the unreadable-history empty state derives from the listing, so
-  // clearing after the first round-trip painted "No holdings yet." over an
-  // unreadable-only store until the second one resolved (combined-range
-  // review). A superseded read leaves the flag to whichever refresh is
-  // current.
+  // Loading clears only once both the page state and the listing have landed:
+  // the unreadable-history empty state derives from the listing, so clearing
+  // earlier would paint "No holdings yet." over an unreadable-only store.
   if (epoch === portfolioEpoch) portfolioLoading.value = false;
 }
 
-// Invalidates in-flight historical-run fetches: bumped at the start of every
-// selection and whenever the historical view closes (back-to-latest, the
-// newest-row shortcut, a fresh run), so a slow older-run fetch resolving after
-// the user has already moved on can never reopen the read-only view — the
-// selection sibling of portfolioEpoch, kept separate so closing the view never
-// discards an unrelated in-flight page refresh.
+// Invalidates in-flight historical-run fetches so a slow older-run fetch never
+// reopens the read-only view after the user moved on; separate from
+// portfolioEpoch so closing the view never discards a page refresh.
 let historicalSeq = 0;
 
-// Open one run from the sidebar's history. The row matching the live latest
-// run (the newest readable run) shows the live view; any other row fetches the
-// full persisted run and renders it read-only. An id the backend no longer has
-// (pruned between listing and click) re-lists and stays on the latest.
+// The live latest row shows the live view; any other row renders read-only. An
+// id pruned between listing and click re-lists and stays on the latest.
 async function selectPortfolioRun(runId: string) {
   view.value = "portfolio";
   const seq = ++historicalSeq;
@@ -630,8 +534,7 @@ async function selectPortfolioRun(runId: string) {
     const run = await invoke<PortfolioRun | null>("get_portfolio_run", {
       runId,
     });
-    // Superseded by a newer selection/close (seq) or by fresher page state
-    // landing wholesale (epoch — a completed run, a data import): discard.
+    // Superseded by a newer selection (seq) or fresher page state (epoch).
     if (seq !== historicalSeq || epoch !== portfolioEpoch) return;
     if (run === null) {
       historicalRun.value = null;
@@ -641,8 +544,6 @@ async function selectPortfolioRun(runId: string) {
     historicalRun.value = run;
   } catch (e) {
     if (seq !== historicalSeq || epoch !== portfolioEpoch) return;
-    // An open failure is ephemeral — inline on the page, never a persistent
-    // warning; the latest view stays up.
     historicalError.value = String(e);
   }
 }
@@ -653,10 +554,8 @@ function backToLatestRun() {
   historicalError.value = null;
 }
 
-// Settings state lives here alongside the other surfaces' state; the Settings
-// view is presentational. One `settingsError` carries both load and save errors
-// for the token-gated cloud form; the two independent submissions (provider
-// credentials, local models) ride their own channels below, the Schwab pattern.
+// `settingsError` carries the cloud form's load and save errors; the other
+// submissions ride their own channels.
 const settings = ref<SettingsView | null>(null);
 const settingsLoading = ref(false);
 const settingsSaving = ref(false);
@@ -668,46 +567,34 @@ const localSaveError = ref<string | null>(null);
 const webResearchSaving = ref(false);
 const webResearchSaveError = ref<string | null>(null);
 
-// The local-daemon Test Connection state (docs/interface.md §Connection
-// status): the last probe result, null until tested — never probed at startup,
-// so the indicator reads untested until the user tests or runs. Reset on every
-// settings reload like the credential test channels.
+// Never probed at startup (docs/interface.md §Connection status); null reads
+// untested. Reset on every settings reload.
 const localDaemonTesting = ref(false);
 const localDaemonStatus = ref<LocalDaemonStatus | null>(null);
 
-// The SearXNG connection-row state (docs/configuration.md §Web Research) — the
-// same never-probed-at-startup posture as the daemon row above.
+// The same never-probed-at-startup posture as the daemon row.
 const searxngTesting = ref(false);
 const searxngStatus = ref<WebResearchPreflight | null>(null);
 
 // The pre-run web-research notice (docs/interface.md §Pre-run web-research
-// notice): a degraded SearXNG probe holds the launch behind a
-// confirm-and-proceed dialog, never a block. Carries the launch arguments so a
-// confirm resumes exactly the run the user asked for; the engine-only quick
-// check never opens it.
+// notice): a confirm-and-proceed dialog, never a block. Carries the launch
+// arguments so a confirm resumes exactly the run asked for.
 const portfolioNotice = ref<{
   preflight: WebResearchPreflight;
   selected?: string[];
   resume: boolean;
 } | null>(null);
 
-// Aggregate truncation telemetry for the Settings diagnostics section, loaded
-// alongside settings. `null` = not yet loaded / unavailable (the section shows
-// nothing); a populated all-zero aggregate is the "no truncations recorded"
-// empty state. Kept off `settingsError` so a diagnostics hiccup never blanks the
-// settings form.
+// null = not loaded or unavailable. Kept off `settingsError` so a diagnostics
+// hiccup never blanks the form.
 const truncationStats = ref<TruncationStats | null>(null);
 
-// The fixed investor-profile preset for the read-only Settings block, loaded on
-// the diagnostics channel (docs/configuration.md §Investor Profile). `null` =
-// not yet loaded / IPC fault (the section is omitted); the command is pure, so
-// a populated value is always the full five-row preset.
+// docs/configuration.md §Investor Profile; null = not loaded or IPC fault (the
+// section is omitted).
 const investorProfile = ref<InvestorProfileDisplay | null>(null);
 
-// Per-credential "Test connection" state, kept on its own channels (apart from
-// settingsError, which is load/save only): which credential is being tested, and
-// the last result for each. Ephemeral and Settings-local — reset on every fresh
-// settings load so a stale chip never outlives the saved value it described.
+// Per-credential test state, reset on every settings load so a stale chip
+// never outlives the value it described.
 const emptyConnectionState = <T,>(value: T): Record<CredentialKey, T> => ({
   openai: value,
   anthropic: value,
@@ -721,26 +608,18 @@ const connectionTesting = ref<Record<CredentialKey, boolean>>(
 const connectionTests = ref<Record<CredentialKey, ConnectionTestResult | null>>(
   emptyConnectionState<ConnectionTestResult | null>(null)
 );
-// Bumped on every settings (re)load to invalidate in-flight tests: a reload can
-// change which key is saved, so a test still resolving against the old saved
-// value must be discarded rather than land as a result beside the new one. Each
-// testConnection captures the epoch at start and only writes if it still matches.
+// Bumped on every settings (re)load so a test still resolving against the old
+// saved value is discarded.
 const settingsEpoch = ref(0);
 
-// Charles Schwab connection (docs/schwab-integration.md). Its own state channels,
-// parallel to the credential machinery: `schwabStatus` is the connection view read
-// from `schwab_status` (null until loaded / on failure), `schwabConnecting` is true
-// while the interactive browser login is in flight, and `schwabError` carries a
-// save/connect failure (kept off settingsError). Loaded alongside settings.
+// Charles Schwab connection (docs/schwab-integration.md); `schwabError` is kept
+// off settingsError.
 const schwabStatus = ref<SchwabStatus | null>(null);
 const schwabConnecting = ref(false);
 const schwabError = ref<string | null>(null);
 
-// Data portability (docs/data-portability.md): whole-corpus export/import.
-// `dataBusy` names which operation is in flight (both hold the backend run
-// slot); `pendingImport` carries an inspected archive awaiting the replace-all
-// confirmation, whose dialog `importConfirmBusy` marks mid-commit. Status and
-// error are the Settings Data section's channels.
+// Data portability (docs/data-portability.md). Both operations hold the backend
+// run slot; `pendingImport` awaits the replace-all confirmation.
 const dataBusy = ref<"export" | "import" | null>(null);
 const dataError = ref<string | null>(null);
 const dataStatus = ref<string | null>(null);
@@ -751,11 +630,8 @@ const pendingImport = ref<{
 } | null>(null);
 const importConfirmBusy = ref(false);
 
-// A workflow holds (or is about to claim) the single global run slot — report,
-// portfolio run, holdings pull, Schwab connect, or a data export/import. Every
-// other trigger disables while it does. The session flags cover the
-// click-to-first-poll window; the backend's is_running is the authoritative
-// read that survives a reload.
+// The single run slot is held or about to be claimed; every other trigger
+// disables while it is. The session flags cover the click-to-first-poll window.
 const slotBusy = computed(
   () =>
     generating.value ||
@@ -768,20 +644,17 @@ const slotBusy = computed(
     (jobStatus.value?.is_running ?? false)
 );
 
-// Connecting takes the single global run slot (schwab_connect holds the RunGuard),
-// so Connect is disabled while any report/job run is in flight; the button reads this.
+// Connecting holds the single run slot, so Connect is disabled while any run is
+// in flight.
 const schwabBusy = computed(
   () => generating.value || portfolioRunning.value || quickChecking.value ||
     pullingHoldings.value || dataBusy.value !== null || importConfirmBusy.value ||
     (jobStatus.value?.is_running ?? false)
 );
 
-// What the footer calls the in-flight work. The run slot is shared (report /
-// Portfolio / holdings pull / Schwab connect), so the label follows the workflow
-// actually holding it: the session flags cover the click-to-first-poll window
-// (job_status is refreshed on focus and at run edges, not on an interval), and
-// the backend's `running_kind` is the authoritative read that survives a
-// webview reload.
+// The session flags cover the click-to-first-poll window (job_status refreshes
+// on focus and at run edges, not on an interval); the backend's `running_kind`
+// is the authoritative read that survives a webview reload.
 const footerRunningLabel = computed(() => {
   const kind = jobStatus.value?.running_kind ?? null;
   if (schwabConnecting.value || kind === "schwab-connect")
@@ -795,25 +668,19 @@ const footerRunningLabel = computed(() => {
   if (dataBusy.value === "export") return "Exporting data…";
   if (dataBusy.value === "import" || importConfirmBusy.value)
     return "Importing data…";
-  // Backend flag only (e.g. after a webview reload mid-operation): the session
-  // flag that told export from import is gone, so stay neutral.
+  // After a webview reload the session flag that told export from import is gone.
   if (kind === "data-portability") return "Moving data…";
   return "Generating report…";
 });
 
-// Which section's job the footer reports (docs/interface.md §Main Layout): the
-// Portfolio view scopes to the portfolio job; every other view scopes to the
-// report — the same featureOf mapping the shared-history sidebar uses. Drives
-// the stamps group only; the Generate trigger is gated separately on the
-// report view itself (the panel's show-generate binding below).
+// Which section's stamps the footer reports (docs/interface.md §Main Layout);
+// the Generate trigger is gated separately.
 const footerSection = computed<"report" | "portfolio">(() =>
   view.value === "portfolio" ? "portfolio" : "report"
 );
 
-// The gate blocks generation when configuration is incomplete. The backend is
-// the authoritative guard; this only disables the control and short-circuits.
-// Fail safe: until the first check resolves (or if it errors), treat as blocked
-// so Generate is never briefly clickable for an unverified config.
+// The backend is the authoritative guard. Fail-safe: until the first check
+// resolves, Generate reads blocked.
 const blocked = computed(() => validation.value?.is_blocked ?? true);
 
 async function refreshValidation() {
@@ -825,12 +692,9 @@ async function refreshValidation() {
   }
 }
 
-// Dismiss one Persistent Warning Area warning (failed job) by the identity
-// the row rendered, then re-derive the band. Passing the shown `dismissId` (not just
-// the kind) is what keeps a stale click from suppressing a newer warning the backend
-// would otherwise re-derive. Best-effort: if the dismiss call fails the warning
-// simply stays shown — the refresh keeps the band truthful, so no separate error
-// channel is needed.
+// Dismiss by the identity the row rendered, so a stale click can't suppress a
+// newer warning the backend would re-derive. Best-effort: on failure the
+// refresh keeps the band truthful.
 async function dismissWarning(kind: string, dismissId: string) {
   try {
     await invoke("dismiss_warning", { kind, id: dismissId });
@@ -849,10 +713,8 @@ async function refreshJobStatus() {
   }
 }
 
-// Appearance (Light/Dark) lives alongside the other surfaces' state. Unlike the
-// gated config form, the toggle applies + persists instantly — see ./theme. The
-// initial value was already applied to <html> in main.ts before mount; this ref
-// just keeps the Settings switch in sync.
+// Applied to <html> in main.ts before mount; this ref keeps the Settings switch
+// in sync (see ./theme).
 const dark = ref(readDark());
 function setDark(value: boolean) {
   writeDark(value);
@@ -863,26 +725,20 @@ async function generate() {
   if (blocked.value) return;
   generating.value = true;
   error.value = null;
-  // Show the live tracker for the run the user just kicked off; run-started will
-  // populate it (and reset cancelRequested, but set it here too for the gap before
-  // the first event lands).
+  // run-started also resets cancelRequested; set it here for the gap before the
+  // first event.
   runTraceKind.value = "report";
   reportPaneMode.value = "tracker";
   cancelRequested.value = false;
-  // Drop any prior run's trace up front. The new run replaces it via run-started; but
-  // if this attempt fails *before* run-started (a gate/key/adapter error, or a
-  // concurrency skip), runTrace stays null so the catch surfaces the error rather than
-  // leaving the previous run's (possibly successful) log on screen.
+  // Dropped up front so a failure before run-started leaves runTrace null and
+  // the catch surfaces the error instead of the previous run's log.
   runTrace.value = null;
   try {
-    // A fresh run returns the full report (with Markdown). Surface its sidebar row
-    // either way; refreshReports() reconciles ordering against the DB.
     const fresh = await invoke<GeneratedReport>("generate_report_manual");
     upsertReportSummary(fresh.summary);
     void refreshReports();
-    // Show the new report only if the user is still watching the run. If they
-    // navigated to an older report mid-run (reportPaneMode === "report"), leave
-    // them there — the new row appears in the sidebar and the run log lingers.
+    // Only if the user is still watching the run; otherwise the new row appears
+    // in the sidebar and the log lingers.
     if (reportPaneMode.value === "tracker") {
       selectedReport.value = fresh;
       selectedReportId.value = fresh.report_id;
@@ -890,47 +746,34 @@ async function generate() {
       reportPaneMode.value = "report";
     }
   } catch (e) {
-    // A user-initiated cancel is intentional, not an error surface — the tracker
-    // shows the cancelled terminal state and the footer offers the run log.
     if (cancelRequested.value) {
-      // nothing to surface
+      // Intentional cancel — the tracker's terminal state carries it.
     } else if (!runTrace.value) {
-      // The run never produced a tracker (e.g. a concurrency skip) — surface the
-      // reason on the report pane so the failure isn't silent.
+      // Failed before any event (a gate block, a concurrency skip): inline on
+      // the report pane so the failure isn't silent.
       error.value = String(e);
       reportPaneMode.value = "report";
     }
     // Otherwise the tracker's failed terminal state + the warning area carry it.
   } finally {
     generating.value = false;
-    // Re-check after a run: config may have changed, and a run updates job
-    // history (failed-job warning, last-run status). Refresh reports too, so a
-    // report that persisted but whose command then errored (e.g. a job-history write
-    // failure after the report itself was written) still appears in the sidebar.
+    // Refresh reports too: a report that persisted but whose command then
+    // errored (a job-history write failure) still appears in the sidebar.
     void refreshValidation();
     void refreshJobStatus();
     void refreshReports();
-    // The run may have consumed inbox documents (archived after persist) or
-    // recorded parse failures — re-read both folders so the panel, error states,
-    // and sidebar badge match disk without waiting for a focus change.
+    // The run may have archived inbox documents or recorded parse failures.
     void refreshDocuments();
     void refreshArchive();
   }
 }
 
-// Mirrors the backend's display cap (storage::RECENT_REPORTS_LIMIT) and the
-// sidebar header's "last 30". Held here so the optimistic insert below honors the
-// cap even when the reconciling refresh — which would otherwise re-impose it —
-// fails.
+// Mirrors storage::RECENT_REPORTS_LIMIT, so the optimistic insert honors the
+// cap even when the reconciling refresh fails.
 const RECENT_REPORTS_LIMIT = 30;
 
-// Place a report's summary at the head of the list (deduped, capped), so a
-// freshly generated or just-finished report appears — selected — in the sidebar
-// immediately, without waiting on (or depending on) the list refresh. The report
-// is already persisted by the time we have its summary, so the optimistic row is
-// always real; refreshReports() then reconciles the authoritative DB ordering.
-// The trim keeps the list within "last 30" if a post-generate refresh fails
-// (otherwise repeated failures could grow it past the cap).
+// Optimistic head insert (the report is already persisted); refreshReports()
+// reconciles the ordering, and the trim keeps the cap if that refresh fails.
 function upsertReportSummary(summary: ReportSummary) {
   reports.value = [
     summary,
@@ -941,19 +784,14 @@ function upsertReportSummary(summary: ReportSummary) {
 async function refreshReports() {
   try {
     reports.value = await invoke<ReportSummary[]>("list_reports");
-    // A recovered refresh clears a prior list error — the sidebar error state is
-    // never left stuck once listing succeeds again. On failure the old list is
-    // kept (the early return below leaves `reports` untouched).
     reportsError.value = null;
   } catch (e) {
     reportsError.value = String(e);
     return;
   }
-  // On first load — or after the selected report fell out of the list — default
-  // to the newest report so the pane is never blank when reports exist. But only to
-  // fill a blank *report* pane: never when the tracker is showing or a generation
-  // error is surfaced, since selectReport() would switch the pane and clear that
-  // error (a post-failure list refresh must not erase the failure it follows).
+  // Default to the newest report when none is selected, but only into a blank
+  // report pane: selectReport() would switch away from the tracker and clear a
+  // surfaced generation error.
   const stillSelected =
     selectedReportId.value !== null &&
     reports.value.some((r) => r.report_id === selectedReportId.value);
@@ -970,44 +808,34 @@ async function refreshReports() {
 async function selectReport(id: string) {
   selectedReportId.value = id;
   reportError.value = null;
-  // Viewing a specific report leaves the run tracker (it keeps running in the
-  // background; the footer's "View progress" returns to it).
+  // Leaves the tracker; the run keeps going and the footer returns to it.
   reportPaneMode.value = "report";
-  // Viewing a specific report dismisses any prior generation-failure banner —
-  // otherwise LatestReportView's `error` block (which has render precedence)
-  // would mask the report we just loaded.
+  // LatestReportView's `error` block has render precedence, so it would mask
+  // the loaded report.
   error.value = null;
-  // A prior export failure belonged to whatever issue was open then; clear it so
-  // it doesn't linger over a freshly selected report.
+  // A prior export failure belonged to the issue open then.
   exportError.value = null;
   try {
     const loaded = await invoke<GeneratedReport>("load_report", {
       reportId: id,
     });
-    // Guard against a slower earlier load resolving after a newer selection:
-    // only apply the result if this is still the selected report.
+    // A slower earlier load may resolve after a newer selection.
     if (selectedReportId.value !== id) return;
     selectedReport.value = loaded;
   } catch (e) {
     if (selectedReportId.value !== id) return;
-    // A report whose Markdown was removed out-of-band still lists but can't be
-    // opened — surface the failure and clear the pane rather than show a stale body.
+    // Clear the pane rather than show a stale body.
     selectedReport.value = null;
     reportError.value = String(e);
   }
 }
 
-// Sidebar row click: show the report surface and load the chosen issue.
 function selectAndShow(id: string) {
   view.value = "report";
   void selectReport(id);
 }
 
-// Export the selected report as Markdown. The backend command opens a native
-// Save dialog and writes the stored canonical Markdown to the chosen path
-// (docs/export.md); it returns true when saved, false when the user cancels —
-// both are non-errors. A real failure (unknown id, unreadable/unwritable file)
-// surfaces on the dedicated exportError channel under the report toolbar.
+// docs/export.md; a cancelled Save dialog returns false, not an error.
 async function exportMarkdown() {
   if (selectedReportId.value === null) return;
   exportingMarkdown.value = true;
@@ -1042,10 +870,8 @@ async function deleteDocument(name: string) {
   } catch (e) {
     failure = String(e);
   }
-  // Re-read the folder either way so the list matches disk (on a failure the
-  // file may already be gone). refreshDocuments() clears documentsError, so
-  // restore a delete failure *after* it — otherwise a failed delete followed by
-  // a successful list silently swallows the error and leaves the file in place.
+  // Re-read either way so the list matches disk; refreshDocuments() clears
+  // documentsError, so restore a delete failure after it.
   await refreshDocuments();
   if (failure !== null) documentsError.value = failure;
 }
@@ -1080,8 +906,8 @@ async function deleteArchiveDocument(name: string) {
   } catch (e) {
     failure = String(e);
   }
-  // Re-read either way so the list matches disk (mirrors the inbox delete). The
-  // refresh clears archiveError, so restore a delete failure *after* it.
+  // Re-read either way; the refresh clears archiveError, so restore a delete
+  // failure after it.
   await refreshArchive();
   if (failure !== null) archiveError.value = failure;
 }
@@ -1098,22 +924,15 @@ async function revealArchive() {
 async function refreshSettings() {
   settingsLoading.value = true;
   settingsError.value = null;
-  // A fresh load supersedes any prior test state — a saved key may have changed.
-  // Bump the epoch first so any in-flight test resolving after this is discarded
-  // (it tested the old saved value), then clear the per-credential channels.
+  // Bump the epoch first so an in-flight test resolving after this is discarded.
   settingsEpoch.value += 1;
   connectionTesting.value = emptyConnectionState(false);
   connectionTests.value = emptyConnectionState<ConnectionTestResult | null>(null);
-  // The local-daemon probe result describes the saved endpoint + roster, which
-  // this reload may be changing — reset with the credential channels.
   localDaemonTesting.value = false;
   localDaemonStatus.value = null;
-  // The SearXNG probe result describes the saved endpoint too, but it also
-  // carries the job-launch preflight the Settings indicator must keep showing
-  // (docs/interface.md §Connection status) — so clear the in-flight test flag
-  // here, and drop the status below only when the reload actually changed the
-  // saved endpoint (otherwise the OLD endpoint's state would render as the
-  // new one's).
+  // The SearXNG status also carries the job-launch preflight the indicator
+  // must keep showing (docs/interface.md §Connection status), so it is dropped
+  // below only when the reload changed the saved endpoint.
   searxngTesting.value = false;
   const priorSearxngEndpoint = settings.value?.web_research.searxng_endpoint ?? null;
   try {
@@ -1127,17 +946,13 @@ async function refreshSettings() {
   if (priorSearxngEndpoint !== null && searxngEndpoint !== priorSearxngEndpoint) {
     searxngStatus.value = null;
   }
-  // Diagnostics telemetry loads on its own channel — the backend command is
-  // fail-soft (an empty aggregate on a DB error), so a throw here is only an
-  // IPC-layer fault; swallow it to a null the section simply omits, never
-  // letting it disturb the settings form above.
+  // A throw here is only an IPC-layer fault; null omits the section.
   try {
     truncationStats.value = await invoke<TruncationStats>("truncation_stats");
   } catch {
     truncationStats.value = null;
   }
-  // The read-only investor-profile preset rides the same fail-soft posture: a
-  // throw is only an IPC-layer fault, and the section simply omits on null.
+  // Same fail-soft posture.
   try {
     investorProfile.value =
       await invoke<InvestorProfileDisplay>("get_investor_profile");
@@ -1147,9 +962,7 @@ async function refreshSettings() {
   void refreshSchwabStatus();
 }
 
-// The Schwab connection view, read from local storage/Keychain (no network). Its
-// own channel — fail-soft to null (the section is then omitted, like diagnostics),
-// never disturbing the settings form.
+// No network; fail-soft to null, which omits the section.
 async function refreshSchwabStatus() {
   try {
     schwabStatus.value = await invoke<SchwabStatus>("schwab_status");
@@ -1158,10 +971,6 @@ async function refreshSchwabStatus() {
   }
 }
 
-// Persist the Schwab developer-app credentials (client_id → app_settings,
-// client_secret → Keychain), then re-read the status so the secret placeholder and
-// the connect gating reflect the save. Errors land on schwabError, apart from the
-// config form's settingsError.
 async function saveSchwabCredentials(payload: SchwabCredentialUpdate) {
   schwabError.value = null;
   try {
@@ -1176,9 +985,7 @@ async function saveSchwabCredentials(payload: SchwabCredentialUpdate) {
   await refreshSchwabStatus();
 }
 
-// Run the interactive OAuth connect: schwab_connect stands up the loopback, opens
-// the browser, and blocks until the login completes (or times out). Refresh the
-// status + the warning band afterward so a newly-connected account clears its gate.
+// schwab_connect blocks until the browser login completes or times out.
 async function connectSchwab() {
   if (schwabConnecting.value || schwabBusy.value) return;
   schwabConnecting.value = true;
@@ -1191,17 +998,15 @@ async function connectSchwab() {
     schwabConnecting.value = false;
   }
   await refreshSchwabStatus();
-  // Re-sync the run-slot view: a focus bounce during the browser login may have
-  // polled `is_running: true`, and without this the footer would keep showing a
-  // running row until the next focus change.
+  // A focus bounce during the login may have polled `is_running: true`; re-sync
+  // so the footer doesn't show a running row until the next focus change.
   void refreshJobStatus();
-  // A fresh connection clears the schwab presence warning (and unlocks the
-  // Portfolio triggers) without waiting for a focus change.
+  // A fresh connection clears the schwab presence warning without waiting for
+  // a focus change.
   void refreshLocalValidation();
 }
 
-// Clear the stored OAuth session (keeps the saved credentials), then refresh the
-// status so the surface returns to its not-connected state.
+// Clears the OAuth session, keeping the saved credentials.
 async function disconnectSchwab() {
   schwabError.value = null;
   try {
@@ -1210,27 +1015,14 @@ async function disconnectSchwab() {
     schwabError.value = String(e);
   }
   await refreshSchwabStatus();
-  // Disconnecting re-raises the schwab presence warning and re-locks the
-  // Portfolio triggers immediately.
+  // Re-raises the schwab presence warning and re-locks the Portfolio triggers.
   void refreshLocalValidation();
 }
 
-// Run the Portfolio Analysis job (docs/portfolio-analysis.md §Triggering — the
-// one-touch trigger: it pulls fresh holdings itself, never reusing a standalone
-// pull). With a per-card selection the run is a selective re-analysis of
-// strictly those holdings (ruled 2026-08-16): the backend sweeps the carried
-// tail only to badge it (attention flags / evidence-event / degraded notes),
-// carrying the rest vintage-stamped. Mirrors generate(): the run
-// streams into the shared tracker, which replaces the Portfolio page while it
-// runs; a gate block (no run-started ever arrives) surfaces as the page's
-// inline error, never a persistent warning.
-// The job-launch probe, epoch-guarded like the manual test: a result that
-// resolves after a settings reload described the OLD saved endpoint — it must
-// neither paint the indicator nor ground the consent decision for the new
-// one, so a raced probe is discarded and re-run (bounded). The in-epoch
-// result updates the Settings indicator per docs/interface.md §Connection
-// status ("a manual Test Connection or the connectivity check run when a job
-// is launched").
+// The job-launch probe, epoch-guarded like the manual test: a result resolving
+// after a settings reload described the OLD endpoint, so a raced probe is
+// discarded and re-run (bounded). The in-epoch result updates the Settings
+// indicator (docs/interface.md §Connection status).
 async function probeSearxngForLaunch(): Promise<WebResearchPreflight> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const epoch = settingsEpoch.value;
@@ -1244,16 +1036,15 @@ async function probeSearxngForLaunch(): Promise<WebResearchPreflight> {
         degraded: true,
       };
     }
-    // Accept only when nothing superseded the probed config: the epoch is
-    // unchanged AND no web-research save is mid-flight (a probe issued while
-    // the backend is between endpoints could describe either one).
+    // A probe issued while a web-research save is mid-flight could describe
+    // either endpoint.
     if (epoch === settingsEpoch.value && !webResearchSaving.value) {
       searxngStatus.value = preflight;
       return preflight;
     }
   }
-  // Three raced attempts — proceed degraded-unknown rather than spinning; the
-  // notice is a consent step, never a block, so the user still decides.
+  // Three raced attempts: proceed degraded-unknown rather than spin; the notice
+  // is a consent step, never a block.
   return {
     status: "unreachable",
     detail: "settings changed while probing",
@@ -1261,15 +1052,13 @@ async function probeSearxngForLaunch(): Promise<WebResearchPreflight> {
   };
 }
 
+// The one-touch trigger (docs/portfolio-analysis.md §Triggering); a gate block
+// surfaces as the page's inline error.
 async function generatePortfolio(selected?: string[], resume = false) {
   if (localBlocked.value || slotBusy.value || webResearchSaving.value) return;
-  // The pre-run web-research notice (docs/web-research.md §Tavily fallback;
-  // docs/interface.md §Pre-run web-research notice): probe SearXNG before
-  // spending the run. Degraded → a confirm-and-proceed dialog with the
-  // Portfolio-specific consequence, always flagged not-recommended because the
-  // local suite is SearXNG-only (no Tavily fallback) — never a block. The
-  // engine-only quick check does no web research and never asks. A failed probe
-  // reads degraded-unknown rather than silently ok.
+  // Probe SearXNG before spending the run; degraded opens the notice
+  // (docs/interface.md §Pre-run web-research notice), never a block. A failed
+  // probe reads degraded-unknown rather than silently ok.
   const preflight = await probeSearxngForLaunch();
   if (preflight.degraded) {
     portfolioNotice.value = { preflight, selected, resume };
@@ -1278,8 +1067,7 @@ async function generatePortfolio(selected?: string[], resume = false) {
   await launchPortfolio(selected, resume);
 }
 
-// The notice's confirm relaunches exactly the run the user asked for; cancel
-// just closes — nothing was spent.
+// Confirm relaunches exactly the run asked for; cancel just closes.
 function confirmPortfolioNotice() {
   const notice = portfolioNotice.value;
   portfolioNotice.value = null;
@@ -1289,9 +1077,7 @@ function cancelPortfolioNotice() {
   portfolioNotice.value = null;
 }
 
-// The notice dialog's copy (docs/web-research.md §Tavily fallback). The local
-// suite is SearXNG-only, so a degraded run researches blind and grades on
-// structured evidence alone.
+// docs/web-research.md §Tavily fallback.
 const portfolioNoticeBody = computed(() => {
   const p = portfolioNotice.value?.preflight;
   if (!p) return "";
@@ -1303,17 +1089,13 @@ const portfolioNoticeBody = computed(() => {
 });
 
 async function launchPortfolio(selected?: string[], resume = false) {
-  // A mid-flight endpoint save also blocks: the notice's confirm otherwise
-  // launches against a config whose save the probe never described (the
-  // launch probe already refuses acceptance while saving — this closes the
-  // confirm path the same way).
+  // A mid-flight endpoint save blocks too: the notice's confirm would otherwise
+  // launch against a config the probe never described.
   if (localBlocked.value || slotBusy.value || webResearchSaving.value) return;
   portfolioRunning.value = true;
   portfolioError.value = null;
-  // Any starting run supersedes a standing resume offer: a new run discards the
-  // interrupted run's checkpoints as it opens its own trail, and a resume
-  // consumes them (the post-failure re-probe below re-offers whatever trail
-  // actually survives).
+  // Any starting run supersedes a standing resume offer; the post-failure
+  // re-probe re-offers whatever trail survives.
   portfolioResume.value = null;
   runTraceKind.value = "portfolio";
   portfolioPaneMode.value = "tracker";
@@ -1324,16 +1106,13 @@ async function launchPortfolio(selected?: string[], resume = false) {
       selected: selected && selected.length > 0 ? selected : null,
       resume: resume || null,
     });
-    // The inline result is fresher than any read already in flight — invalidate
-    // them so a slow pre-run read can't clobber it.
+    // The inline result is fresher than any read in flight.
     portfolioEpoch++;
     portfolioRun.value = run;
-    // A fresh run is the new current view — an open past run closes, and any
-    // in-flight historical fetch is superseded.
+    // A fresh run closes an open past run and supersedes any historical fetch.
     historicalSeq++;
     historicalRun.value = null;
-    // Return to the results only if the user is still watching the run; if they
-    // navigated elsewhere the log lingers, reopenable from the footer.
+    // Only if the user is still watching; otherwise the log lingers.
     if (portfolioPaneMode.value === "tracker") portfolioPaneMode.value = "results";
   } catch (e) {
     if (cancelRequested.value) {
@@ -1344,9 +1123,8 @@ async function launchPortfolio(selected?: string[], resume = false) {
       portfolioPaneMode.value = "results";
     }
     // Otherwise the tracker's failed terminal state + failed-job warning carry it.
-    // A stopped run may have left a resumable checkpoint trail — probe it so the
-    // tracker's terminal state can offer Resume (docs/portfolio-analysis.md
-    // §Failure posture; read-only, claims nothing).
+    // A stopped run may have left a resumable trail (docs/portfolio-analysis.md
+    // §Failure posture).
     void refreshPortfolioResume();
   } finally {
     portfolioRunning.value = false;
@@ -1357,7 +1135,6 @@ async function launchPortfolio(selected?: string[], resume = false) {
   }
 }
 
-// Probe the interrupted-run resumability read for the tracker's terminal state.
 // Fail-soft: an unreadable probe just withholds the offer.
 async function refreshPortfolioResume() {
   try {
@@ -1369,11 +1146,8 @@ async function refreshPortfolioResume() {
   }
 }
 
-// The engine-only quick check (docs/portfolio-analysis.md §The quick check):
-// re-reads every analyzed holding's engine monitors between full runs — no model call,
-// no web research, no Schwab call — raising per-card attention flags and quiet
-// evidence-event badges, never rewriting a verdict. Streams into the shared
-// tracker like any job; the refreshed state lands as the card overlay.
+// docs/portfolio-analysis.md §The quick check: engine-only, never rewrites a
+// verdict.
 async function runQuickCheck() {
   if (localBlocked.value || slotBusy.value) return;
   quickChecking.value = true;
@@ -1402,9 +1176,8 @@ async function runQuickCheck() {
   }
 }
 
-// Standalone view-only holdings pull (docs/portfolio-analysis.md §Triggering):
-// fetches + persists the latest snapshot, never triggers analysis, never
-// becomes the diff baseline. Quick — no tracker; the footer labels the slot.
+// The view-only pull (docs/portfolio-analysis.md §Triggering): never triggers
+// analysis, never the diff baseline. No tracker; the footer labels the slot.
 async function pullHoldings() {
   if (pullBlocked.value || slotBusy.value) return;
   pullingHoldings.value = true;
@@ -1421,19 +1194,14 @@ async function pullHoldings() {
   } finally {
     pullingHoldings.value = false;
     void refreshJobStatus();
-    // A failed pull can mean the connection lapsed mid-session — re-derive the
-    // presence gate so the warning band and button locks don't go stale until
-    // the next focus change (generatePortfolio's finally does the same).
+    // A failed pull can mean the connection lapsed; re-derive the presence gate
+    // so the band and button locks don't go stale until the next focus change.
     void refreshLocalValidation();
   }
 }
 
-// Test one saved credential against its provider. Result lands on that
-// credential's own channel; a failed invoke is itself a failed test (kept apart
-// from settingsError). The backend reads the saved value — never anything typed
-// in the form — so the Settings view only enables this when the field is empty.
-// The epoch guard discards a result whose settings were reloaded mid-flight, so a
-// stale test for a replaced key can't repopulate the cleared state.
+// The backend tests the saved value, never the form's; a failed invoke is
+// itself a failed test. The epoch guard discards a result from before a reload.
 async function testConnection(provider: CredentialKey) {
   const epoch = settingsEpoch.value;
   connectionTesting.value = { ...connectionTesting.value, [provider]: true };
@@ -1451,8 +1219,7 @@ async function testConnection(provider: CredentialKey) {
       [provider]: { ok: false, detail: String(e) },
     };
   } finally {
-    // Only clear the busy flag if this test is still the current one; otherwise
-    // a reload already reset it and a late finally must not touch fresh state.
+    // After a reload a late finally must not touch the fresh state.
     if (epoch === settingsEpoch.value) {
       connectionTesting.value = { ...connectionTesting.value, [provider]: false };
     }
@@ -1475,17 +1242,14 @@ async function saveSettings(payload: {
     return;
   }
   settingsSaving.value = false;
-  // Re-read settings (resets the form baseline and flips credential placeholders
-  // to "saved") and re-check both gates so completing config clears the warnings.
+  // Both gates re-check so completing config clears the warnings.
   void refreshSettings();
   void refreshValidation();
   void refreshLocalValidation();
 }
 
-// Persist the provider credentials — the ungated submission split out of the
-// cloud save (docs/configuration.md §External Data Provider Credentials). Both
-// gates re-check: the shared missing-provider-credentials category serves the
-// report's and the local suite's execution gates alike.
+// docs/configuration.md §External Data Provider Credentials; both gates
+// re-check since the shared category serves both.
 async function saveProviderCredentials(payload: ProviderCredentialUpdate) {
   providersSaving.value = true;
   providersError.value = null;
@@ -1503,9 +1267,8 @@ async function saveProviderCredentials(payload: ProviderCredentialUpdate) {
   void refreshLocalValidation();
 }
 
-// Persist the local-analysis-models config — the in-app clear path for the
-// "local models not configured" warning: the presence gate re-checks right
-// after, so filling the fields unlocks the local-suite Run buttons.
+// The presence gate re-checks right after, so filling the fields unlocks the
+// local-suite Run buttons.
 async function saveLocalModelSettings(payload: LocalModelSettings) {
   localSaving.value = true;
   localSaveError.value = null;
@@ -1521,18 +1284,14 @@ async function saveLocalModelSettings(payload: LocalModelSettings) {
   void refreshLocalValidation();
 }
 
-// Persist the web-research config (the SearXNG endpoint) — ungated, off every
-// gate, so no validation re-check follows the save.
+// Off every gate, so no validation re-check follows the save.
 async function saveWebResearchSettings(payload: WebResearchSettings) {
   webResearchSaving.value = true;
   webResearchSaveError.value = null;
-  // The save supersedes the old endpoint the moment it STARTS: bump the epoch
-  // now so an in-flight probe (manual or launch) that resolves mid-save is
-  // discarded rather than describing config this save is replacing. The
-  // refresh below bumps again when the new value is actually readable. A
-  // standing pre-run notice is superseded too — its preflight described the
-  // old endpoint, so confirming it would consent on a stale basis (the Run
-  // trigger also disables for the save window via the busy prop).
+  // The save supersedes the old endpoint the moment it starts: bump the epoch
+  // now so an in-flight probe resolving mid-save is discarded; the refresh
+  // below bumps again once the new value is readable. A standing pre-run
+  // notice described the old endpoint, so it closes too.
   settingsEpoch.value += 1;
   portfolioNotice.value = null;
   try {
@@ -1546,8 +1305,7 @@ async function saveWebResearchSettings(payload: WebResearchSettings) {
   void refreshSettings();
 }
 
-// Probe the saved SearXNG endpoint (test_searxng — one bounded JSON query).
-// Same epoch discipline as the daemon probe below.
+// Same epoch discipline as the daemon probe.
 async function testSearxng() {
   const epoch = settingsEpoch.value;
   searxngTesting.value = true;
@@ -1568,10 +1326,7 @@ async function testSearxng() {
   }
 }
 
-// Probe the saved daemon endpoint + roster (test_local_daemon — /api/tags, no
-// model call). The same epoch discipline as the credential tests: a probe that
-// resolves after a settings reload described the old saved config and is
-// discarded.
+// Same epoch discipline as the credential tests.
 async function testLocalDaemon() {
   const epoch = settingsEpoch.value;
   localDaemonTesting.value = true;
@@ -1594,9 +1349,7 @@ async function testLocalDaemon() {
 
 // --- Data portability (docs/data-portability.md) -----------------------------
 
-// The success line for either direction, from the backend's written/loaded
-// counts — plus, for exports, the destination path (docs/data-portability.md
-// §Export flow: success surfaces the path and a count of what was written).
+// docs/data-portability.md §Export flow: success surfaces the path and counts.
 function dataSummaryText(
   verb: "Exported" | "Imported",
   s: ExportSummary | ImportSummary,
@@ -1630,9 +1383,7 @@ async function exportData(passphrase: string) {
   }
 }
 
-// Import, phase one: pick + inspect. An empty target store loads straight in
-// (the hardware-migration case); a non-empty one parks the inspection in
-// `pendingImport`, which opens the replace-all ConfirmDialog.
+// Phase one: inspect; a non-empty store routes through the replace-all dialog.
 async function importData(passphrase: string) {
   dataBusy.value = "import";
   dataError.value = null;
@@ -1660,10 +1411,8 @@ async function importData(passphrase: string) {
   }
 }
 
-// Import, phase two: the actual load, shared by the straight-load and
-// confirmed-replace paths. On success every surface that reads the store is
-// re-fetched — the spec's restart/reload step, done in place (commands open the
-// DB per call, so no backend state survives to go stale).
+// Phase two. Every surface re-fetches in place: commands open the DB per call,
+// so no backend state survives to go stale.
 async function commitImport(path: string, passphrase: string, replace: boolean) {
   const summary = await invoke<ImportSummary>("import_data", {
     path,
@@ -1671,8 +1420,7 @@ async function commitImport(path: string, passphrase: string, replace: boolean) 
     replace,
   });
   dataStatus.value = dataSummaryText("Imported", summary);
-  // The selected report may no longer exist; clear so refreshReports re-selects
-  // the newest imported one (or an empty pane for an empty corpus).
+  // The selected report may no longer exist; refreshReports re-selects.
   selectedReportId.value = null;
   selectedReport.value = null;
   void refreshReports();
@@ -1683,11 +1431,8 @@ async function commitImport(path: string, passphrase: string, replace: boolean) 
   void refreshLocalValidation();
 }
 
-// The confirmation dialog's second paragraph: what the picked archive holds
-// and when it was cut (from the inspect step's manifest read), so the user
-// confirms against the actual artifact rather than blind static copy — the
-// real failure mode of a destructive restore is replacing a good corpus with
-// the wrong or older archive.
+// Names the picked archive so the user confirms against the actual artifact;
+// the real failure mode of a destructive restore is the wrong or older archive.
 const importDetail = computed(() => {
   const pending = pendingImport.value;
   if (!pending) return "";
@@ -1717,9 +1462,6 @@ function cancelImport() {
   pendingImport.value = null;
 }
 
-// Switch surfaces. Fetch settings on entry so the configured-flags and model
-// selections are fresh each time the view is opened; the Portfolio page
-// re-reads its persisted state + presence gate the same way.
 function navigate(next: AppView) {
   view.value = next;
   if (next === "settings") void refreshSettings();
@@ -1736,44 +1478,27 @@ onMounted(async () => {
     .then((v) => (appVersion.value = v))
     .catch(() => {});
   void refreshValidation();
-  // The local-suite presence gate loads up front too, so the warning band is
-  // proactive and the Portfolio triggers are correctly locked on first paint.
   void refreshLocalValidation();
   void refreshPortfolio();
   void refreshJobStatus();
-  // Load the recent-reports list up front so the sidebar is populated and the
-  // newest report shows in the pane on first paint.
   void refreshReports();
-  // Load the inbox up front so the sidebar badge is populated even on the report
-  // view, before the user ever opens the inbox. Same for the archive.
   void refreshDocuments();
   void refreshArchive();
-  // Load settings up front so the gate's config state is known on first paint
-  // (the report view's Generate button depends on it via the warning area).
   void refreshSettings();
-  // Live run progress: the backend streams one of these per step / per baseline
-  // request / per coalesced agent-token chunk while a run is in flight. They feed
-  // the run tracker.
   unlisteners.push(
     await listen<ProgressMessage>("job-progress", (event) =>
       handleProgress(event.payload)
     )
   );
-  // The window can be backgrounded while the app stays mounted, so onMounted
-  // won't fire again on reopen. Re-sync on regaining focus — chiefly the research
-  // inbox/archive, which the user can change in Finder while the app is unfocused;
-  // config / status / reports are refreshed defensively too.
+  // onMounted never fires again on reopen; re-sync on focus, chiefly the inbox
+  // and archive the user can change in Finder while the app is unfocused.
   unlisteners.push(
     await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
       if (focused) {
         void refreshValidation();
         void refreshLocalValidation();
         void refreshJobStatus();
-        // Re-list defensively so the sidebar reflects the latest persisted state.
         void refreshReports();
-        // The user may have dropped files into the inbox folder (via Finder)
-        // while the app was unfocused — pick those up on return. The archive can
-        // change too (the user deletes from it in Finder), so refresh it as well.
         void refreshDocuments();
         void refreshArchive();
       }
@@ -1786,8 +1511,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
 
 <template>
   <div class="app-root">
-    <!-- Masthead titlebar (design kit Window.jsx): native traffic lights remain
-         via titleBarStyle:Overlay; we draw the centered wordmark + hairline. The
+    <!-- The native traffic lights overlay the left (titleBarStyle:Overlay); the
          whole bar is a drag region. -->
     <header class="titlebar" data-tauri-drag-region>
       <div class="titlebar-brand">
@@ -1818,13 +1542,9 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
       />
       <div class="view-area">
         <template v-if="view === 'report'">
-          <!-- While a run is in flight (or its terminal log is reopened) the pane
-               shows the tracker in place of a report; selecting any report row
-               flips reportPaneMode back to "report". Kind-gated like the
-               Portfolio branch — excluding BOTH portfolio kinds, so neither a
-               portfolio run's nor a quick check's trace ever renders here
-               (e.g. a failed report run left the pane in tracker mode, then a
-               portfolio job replaced the trace). -->
+          <!-- Kind-gated against both portfolio kinds: a failed report run can
+               leave the pane in tracker mode while a portfolio job replaces the
+               trace. -->
           <JobTrackerView
             v-if="
               reportPaneMode === 'tracker' &&
@@ -1850,8 +1570,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
           />
         </template>
         <template v-else-if="view === 'portfolio'">
-          <!-- The shared tracker replaces the Portfolio page while its run is
-               in flight (docs/run-tracking.md — the run's owning page). -->
+          <!-- The tracker replaces the page whose job is running (docs/run-tracking.md). -->
           <JobTrackerView
             v-if="
               portfolioPaneMode === 'tracker' &&
@@ -2003,10 +1722,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
       />
       </div>
     </div>
-    <!-- Replace-all import confirmation (docs/data-portability.md §Import flow),
-         via the design package's confirmation dialog. Opens when an inspected
-         archive targets a non-empty store; the exact destructive scope is the
-         spec's own copy. -->
+    <!-- Replace-all import confirmation (docs/data-portability.md §Import flow). -->
     <ConfirmDialog
       :open="pendingImport !== null"
       title="Replace all analytical data?"
@@ -2019,9 +1735,7 @@ onUnmounted(() => unlisteners.forEach((u) => u()));
       @cancel="cancelImport"
     />
     <!-- Pre-run web-research notice (docs/interface.md §Pre-run web-research
-         notice): degraded SearXNG → confirm-and-proceed before the run is
-         spent, never a block. Cancel costs nothing; the quick check (engine-
-         only) never opens this. Placed after the import dialog so specs that
+         notice). Placed after the import dialog so specs that
          findComponent(ConfirmDialog) keep addressing the import flow. -->
     <ConfirmDialog
       :open="portfolioNotice !== null"
@@ -2055,12 +1769,10 @@ body {
   font-family: var(--font-sans);
 }
 
-/* Print treatment — a design-system extension (the package defines no print
-   surface). PDF export is the webview's native print-to-PDF (window.print →
-   macOS "Save as PDF"), which prints the whole webview, so isolate the report
-   body: hide every app-chrome surface and let the report flow and paginate
-   instead of living in a fixed-height, internally-scrolling pane. !important is
-   needed to win over the components' scoped (attribute-qualified) rules. */
+/* Print treatment, a design-system extension. PDF export is the webview's
+   native print, which prints the whole webview, so hide the app chrome and let
+   the report flow and paginate. !important wins over the components' scoped
+   rules. */
 @media print {
   .titlebar,
   .sidebar,
@@ -2087,18 +1799,11 @@ body {
     background: var(--paper) !important;
   }
 
-  /* Print margins. We deliberately do NOT use @page margins: WebKit's
-     print-to-PDF path drops content when an @page margin shrinks a page's
-     capacity enough to need another page — it fails to create that page and
-     silently discards the overflow (verified in demo: a 2cm @page margin ate a
-     report's trailing table + Sources). So @page stays at 0 and the margins
-     come from the report article's padding, which paginates normally and never
-     drops content. The trade-off WebKit forces here: padding gives reliable
-     left/right margins on every page and a top margin on the first page, but
-     interior pages run to the top/bottom edge (no per-page vertical margin is
-     possible without @page). Horizontal is the readability-critical axis and
-     the one this fixes. The 2cm value is --print-page-margin in the design
-     system. */
+  /* No @page margins: WebKit's print-to-PDF silently drops overflow when an
+     @page margin shrinks a page enough to need another page. The margins come
+     from the article's padding instead, which paginates normally — reliable
+     left/right margins on every page and a top margin on the first, interior
+     pages running to the vertical edges. */
   @page {
     margin: 0;
   }
@@ -2121,9 +1826,8 @@ body {
   background: var(--paper);
 }
 
-/* Masthead titlebar — full width above the sidebar/content row. The native
-   traffic lights overlay its left (titleBarStyle:Overlay); the wordmark is
-   absolutely centered so the lights never shift it. */
+/* The native traffic lights overlay the left; the wordmark is absolutely
+   centered so they never shift it. */
 .titlebar {
   position: relative;
   flex-shrink: 0;
@@ -2176,10 +1880,8 @@ body {
   min-height: 0;
 }
 
-/* Holds the active view between the (global) warning area above and the
-   (global) job-status footer below. A flex container with one flex:1 child so
-   the report pane or inbox fills the height and scrolls internally rather than
-   pushing the footer off-screen. */
+/* One flex:1 child fills the height and scrolls internally rather than pushing
+   the footer off-screen. */
 .view-area {
   flex: 1;
   min-height: 0;
