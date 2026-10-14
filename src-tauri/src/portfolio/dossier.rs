@@ -2658,6 +2658,7 @@ Sources and footnotes.
                     ..Default::default()
                 }),
                 grade_parameter_version: "grade-v2".into(),
+                factors: None,
                 quick_basis: None,
                 authoring_close: None,
                 fund_exposure: Some(crate::portfolio::fund::FundExposureBasis {

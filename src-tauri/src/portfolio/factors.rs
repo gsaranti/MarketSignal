@@ -9,9 +9,13 @@
 //! **one composite** weighted by the archetype — never chained cutoffs, since
 //! value and momentum are negatively correlated. It is deliberately not a
 //! within-cohort rank: no honest within-app cross-section exists to rank within.
+//! The factors a name reads follow its **metric class** — a bank, another
+//! financial, an equity REIT or a general business — since margin, EBIT and
+//! debt / equity reads misgrade the businesses whose debt is their raw material or
+//! whose depreciation buries their cash earnings.
 //!
-//! Pure over [`CompanyFinancials`], the profile sector, the value-creation read and
-//! a caller-supplied revision pace, so every rule is unit-testable offline. The
+//! Pure over [`CompanyFinancials`], the profile sector and industry, the
+//! value-creation read and a caller-supplied revision pace, so every rule is unit-testable offline. The
 //! output exposes the methodology — the band each factor read, its own-history
 //! depth, whether it was winsorized or imputed — so the model can dispute a
 //! derivation and not merely a number.
@@ -89,11 +93,14 @@ const PRICE_PROXIMITY_DAYS: i64 = 10;
 /// returns). The FCF-yield anchor is no column at all: it is the earnings-yield
 /// anchor × the FCF-conversion band's anchor ([`fcf_yield_anchor`]).
 ///
-/// **Placeholders**: Financial Services' gross profitability, margins, debt /
-/// equity and volatility are drafted stand-ins — bank economics carry no gross
-/// profit or operating margin — until the grade's sector-appropriate metric
-/// selection lands; its EBIT/EV reads its insurers and asset managers alone,
-/// banks reporting no EBIT.
+/// **Financial Services** serves the sector's non-bank names alone — its banks
+/// read [`BANK_ANCHORS`] — and those names read only its earnings yield,
+/// book-to-price, debt / equity and volatility ([`MetricClass::OtherFinancial`]).
+/// Its earnings yield and book-to-price are sourced over the non-bank industries
+/// named below. Its EBIT/EV (the mean over property / casualty insurers and
+/// investments & asset management alone), gross profitability and operating
+/// margin are unread by the composite. Its gross margin is a placeholder the
+/// value-creation read's moat proxy alone compares against.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SectorAnchors {
     /// The FMP sector label this row serves, or `"market-wide"`.
@@ -127,8 +134,9 @@ pub const MARKET_ANCHORS: SectorAnchors = SectorAnchors {
 /// Technology — software (system & application), semiconductors, semiconductor
 /// equipment, computers / peripherals; Healthcare — pharmaceuticals, healthcare
 /// products (biotech's loss-distorted aggregates left out); Financial Services —
-/// money-center banks, regional banks, property / casualty insurers, investments
-/// & asset management; Real Estate — REITs, real-estate operations & services;
+/// property / casualty, life and general insurers, investments & asset
+/// management, brokerage & investment banking; Real Estate — REITs, real-estate
+/// operations & services (a REIT itself reads [`REIT_ANCHORS`]);
 /// Communication Services — telecom services, entertainment; Consumer Cyclical —
 /// general retail, specialty retail, restaurants / dining; Consumer Defensive —
 /// food processing, household products, soft beverages; Industrials —
@@ -161,9 +169,9 @@ pub const SECTOR_ANCHORS: [SectorAnchors; 11] = [
     },
     SectorAnchors {
         label: "Financial Services",
-        earnings_yield: 0.0696,
+        earnings_yield: 0.0600,
         ebit_to_ev: 0.0764,
-        book_to_price: 0.598,
+        book_to_price: 0.448,
         gross_profitability: 0.05,
         operating_margin: 0.25,
         gross_margin: 0.50,
@@ -267,6 +275,59 @@ pub fn fcf_yield_anchor(anchors: &SectorAnchors) -> f64 {
     anchors.earnings_yield * FCF_CONVERSION_BAND.0
 }
 
+/// The bank row — banks and mortgage REITs ([`MetricClass::Bank`]).
+///
+/// **Sourced**: earnings yield and book-to-price are the plain mean over
+/// Damodaran's January 2026 money-center and regional bank industries, read by
+/// the same rule as [`SECTOR_ANCHORS`]. Return on assets is the FDIC's full-year
+/// 2025 figure for all insured institutions (Quarterly Banking Profile, Q4 2025),
+/// an industry level rather than a listed-bank aggregate.
+///
+/// **Drafted**: volatility, as on every sector row.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BankAnchors {
+    pub label: &'static str,
+    pub earnings_yield: f64,
+    pub book_to_price: f64,
+    pub return_on_assets: f64,
+    /// Annualized realized volatility of daily returns.
+    pub volatility: f64,
+}
+
+pub const BANK_ANCHORS: BankAnchors = BankAnchors {
+    label: "Banks",
+    earnings_yield: 0.0750,
+    book_to_price: 0.747,
+    return_on_assets: 0.012,
+    volatility: 0.28,
+};
+
+/// The equity-REIT row ([`MetricClass::EquityReit`]).
+///
+/// **Sourced**: the FFO yield is Nareit's 2025 FFO for all listed US equity REITs
+/// over the FTSE Nareit All Equity REITs index's market capitalization at
+/// 2025-12-31 (a P/FFO near 17.6×); debt over total assets is Nareit's book-basis
+/// leverage for the same universe, read approximately off its chart.
+///
+/// **Drafted**: FFO over total assets and volatility.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReitAnchors {
+    pub label: &'static str,
+    pub ffo_yield: f64,
+    pub ffo_to_assets: f64,
+    pub debt_to_assets: f64,
+    /// Annualized realized volatility of daily returns.
+    pub volatility: f64,
+}
+
+pub const REIT_ANCHORS: ReitAnchors = ReitAnchors {
+    label: "REITs",
+    ffo_yield: 0.0568,
+    ffo_to_assets: 0.055,
+    debt_to_assets: 0.50,
+    volatility: 0.28,
+};
+
 /// A sector-banded factor's band half-width as a fraction of its anchor: 0 and
 /// 100 sit at the anchor ∓ this share of it. Ratio factors span from nothing to
 /// twice the sector's level; volatility from half to one and a half times it.
@@ -275,12 +336,13 @@ const VOLATILITY_BAND_RELATIVE_WIDTH: f64 = 0.5;
 
 /// The market-wide bands — `(anchor, half-width)` — for the factors whose level
 /// carries no structural sector difference (momentum and trend, the revision
-/// pace, the ROIC spread already net of the cost of capital, FCF conversion,
+/// pace, the ROIC and ROE spreads already net of their hurdles, FCF conversion,
 /// revenue growth, beta, asset growth).
 const MOMENTUM_BAND: (f64, f64) = (0.08, 0.40);
 const TREND_BAND: (f64, f64) = (0.0, 0.20);
 const REVISION_BAND: (f64, f64) = (0.0, 0.20);
 const ROIC_SPREAD_BAND: (f64, f64) = (0.0, 0.15);
+const ROE_SPREAD_BAND: (f64, f64) = (0.0, 0.15);
 const FCF_CONVERSION_BAND: (f64, f64) = (0.90, 0.60);
 const REVENUE_GROWTH_BAND: (f64, f64) = (0.06, 0.20);
 const BETA_BAND: (f64, f64) = (1.0, 0.60);
@@ -301,6 +363,44 @@ pub enum Archetype {
     CommodityCyclical,
     Disruptor,
     QualityCompounder,
+}
+
+/// The metric class: which factors a name's value, quality and low-risk axes
+/// read (`docs/trade-opportunities.md` §Starting parameters).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MetricClass {
+    /// Every name outside the three classes below — the full factor set.
+    General,
+    /// A bank or a mortgage REIT: its debt is its raw material, so it reads
+    /// earnings yield and book-to-price, the ROE spread and return on assets, and
+    /// no debt / equity.
+    Bank,
+    /// Any other Financial Services name — insurers, asset managers, brokers,
+    /// lenders: earnings yield and book-to-price, the ROE spread, and its debt /
+    /// equity.
+    OtherFinancial,
+    /// An equity REIT: the FFO yield, FFO over total assets, and debt over total
+    /// assets, since depreciation buries both its earnings and its book equity.
+    EquityReit,
+}
+
+/// The metric class from the profile's industry and sector, matched
+/// case-insensitively: an industry starting "Banks" or "REIT - Mortgage" is a
+/// bank, any other starting "REIT" an equity REIT; any other name in the
+/// Financial Services sector is another financial; everything else — an
+/// unrecognized industry, or no label at all — is general.
+pub fn metric_class(sector: Option<&str>, industry: Option<&str>) -> MetricClass {
+    let industry = industry.map(|i| i.trim().to_ascii_lowercase()).unwrap_or_default();
+    if industry.starts_with("banks") || industry.starts_with("reit - mortgage") {
+        MetricClass::Bank
+    } else if industry.starts_with("reit") {
+        MetricClass::EquityReit
+    } else if sector.is_some_and(|s| s.trim().eq_ignore_ascii_case("Financial Services")) {
+        MetricClass::OtherFinancial
+    } else {
+        MetricClass::General
+    }
 }
 
 /// The composite's axes.
@@ -351,6 +451,14 @@ pub enum Factor {
     OperatingMargin,
     /// ROIC less the cost of capital (`portfolio::value_creation`).
     RoicSpread,
+    /// TTM net income over ending book equity, less the CAPM cost of equity.
+    RoeSpread,
+    /// TTM net income over total assets.
+    ReturnOnAssets,
+    /// The FFO proxy — TTM net income plus TTM D&A — over market capitalization.
+    FfoYield,
+    /// The FFO proxy over total assets.
+    FfoToAssets,
     /// TTM free cash flow over a positive TTM net income.
     FcfConversion,
     /// TTM revenue over the prior TTM's, less one.
@@ -361,6 +469,8 @@ pub enum Factor {
     Volatility,
     /// Book debt over book equity; non-positive equity scores the band's floor.
     DebtToEquity,
+    /// Book debt over total assets.
+    DebtToAssets,
     /// Total assets over the year-earlier print, less one — conservative
     /// investment, inverted.
     AssetGrowth,
@@ -379,58 +489,125 @@ impl Factor {
     pub fn axis(self) -> Axis {
         use Factor::*;
         match self {
-            EarningsYield | FcfYield | EbitToEv | BookToPrice => Axis::Value,
+            EarningsYield | FcfYield | EbitToEv | BookToPrice | FfoYield => Axis::Value,
             Momentum | Trend => Axis::Momentum,
-            GrossProfitability | OperatingMargin | RoicSpread | FcfConversion => Axis::Quality,
+            GrossProfitability | OperatingMargin | RoicSpread | FcfConversion | RoeSpread
+            | ReturnOnAssets | FfoToAssets => Axis::Quality,
             RevenueGrowth => Axis::Growth,
-            Beta | Volatility | DebtToEquity => Axis::LowRisk,
+            Beta | Volatility | DebtToEquity | DebtToAssets => Axis::LowRisk,
             AssetGrowth => Axis::Investment,
             Revision => Axis::Revision,
         }
     }
 
+    /// Whether a higher value scores higher.
+    pub fn higher_is_better(self) -> bool {
+        self.polarity() == Polarity::HigherBetter
+    }
+
     fn polarity(self) -> Polarity {
         match self {
-            Factor::Beta | Factor::Volatility | Factor::DebtToEquity | Factor::AssetGrowth => {
-                Polarity::LowerBetter
-            }
+            Factor::Beta
+            | Factor::Volatility
+            | Factor::DebtToEquity
+            | Factor::DebtToAssets
+            | Factor::AssetGrowth => Polarity::LowerBetter,
             _ => Polarity::HigherBetter,
         }
     }
 
-    /// The factor's band under a sector row: sector-banded factors read the row
-    /// (the market-wide row when the sector is unmapped), the rest one market-wide
-    /// band.
-    fn band(self, anchors: &SectorAnchors, sector_basis: BandBasis) -> Band {
-        let sector = |anchor: f64, width: f64| Band {
-            anchor,
-            half_width: anchor.abs() * width,
-            basis: sector_basis,
-        };
+    /// The factor's band under its anchor row: a sector-banded factor reads the
+    /// row (the market-wide row when the sector is unmapped), the rest one
+    /// market-wide band. `None` for a sector-banded factor the row carries no
+    /// anchor for — never one its class's factor set reads.
+    fn band(self, row: AnchorRow) -> Option<Band> {
         let market = |(anchor, half_width): (f64, f64)| Band {
             anchor,
             half_width,
             basis: BandBasis::MarketWide,
         };
-        match self {
-            Factor::EarningsYield => sector(anchors.earnings_yield, SECTOR_BAND_RELATIVE_WIDTH),
-            Factor::FcfYield => sector(fcf_yield_anchor(anchors), SECTOR_BAND_RELATIVE_WIDTH),
-            Factor::EbitToEv => sector(anchors.ebit_to_ev, SECTOR_BAND_RELATIVE_WIDTH),
-            Factor::BookToPrice => sector(anchors.book_to_price, SECTOR_BAND_RELATIVE_WIDTH),
-            Factor::GrossProfitability => {
-                sector(anchors.gross_profitability, SECTOR_BAND_RELATIVE_WIDTH)
-            }
-            Factor::OperatingMargin => sector(anchors.operating_margin, SECTOR_BAND_RELATIVE_WIDTH),
-            Factor::DebtToEquity => sector(anchors.debt_to_equity, SECTOR_BAND_RELATIVE_WIDTH),
-            Factor::Volatility => sector(anchors.volatility, VOLATILITY_BAND_RELATIVE_WIDTH),
+        Some(match self {
             Factor::Momentum => market(MOMENTUM_BAND),
             Factor::Trend => market(TREND_BAND),
             Factor::Revision => market(REVISION_BAND),
             Factor::RoicSpread => market(ROIC_SPREAD_BAND),
+            Factor::RoeSpread => market(ROE_SPREAD_BAND),
             Factor::FcfConversion => market(FCF_CONVERSION_BAND),
             Factor::RevenueGrowth => market(REVENUE_GROWTH_BAND),
             Factor::Beta => market(BETA_BAND),
             Factor::AssetGrowth => market(ASSET_GROWTH_BAND),
+            _ => {
+                let anchor = row.anchor(self)?;
+                let width = if self == Factor::Volatility {
+                    VOLATILITY_BAND_RELATIVE_WIDTH
+                } else {
+                    SECTOR_BAND_RELATIVE_WIDTH
+                };
+                Band { anchor, half_width: anchor.abs() * width, basis: row.basis() }
+            }
+        })
+    }
+}
+
+/// The anchor row a name's sector-banded factors read: its sector's row (the
+/// market-wide row where the sector is unmapped), or its class's own row.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AnchorRow {
+    Sector(&'static SectorAnchors, BandBasis),
+    Bank(&'static BankAnchors),
+    Reit(&'static ReitAnchors),
+}
+
+impl AnchorRow {
+    /// The row for a metric class and profile sector.
+    pub fn for_class(class: MetricClass, sector: Option<&str>) -> AnchorRow {
+        match class {
+            MetricClass::Bank => AnchorRow::Bank(&BANK_ANCHORS),
+            MetricClass::EquityReit => AnchorRow::Reit(&REIT_ANCHORS),
+            // Another financial is a Financial Services name by construction.
+            MetricClass::OtherFinancial | MetricClass::General => {
+                let (row, basis) = sector_row(sector);
+                AnchorRow::Sector(row, basis)
+            }
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AnchorRow::Sector(row, _) => row.label,
+            AnchorRow::Bank(row) => row.label,
+            AnchorRow::Reit(row) => row.label,
+        }
+    }
+
+    fn basis(self) -> BandBasis {
+        match self {
+            AnchorRow::Sector(_, basis) => basis,
+            AnchorRow::Bank(_) | AnchorRow::Reit(_) => BandBasis::Sector,
+        }
+    }
+
+    /// The row's anchor for a sector-banded factor.
+    fn anchor(self, factor: Factor) -> Option<f64> {
+        use Factor::*;
+        match (self, factor) {
+            (AnchorRow::Sector(a, _), EarningsYield) => Some(a.earnings_yield),
+            (AnchorRow::Sector(a, _), FcfYield) => Some(fcf_yield_anchor(a)),
+            (AnchorRow::Sector(a, _), EbitToEv) => Some(a.ebit_to_ev),
+            (AnchorRow::Sector(a, _), BookToPrice) => Some(a.book_to_price),
+            (AnchorRow::Sector(a, _), GrossProfitability) => Some(a.gross_profitability),
+            (AnchorRow::Sector(a, _), OperatingMargin) => Some(a.operating_margin),
+            (AnchorRow::Sector(a, _), DebtToEquity) => Some(a.debt_to_equity),
+            (AnchorRow::Sector(a, _), Volatility) => Some(a.volatility),
+            (AnchorRow::Bank(b), EarningsYield) => Some(b.earnings_yield),
+            (AnchorRow::Bank(b), BookToPrice) => Some(b.book_to_price),
+            (AnchorRow::Bank(b), ReturnOnAssets) => Some(b.return_on_assets),
+            (AnchorRow::Bank(b), Volatility) => Some(b.volatility),
+            (AnchorRow::Reit(r), FfoYield) => Some(r.ffo_yield),
+            (AnchorRow::Reit(r), FfoToAssets) => Some(r.ffo_to_assets),
+            (AnchorRow::Reit(r), DebtToAssets) => Some(r.debt_to_assets),
+            (AnchorRow::Reit(r), Volatility) => Some(r.volatility),
+            _ => None,
         }
     }
 }
@@ -488,33 +665,46 @@ pub fn dominant_axes(archetype: Option<Archetype>) -> &'static [Axis] {
     }
 }
 
-/// The factors the composite reads under an archetype: the commodity cyclical's
-/// value axis reads book-to-price alone; every other value axis reads the three
-/// yields.
-pub fn factor_set(archetype: Option<Archetype>) -> Vec<Factor> {
+/// The factors the composite reads under an archetype and a metric class. The
+/// class picks the value, quality and low-risk factors; the momentum, growth,
+/// investment and revision axes read the same factors in every class. The
+/// commodity cyclical's value axis reads book-to-price alone, a general name's
+/// override only — a bank or a REIT keeps its class's value factors whatever its
+/// archetype.
+pub fn factor_set(archetype: Option<Archetype>, class: MetricClass) -> Vec<Factor> {
     use Factor::*;
-    let value: &[Factor] = if archetype == Some(Archetype::CommodityCyclical) {
-        &[BookToPrice]
-    } else {
-        &[EarningsYield, FcfYield, EbitToEv]
+    let (value, quality, low_risk): (&[Factor], &[Factor], &[Factor]) = match class {
+        MetricClass::General => (
+            if archetype == Some(Archetype::CommodityCyclical) {
+                &[BookToPrice]
+            } else {
+                &[EarningsYield, FcfYield, EbitToEv]
+            },
+            &[GrossProfitability, OperatingMargin, RoicSpread, FcfConversion],
+            &[Beta, Volatility, DebtToEquity],
+        ),
+        MetricClass::Bank => (
+            &[EarningsYield, BookToPrice],
+            &[RoeSpread, ReturnOnAssets],
+            &[Beta, Volatility],
+        ),
+        MetricClass::OtherFinancial => (
+            &[EarningsYield, BookToPrice],
+            &[RoeSpread],
+            &[Beta, Volatility, DebtToEquity],
+        ),
+        MetricClass::EquityReit => {
+            (&[FfoYield], &[FfoToAssets], &[Beta, Volatility, DebtToAssets])
+        }
     };
     value
         .iter()
+        .chain(&[Momentum, Trend])
+        .chain(quality)
+        .chain(&[RevenueGrowth])
+        .chain(low_risk)
+        .chain(&[AssetGrowth, Revision])
         .copied()
-        .chain([
-            Momentum,
-            Trend,
-            GrossProfitability,
-            OperatingMargin,
-            RoicSpread,
-            FcfConversion,
-            RevenueGrowth,
-            Beta,
-            Volatility,
-            DebtToEquity,
-            AssetGrowth,
-            Revision,
-        ])
         .collect()
 }
 
@@ -567,8 +757,10 @@ pub struct AxisScore {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FactorComposite {
     pub archetype: Option<Archetype>,
-    /// The sector row the sector-banded factors read (`"market-wide"` where the
-    /// sector was absent or unmapped).
+    pub class: MetricClass,
+    /// The anchor row the sector-banded factors read — the sector's label,
+    /// `"market-wide"` where the sector was absent or unmapped, or the class's
+    /// own row (`"Banks"`, `"REITs"`).
     pub sector_anchor: String,
     pub factors: Vec<FactorScore>,
     pub axes: Vec<AxisScore>,
@@ -585,6 +777,8 @@ pub struct FactorInputs<'a> {
     pub fin: &'a CompanyFinancials,
     /// The profile's sector label.
     pub sector: Option<&'a str>,
+    /// The profile's industry label — read for the metric class alone.
+    pub industry: Option<&'a str>,
     pub value_creation: &'a ValueCreationRead,
     /// The consensus revision pace the caller measured (a decimal change in the
     /// forward EPS consensus); `None` scores the revision axis neutral.
@@ -596,11 +790,26 @@ pub struct FactorInputs<'a> {
 // ---------------------------------------------------------------------------
 
 /// A factor's observation: today's value and its own-history points (prior
-/// windows, newest first). A value may be `+∞` — debt over a non-positive
-/// equity, the worst read the band can hold.
+/// windows, newest first). Only debt / equity's value may be `+∞` — debt over a
+/// non-positive equity, the worst read the band can hold.
 struct Observation {
     current: Option<f64>,
     prior: Vec<f64>,
+}
+
+impl Observation {
+    /// The observation with every non-finite read dropped: arithmetic can
+    /// overflow finite inputs to ±∞ (a net income over a vanishing equity), and
+    /// such a read is unavailable, never a band edge. Debt / equity's `+∞`
+    /// alone stays — the deliberate floor.
+    fn admissible(self, factor: Factor) -> Observation {
+        let keep =
+            |v: &f64| v.is_finite() || (factor == Factor::DebtToEquity && *v == f64::INFINITY);
+        Observation {
+            current: self.current.filter(keep),
+            prior: self.prior.into_iter().filter(keep).collect(),
+        }
+    }
 }
 
 fn ratio(num: Option<f64>, den: Option<f64>) -> Option<f64> {
@@ -739,13 +948,22 @@ fn debt_to_equity(window: &TtmWindow) -> Option<f64> {
     if !debt.is_finite() || !equity.is_finite() || debt < 0.0 {
         return None;
     }
-    Some(if debt == 0.0 {
-        0.0
+    if debt == 0.0 {
+        Some(0.0)
     } else if equity > 0.0 {
-        debt / equity
+        // A quotient overflowing a vanishing equity is no read, not the floor.
+        Some(debt / equity).filter(|r| r.is_finite())
     } else {
-        f64::INFINITY
-    })
+        Some(f64::INFINITY)
+    }
+}
+
+/// The FFO proxy: TTM net income plus TTM D&A. No gain-on-sale or impairment
+/// line is parsed, so it overstates FFO in a year a REIT books property-sale
+/// gains, understates it in an impairment year, and counts non-real-estate D&A.
+fn ffo(window: &TtmWindow) -> Option<f64> {
+    let ffo = window.net_income? + window.depreciation_and_amortization?;
+    ffo.is_finite().then_some(ffo)
 }
 
 fn observe(
@@ -800,6 +1018,7 @@ fn observe(
             valuation(&|m, w| ratio(w.operating_income, enterprise_value(m, w)))
         }
         Factor::BookToPrice => valuation(&|m, w| w.total_equity.map(|e| e / m)),
+        Factor::FfoYield => valuation(&|m, w| ffo(w).map(|f| f / m)),
         Factor::GrossProfitability => {
             fundamental(&|k| ratio(windows[k].gross_profit, windows[k].total_assets))
         }
@@ -816,6 +1035,21 @@ fn observe(
             ratio(windows[k].total_assets, windows.get(k + 4)?.total_assets).map(|r| r - 1.0)
         }),
         Factor::DebtToEquity => fundamental(&|k| debt_to_equity(&windows[k])),
+        Factor::DebtToAssets => {
+            fundamental(&|k| ratio(windows[k].total_debt, windows[k].total_assets))
+        }
+        Factor::ReturnOnAssets => {
+            fundamental(&|k| ratio(windows[k].net_income, windows[k].total_assets))
+        }
+        Factor::FfoToAssets => fundamental(&|k| ratio(ffo(&windows[k]), windows[k].total_assets)),
+        // Each window's ROE against today's cost of equity — the ROIC
+        // persistence proxy's convention — so the own history ranks the return.
+        Factor::RoeSpread => match inputs.value_creation.cost_of_equity {
+            Some(ke) => fundamental(&|k| {
+                ratio(windows[k].net_income, windows[k].total_equity).map(|roe| roe - ke)
+            }),
+            None => none,
+        },
         Factor::Momentum | Factor::Trend | Factor::Volatility => {
             price_observation(factor, closes, windows)
         }
@@ -918,6 +1152,28 @@ fn score_factor(factor: Factor, band: Band, obs: &Observation) -> FactorScore {
     }
 }
 
+/// Re-score a persisted factor under another band and own-history weight — the
+/// shadow-tune sweep's replay over a run's record (`engine`'s ignored harness).
+/// An imputed factor stays at the neutral midpoint and a floored one keeps the
+/// edge score it was persisted with; the own-history leg replays as persisted,
+/// since its prior points are not on the record. Under the factor's own band
+/// and [`OWN_HISTORY_WEIGHT`] it reproduces the persisted score.
+pub fn rescore(score: &FactorScore, band: Band, own_history_weight: f64) -> f64 {
+    if score.imputed {
+        return NEUTRAL_SCORE;
+    }
+    let band_leg = match score.raw {
+        Some(raw) => band_score(raw, &band, score.factor.polarity()).0,
+        // A floored value has no finite level: it sits past the same edge of
+        // every band, so its persisted band leg stands.
+        None => score.band_score.unwrap_or(NEUTRAL_SCORE),
+    };
+    match score.own_history {
+        Some(own) => (1.0 - own_history_weight) * band_leg + own_history_weight * own.score,
+        None => band_leg,
+    }
+}
+
 /// The thin-own-history flag: more than half the resolved factors score on their
 /// band alone — or nothing resolved at all.
 fn thin_own_history(factors: &[FactorScore]) -> bool {
@@ -931,14 +1187,18 @@ fn thin_own_history(factors: &[FactorScore]) -> bool {
 
 /// The archetype-weighted multi-factor composite for one stock.
 pub fn factor_composite(inputs: &FactorInputs, archetype: Option<Archetype>) -> FactorComposite {
-    let (anchors, sector_basis) = sector_row(inputs.sector);
+    let class = metric_class(inputs.sector, inputs.industry);
+    let row = AnchorRow::for_class(class, inputs.sector);
     let windows = ttm_windows(inputs.fin);
     let closes = dedupe_closes(&inputs.fin.daily_closes);
-    let factors: Vec<FactorScore> = factor_set(archetype)
+    // Every factor a class's set reads has a band on that class's row (pinned by
+    // `every_class_set_is_banded_on_its_row`).
+    let factors: Vec<FactorScore> = factor_set(archetype, class)
         .into_iter()
-        .map(|factor| {
-            let obs = observe(factor, inputs, &windows, &closes);
-            score_factor(factor, factor.band(anchors, sector_basis), &obs)
+        .filter_map(|factor| {
+            let band = factor.band(row)?;
+            let obs = observe(factor, inputs, &windows, &closes).admissible(factor);
+            Some(score_factor(factor, band, &obs))
         })
         .collect();
 
@@ -963,7 +1223,8 @@ pub fn factor_composite(inputs: &FactorInputs, archetype: Option<Archetype>) -> 
 
     FactorComposite {
         archetype,
-        sector_anchor: anchors.label.to_string(),
+        class,
+        sector_anchor: row.label().to_string(),
         thin_own_history: thin_own_history(&factors),
         factors,
         axes,
@@ -1001,11 +1262,24 @@ mod tests {
     }
 
     fn composite_of(fin: &CompanyFinancials, sector: Option<&str>, archetype: Option<Archetype>) -> FactorComposite {
+        classed(fin, sector, None, archetype)
+    }
+
+    fn classed(
+        fin: &CompanyFinancials,
+        sector: Option<&str>,
+        industry: Option<&str>,
+        archetype: Option<Archetype>,
+    ) -> FactorComposite {
         let vc = value_creation_read(fin, sector, 0.04);
         factor_composite(
-            &FactorInputs { fin, sector, value_creation: &vc, revision_pace: None },
+            &FactorInputs { fin, sector, industry, value_creation: &vc, revision_pace: None },
             archetype,
         )
+    }
+
+    fn letter_axis_factors(c: &FactorComposite, axis: Axis) -> Vec<Factor> {
+        c.factors.iter().filter(|f| f.factor.axis() == axis).map(|f| f.factor).collect()
     }
 
     fn factor(c: &FactorComposite, f: Factor) -> &FactorScore {
@@ -1404,5 +1678,227 @@ mod tests {
         let mut short = plain_with_closes();
         short.quarterly_income.truncate(8);
         assert!(composite_of(&short, Some("Technology"), None).thin_own_history);
+    }
+
+    #[test]
+    fn the_metric_class_routes_on_the_industry_then_the_sector() {
+        use MetricClass::*;
+        let fs = Some("Financial Services");
+        for (sector, industry, class) in [
+            (fs, Some("Banks - Regional"), Bank),
+            (fs, Some(" banks - diversified "), Bank),
+            (Some("Real Estate"), Some("REIT - Mortgage"), Bank),
+            (Some("Real Estate"), Some("REIT - Residential"), EquityReit),
+            (Some("Real Estate"), Some("REIT - Specialty"), EquityReit),
+            (Some("Real Estate"), Some("Real Estate - Services"), General),
+            (fs, Some("Insurance - Property & Casualty"), OtherFinancial),
+            (fs, Some("Asset Management"), OtherFinancial),
+            (fs, Some("Some New FMP Industry"), OtherFinancial),
+            (fs, None, OtherFinancial),
+            (None, Some("Banks - Regional"), Bank),
+            (Some("Technology"), Some("Semiconductors"), General),
+            (Some("Technology"), None, General),
+            (None, None, General),
+        ] {
+            assert_eq!(metric_class(sector, industry), class, "{sector:?} / {industry:?}");
+        }
+    }
+
+    #[test]
+    fn every_class_set_is_banded_on_its_row() {
+        use MetricClass::*;
+        for class in [General, Bank, OtherFinancial, EquityReit] {
+            for sector in [Some("Financial Services"), Some("Real Estate"), Some("Technology"), None] {
+                let row = AnchorRow::for_class(class, sector);
+                for archetype in [None, Some(Archetype::CommodityCyclical), Some(Archetype::AiInfra)] {
+                    for f in factor_set(archetype, class) {
+                        assert!(f.band(row).is_some(), "{class:?} {f:?} on {}", row.label());
+                    }
+                }
+            }
+            // Every class reads every axis, so no axis mean divides by zero.
+            let set = factor_set(None, class);
+            for axis in Axis::ALL {
+                assert!(set.iter().any(|f| f.axis() == axis), "{class:?} {axis:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_bank_reads_book_value_and_returns_and_no_leverage() {
+        let fin = plain_with_closes();
+        let c = classed(&fin, Some("Financial Services"), Some("Banks - Regional"), None);
+        assert_eq!((c.class, c.sector_anchor.as_str()), (MetricClass::Bank, "Banks"));
+        assert_eq!(letter_axis_factors(&c, Axis::Value), [Factor::EarningsYield, Factor::BookToPrice]);
+        assert_eq!(letter_axis_factors(&c, Axis::Quality), [Factor::RoeSpread, Factor::ReturnOnAssets]);
+        assert_eq!(letter_axis_factors(&c, Axis::LowRisk), [Factor::Beta, Factor::Volatility]);
+        // ROE 60 / 500 less the CAPM cost of equity at a 4% DGS10 and β 1.2.
+        let ke = 0.04 + (0.67 * 1.2 + 0.33) * 0.0425;
+        let roe = factor(&c, Factor::RoeSpread);
+        assert!(approx(roe.raw.unwrap(), 0.12 - ke));
+        assert_eq!(roe.band.basis, BandBasis::MarketWide);
+        assert_eq!(roe.own_history.unwrap().points, 12, "each window's ROE against today's hurdle");
+        let roa = factor(&c, Factor::ReturnOnAssets);
+        assert!(approx(roa.raw.unwrap(), 0.06));
+        assert_eq!(roa.band.anchor, BANK_ANCHORS.return_on_assets);
+        assert_eq!(roa.band.basis, BandBasis::Sector);
+        let bp = factor(&c, Factor::BookToPrice);
+        assert!(approx(bp.raw.unwrap(), 500.0 / 4000.0));
+        assert_eq!(bp.band.anchor, BANK_ANCHORS.book_to_price);
+        assert_eq!(factor(&c, Factor::EarningsYield).band.anchor, BANK_ANCHORS.earnings_yield);
+        // A mortgage REIT reads the bank row too.
+        let mreit = classed(&fin, Some("Real Estate"), Some("REIT - Mortgage"), None);
+        assert_eq!((mreit.class, mreit.sector_anchor.as_str()), (MetricClass::Bank, "Banks"));
+    }
+
+    #[test]
+    fn another_financial_keeps_its_leverage_on_the_financial_services_row() {
+        let c = classed(&plain_with_closes(), Some("Financial Services"), Some("Insurance - Life"), None);
+        assert_eq!((c.class, c.sector_anchor.as_str()), (MetricClass::OtherFinancial, "Financial Services"));
+        assert_eq!(letter_axis_factors(&c, Axis::Value), [Factor::EarningsYield, Factor::BookToPrice]);
+        assert_eq!(letter_axis_factors(&c, Axis::Quality), [Factor::RoeSpread]);
+        assert_eq!(
+            letter_axis_factors(&c, Axis::LowRisk),
+            [Factor::Beta, Factor::Volatility, Factor::DebtToEquity]
+        );
+        let fs = sector_anchors(Some("Financial Services"));
+        assert_eq!(factor(&c, Factor::DebtToEquity).band.anchor, fs.debt_to_equity);
+        assert_eq!(factor(&c, Factor::BookToPrice).band.anchor, fs.book_to_price);
+    }
+
+    #[test]
+    fn an_equity_reit_reads_its_ffo_proxy_and_asset_leverage() {
+        let c = classed(&plain_with_closes(), Some("Real Estate"), Some("REIT - Industrial"), None);
+        assert_eq!((c.class, c.sector_anchor.as_str()), (MetricClass::EquityReit, "REITs"));
+        assert_eq!(letter_axis_factors(&c, Axis::Value), [Factor::FfoYield]);
+        assert_eq!(letter_axis_factors(&c, Axis::Quality), [Factor::FfoToAssets]);
+        assert_eq!(
+            letter_axis_factors(&c, Axis::LowRisk),
+            [Factor::Beta, Factor::Volatility, Factor::DebtToAssets]
+        );
+        // The FFO proxy: TTM net income 60 plus TTM D&A 16.
+        let ffo_yield = factor(&c, Factor::FfoYield);
+        assert!(approx(ffo_yield.raw.unwrap(), 76.0 / 4000.0));
+        assert_eq!(ffo_yield.band.anchor, REIT_ANCHORS.ffo_yield);
+        assert_eq!(ffo_yield.own_history.unwrap().points, 12);
+        assert!(approx(factor(&c, Factor::FfoToAssets).raw.unwrap(), 0.076));
+        let da = factor(&c, Factor::DebtToAssets);
+        assert!(approx(da.raw.unwrap(), 0.2));
+        // Lower leverage scores higher: 0.2 against a 0.5 anchor.
+        assert!(approx(da.band_score.unwrap(), 50.0 + 50.0 * 0.3 / 0.5));
+        assert_eq!(factor(&c, Factor::Volatility).band.anchor, REIT_ANCHORS.volatility);
+    }
+
+    #[test]
+    fn the_cyclical_value_override_is_a_general_names_alone() {
+        let fin = plain_with_closes();
+        let bank = classed(&fin, Some("Financial Services"), Some("Banks - Regional"), Some(Archetype::CommodityCyclical));
+        assert_eq!(letter_axis_factors(&bank, Axis::Value), [Factor::EarningsYield, Factor::BookToPrice]);
+        let reit = classed(&fin, Some("Real Estate"), Some("REIT - Office"), Some(Archetype::CommodityCyclical));
+        assert_eq!(letter_axis_factors(&reit, Axis::Value), [Factor::FfoYield]);
+        // The tilt itself still applies.
+        assert_eq!(bank.axes.iter().find(|a| a.axis == Axis::Value).unwrap().weight, ARCHETYPE_TILT);
+    }
+
+    #[test]
+    fn the_roe_spread_needs_a_cost_of_equity() {
+        let mut fin = plain_with_closes();
+        fin.beta = None;
+        let c = classed(&fin, Some("Financial Services"), Some("Banks - Regional"), None);
+        let roe = factor(&c, Factor::RoeSpread);
+        assert!(roe.imputed && roe.score == NEUTRAL_SCORE);
+        // A non-positive equity has no ROE.
+        let mut neg = plain_with_closes();
+        for row in &mut neg.quarterly_balance_sheet {
+            row.total_equity = Some(-10.0);
+        }
+        let c = classed(&neg, Some("Financial Services"), Some("Banks - Regional"), None);
+        assert!(factor(&c, Factor::RoeSpread).imputed);
+    }
+
+    #[test]
+    fn an_overflowed_read_is_unavailable_never_a_band_edge() {
+        // Finite inputs whose quotient overflows: net income and debt over a
+        // vanishing positive equity. Neither the ROE spread nor debt / equity
+        // reads anything, and neither stands at an edge of its band.
+        let mut fin = plain_with_closes();
+        for row in &mut fin.quarterly_balance_sheet {
+            row.total_equity = Some(1e-308);
+        }
+        let c = classed(&fin, Some("Financial Services"), Some("Insurance - Life"), None);
+        for f in [Factor::RoeSpread, Factor::DebtToEquity] {
+            let s = factor(&c, f);
+            assert!(s.imputed && !s.floored && s.score == NEUTRAL_SCORE, "{s:?}");
+        }
+        // One overflowed earlier window drops out of the own history alone.
+        let mut fin = plain_with_closes();
+        fin.quarterly_balance_sheet[1].total_equity = Some(1e-308);
+        let c = classed(&fin, Some("Financial Services"), Some("Insurance - Life"), None);
+        let roe = factor(&c, Factor::RoeSpread);
+        assert!(!roe.imputed && roe.raw.is_some_and(f64::is_finite));
+        assert_eq!(roe.own_history.unwrap().points, 11);
+    }
+
+    #[test]
+    fn the_class_rows_carry_their_stated_levels() {
+        for v in [
+            BANK_ANCHORS.earnings_yield,
+            BANK_ANCHORS.book_to_price,
+            BANK_ANCHORS.return_on_assets,
+            BANK_ANCHORS.volatility,
+            REIT_ANCHORS.ffo_yield,
+            REIT_ANCHORS.ffo_to_assets,
+            REIT_ANCHORS.debt_to_assets,
+            REIT_ANCHORS.volatility,
+        ] {
+            assert!(v.is_finite() && v > 0.0);
+        }
+        // The sourced cells, by the stated rule (plain means of reciprocals over
+        // the named Damodaran industries; Nareit FFO over index capitalization).
+        let mean = |xs: &[f64]| xs.iter().map(|x| 1.0 / x).sum::<f64>() / xs.len() as f64;
+        let round = |v: f64, places: i32| (v * 10f64.powi(places)).round() / 10f64.powi(places);
+        assert_eq!(BANK_ANCHORS.earnings_yield, round(mean(&[14.17, 12.60]), 4));
+        assert_eq!(BANK_ANCHORS.book_to_price, round(mean(&[1.62, 1.14]), 3));
+        let fs = sector_anchors(Some("Financial Services"));
+        assert_eq!(fs.earnings_yield, round(mean(&[11.78, 11.82, 27.34, 22.99, 19.80]), 4));
+        assert_eq!(fs.book_to_price, round(mean(&[2.02, 1.43, 3.45, 2.49, 2.81]), 3));
+        assert_eq!(REIT_ANCHORS.ffo_yield, round(79.445 / 1398.3, 4));
+    }
+
+    #[test]
+    fn a_persisted_factor_rescores_to_itself_under_its_own_band() {
+        let fin = plain_with_closes();
+        for (sector, industry) in [
+            (Some("Technology"), None),
+            (Some("Financial Services"), Some("Banks - Regional")),
+            (Some("Real Estate"), Some("REIT - Retail")),
+        ] {
+            let c = classed(&fin, sector, industry, None);
+            for f in &c.factors {
+                assert!(approx(rescore(f, f.band, OWN_HISTORY_WEIGHT), f.score), "{:?}", f.factor);
+            }
+        }
+        // A floored debt / equity keeps the floor under any band: its band leg
+        // is 0, so only the persisted own-history leg can lift it.
+        let mut neg = plain_with_closes();
+        for row in &mut neg.quarterly_balance_sheet {
+            row.total_equity = Some(-100.0);
+        }
+        let c = composite_of(&neg, Some("Technology"), None);
+        let de = factor(&c, Factor::DebtToEquity);
+        let wider = Band { half_width: de.band.half_width * 2.0, ..de.band };
+        assert!(approx(rescore(de, wider, OWN_HISTORY_WEIGHT), de.score));
+        assert_eq!(rescore(de, wider, 0.0), 0.0);
+        // A higher-is-better factor with no finite level keeps its persisted
+        // edge too, never the opposite one.
+        let ey = FactorScore {
+            raw: None,
+            floored: true,
+            band_score: Some(0.0),
+            own_history: None,
+            score: 0.0,
+            ..factor(&c, Factor::EarningsYield).clone()
+        };
+        assert_eq!(rescore(&ey, Band { half_width: ey.band.half_width * 2.0, ..ey.band }, 0.0), 0.0);
     }
 }

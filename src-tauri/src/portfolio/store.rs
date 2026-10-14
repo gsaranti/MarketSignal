@@ -282,7 +282,11 @@ pub struct CheckpointHeader {
 /// verdict carries the basis read beside its position change and the audit's
 /// pre-profit overlay carries no observation history — so no v24 row can
 /// resume this shape.
-pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v25";
+/// `checkpoint-v26` (`portfolio-v77`): a priced stock's audit carries its
+/// factor composite and its verdict the grade basis — the metric class, the
+/// anchor row and the thin-own-history flag — so no v25 row can resume this
+/// shape.
+pub const CHECKPOINT_FORMAT_VERSION: &str = "checkpoint-v26";
 
 /// The run-level keyed identities the post-loop consumers read (episode
 /// sector identities, the commodity context's industry key, prompt-header
@@ -1409,6 +1413,7 @@ mod tests {
                 degraded_inputs: vec![],
                 action_annotations: vec![],
                 grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.to_string(),
+                factors: None,
                 quick_basis: None,
                 authoring_close: None,
                 fund_exposure: None,
@@ -1502,6 +1507,41 @@ mod tests {
         insert_run(&conn, &run).unwrap();
         let back = latest_run(&conn).unwrap().unwrap();
         assert_eq!(back, run, "the whole run round-trips");
+    }
+
+    /// The audit's factor composite and the verdict's grade basis are required
+    /// keys: a run row missing either is a loud skip, never a run that reads
+    /// them as none; an explicit `null` (a fund's) decodes as none.
+    #[test]
+    fn a_run_row_missing_the_composite_or_the_grade_basis_key_is_skipped() {
+        use crate::portfolio::pipeline::{self, tests as pt, StubAnalyst};
+        let stock = pt::dossier(AssetClass::Stock, pt::strong_financials());
+        let (priced, audit) =
+            pipeline::analyze_holding(&StubAnalyst, &stock, &pt::rates(), "2026-08-03").unwrap();
+        let mut run = sample_run("run-1", "2026-06-25T12:00:00Z");
+        run.verdicts[0] = priced;
+        run.audit[0] = audit;
+        let json = serde_json::to_value(&run).unwrap();
+        let back = decode_run("run-1", &json.to_string()).expect("the written run reads back");
+        assert!(back.audit[0].factors.is_some());
+        let VerdictDisposition::Priced(g) = &back.verdicts[0].disposition else { panic!("priced") };
+        assert!(g.grade_basis.is_some());
+
+        // The object each key sits on: the audit row, or the priced disposition.
+        fn parent<'a>(run: &'a mut serde_json::Value, key: &str) -> &'a mut serde_json::Value {
+            match key {
+                "factors" => &mut run["audit"][0],
+                _ => &mut run["verdicts"][0]["disposition"],
+            }
+        }
+        for key in ["factors", "grade_basis"] {
+            let mut missing = json.clone();
+            parent(&mut missing, key).as_object_mut().unwrap().remove(key).expect("the key was written");
+            assert_eq!(decode_run("run-1", &missing.to_string()), None, "{key}");
+            let mut null = json.clone();
+            parent(&mut null, key)[key] = serde_json::Value::Null;
+            assert!(decode_run("run-1", &null.to_string()).is_some(), "{key}: null");
+        }
     }
 
     /// The verdict record round-trips on every disposition: a priced verdict

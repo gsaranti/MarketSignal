@@ -3375,6 +3375,7 @@ mod tests {
             action_annotations: vec![],
             target_meta: None,
             grade_parameter_version: crate::portfolio::engine::GRADE_PARAMETER_VERSION.into(),
+            factors: None,
             quick_basis: None,
             authoring_close: None,
             fund_exposure: None,
@@ -3826,7 +3827,8 @@ mod tests {
     impl CompanyDataSource for StubCompanyData {
         fn financials(&self, symbol: &str) -> CompanyFinancials {
             use crate::portfolio::engine::{
-                ConsensusEpsPeriod, ConsensusEstimate, DatedValue, QuarterlyIncomeRow,
+                ConsensusEpsPeriod, ConsensusEstimate, DatedValue, QuarterlyBalanceSheetRow,
+                QuarterlyIncomeRow,
             };
             let ends = [
                 "2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30", "2025-06-30",
@@ -3866,14 +3868,28 @@ mod tests {
                         filing_date: None,
                         revenue: Some(100.0e9 - 1.0e9 * i as f64),
                         eps_diluted: Some(1.55 - 0.01 * i as f64),
-                        net_income: None,
-                        gross_profit: None,
+                        // The factor composite's value and quality legs (grade-v3).
+                        net_income: Some(2.5e10),
+                        gross_profit: Some(45.0e9),
                         cost_of_revenue: None,
                         diluted_shares: Some(1.5e10),
                         operating_income: None,
                         research_and_development: None,
                         income_before_tax: None,
                         income_tax_expense: None,
+                    })
+                    .collect(),
+                // The low-risk axis's debt / equity and the quality axis's assets.
+                quarterly_balance_sheet: ends
+                    .iter()
+                    .map(|end| QuarterlyBalanceSheetRow {
+                        period_end: end.to_string(),
+                        total_assets: Some(3.5e11),
+                        total_debt: Some(1.0e11),
+                        total_equity: Some(7.0e10),
+                        cash_and_equivalents: Some(6.0e10),
+                        short_term_investments: Some(0.0),
+                        ..Default::default()
                     })
                     .collect(),
                 consensus: Some(ConsensusEstimate {
@@ -4441,6 +4457,15 @@ mod tests {
         let conn = storage::open(&paths.db_path).unwrap();
         let latest = store::latest_run(&conn).unwrap().unwrap();
         assert_eq!(latest.run_id, run.run_id);
+        // The stock's factor composite and its grade basis round-trip the store
+        // (grade-v3): the composite on the audit, the basis on the verdict.
+        let composite = latest.audit[0].factors.as_ref().expect("a priced stock's composite");
+        assert_eq!(latest.audit[0].factors, run.audit[0].factors);
+        assert!(!composite.factors.is_empty());
+        let crate::portfolio::VerdictDisposition::Priced(g) = &latest.verdicts[0].disposition else {
+            panic!("a graded stock");
+        };
+        assert_eq!(g.grade_basis, Some(crate::portfolio::GradeBasis::of(composite)));
         // A job_runs row recorded the successful outcome.
         let state: String = conn
             .query_row(

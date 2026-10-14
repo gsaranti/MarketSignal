@@ -140,6 +140,7 @@ export const samplePortfolioRun: PortfolioRun = {
         action_rationale: "Hold — the thesis is intact.",
         low_confidence_grade: false,
         fund_class_label: null,
+        grade_basis: null,
         engine_rung: "hold",
         authored_band_relation: null,
       },

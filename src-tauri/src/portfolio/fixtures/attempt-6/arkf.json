@@ -63,6 +63,7 @@
     "dead_money": "fails",
     "low_confidence_grade": true,
     "fund_class_label": "US equity fund",
+    "grade_basis": null,
     "engine_rung": "trim",
     "authored_band_relation": null
   },
@@ -161,7 +162,9 @@
       "consensus_eps_mid": null,
       "consensus_eps_periods": []
     },
-    "implied_expectations": null
+    "implied_expectations": null,
+    "factors": null,
+    "value_creation": null
   },
   "research_combined": "ARK Fintech Innovation ETF (ARKF) is an actively managed, non-diversified Technology sector ETF launched in 2019 by ARK Investment Management LLC. The fund targets companies deriving significant revenue or market value from financial technology themes, maintaining a portfolio heavily concentrated in fintech and blockchain-adjacent equities such as Shopify, Circle Internet Group, Block Inc., Coinbase Global Inc., Robinhood Markets Inc., Palantir Technologies Inc., Toast Inc., Amazon.com Inc., and Bullish. As of September 2026, the fund held $818.74 million in net assets with a stock allocation of 90.08% and zero bond exposure. The expense ratio is 0.75%, which is approximately 36% higher than the Technology category average, resulting in an 'F' grade for YTD performance (-2.9%) despite a recent August 2026 return spike of 16.8%. Portfolio turnover stands at 32%, below the category average of 40%. A significant administrative change is underway: ARK announced on September 16, 2026 (with trading expected March 31, 2025) that it will move the primary listing venue from NYSE Arca to Cboe BZX Exchange; no shareholder action is required. This structural shift does not alter the investment mandate or management team, led by Catherine Wood with an average tenure of roughly 7.6 years. However, broader analysis indicates ARK Investment Management as a whole incurred approximately $13.4 billion in realized and unrealized capital losses over the trailing decade ended December 2024, driven largely by poorly timed inflows into volatile thematic strategies during market peaks."
 }

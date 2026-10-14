@@ -417,6 +417,18 @@ export interface SubScores {
   risk: number;
 }
 
+// The metric class a stock's factors were chosen by (portfolio::factors).
+export type MetricClass = "general" | "bank" | "other-financial" | "equity-reit";
+
+// What a stock's letter was scored against: its metric class, the anchor row
+// its banded factors read (the sector, "market-wide", "Banks" or "REITs") and
+// whether most factors scored on their bands alone.
+export interface GradeBasis {
+  class: MetricClass;
+  anchor_row: string;
+  thin_own_history: boolean;
+}
+
 // One scenario target with its methodology exposed; the engine computed the
 // figures, the model selected and justified the base case.
 export interface PriceTarget {
@@ -490,6 +502,8 @@ export interface GradedVerdict {
   low_confidence_grade: boolean;
   // The priced fund's deterministic strategy classification; null for a stock.
   fund_class_label: string | null;
+  // What a stock's letter was scored against; null on a fund.
+  grade_basis: GradeBasis | null;
   // The engine's own action rung — a computed read beside the model's action,
   // never a recommendation (docs/portfolio-analysis.md §Starting parameters).
   engine_rung: PortfolioAction;

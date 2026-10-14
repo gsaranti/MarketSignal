@@ -63,6 +63,7 @@
     "dead_money": "indeterminate",
     "low_confidence_grade": false,
     "fund_class_label": null,
+    "grade_basis": null,
     "engine_rung": "trim",
     "authored_band_relation": null
   },
@@ -187,7 +188,9 @@
       "revenue_based": false,
       "rate_anchored": true,
       "dgs10": 0.049699999999999994
-    }
+    },
+    "factors": null,
+    "value_creation": null
   },
   "research_combined": "Tesla's Q3 2026 financial performance showed a top-line beat ($28.01B vs $26.27B expected) but an adjusted EPS miss ($0.50 vs $0.54), with operating profit dropping 40% YoY to $1.624B due largely to reduced regulatory credits. While management signals a strategic pivot toward autonomy with a planned >$20B CapEx ramp in 2026, the core Robotaxi thesis faces immediate and severe headwinds. The NHTSA launched an investigation on September 5, 2026, into Tesla's self-certification of ~1,000 Cybercabs lacking conventional controls (steering wheels/pedals), creating a critical regulatory mismatch as commercial deployment began in Austin with only 45 registered units. Compounding execution risks, July 2026 saw a record 236 driver-assist crashes involving Tesla vehicles, including four fatalities where FSD/Autopilot was verified engaged; critics note Tesla redacts narrative data for 100% of filings compared to competitors like GM (0%), raising transparency concerns. Market sentiment turned negative post-Cybercab reveal in September 2026, with stock dropping ~6-8% due to lack of pricing details and early execution failures (routing errors) reported by users."
 }

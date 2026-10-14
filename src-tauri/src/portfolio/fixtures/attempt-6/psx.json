@@ -63,6 +63,7 @@
     "dead_money": "indeterminate",
     "low_confidence_grade": false,
     "fund_class_label": null,
+    "grade_basis": null,
     "engine_rung": "hold",
     "authored_band_relation": null
   },
@@ -187,7 +188,9 @@
       "revenue_based": false,
       "rate_anchored": true,
       "dgs10": 0.049699999999999994
-    }
+    },
+    "factors": null,
+    "value_creation": null
   },
   "research_combined": "Phillips 66 (PSX) demonstrated robust operational performance in Q1/Q2 2026 with a worldwide market capture of 138% and refining utilization at 95%, driven by an asset-backed trading model that tripled time-charter vessels to arbitrage dislocations. However, the company faces significant structural headwinds: Western Canadian Select (WCS) discounts have narrowed structurally by ~$3/bbl since the Trans Mountain expansion in 2024, undermining a key competitive advantage for heavy-crude refiners like PSX despite its full WRB consolidation. While management targets $5.50/barrel controllable costs and $4.5B midstream EBITDA run-rate by end-2027, the stock trades at a premium to fair value estimates (~$192) based on peak cash flow assumptions ($21/share), with analysts warning of cyclical reversion risks if margins normalize from historic highs. Insiders have sold 14 shares for every 2 purchased in the last six months, contrasting with bullish analyst upgrades (UBS $300, MS $284) and strong Q2 adjusted earnings ($9.41/share)."
 }

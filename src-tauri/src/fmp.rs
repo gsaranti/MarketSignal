@@ -5492,100 +5492,6 @@ mod tests {
         assert!((out[0].total_equity_risk_premium - 4.46).abs() < 1e-9);
     }
 
-    /// The grade-band shadow-tune's calibration-surface refresh (the slice's step 6,
-    /// a user-approved bounded live spend): re-derive the statement-based metric
-    /// surface for the exported run's priced stocks through the NEW fetch path —
-    /// quote + quarterly income + balance sheet, three calls per stock, the TTM
-    /// statement basis + balance-sheet leg applied exactly as the live job would —
-    /// and write symbol → `ComputedMetrics` JSON for the band sweep to read beside
-    /// the as-persisted surface. Volatility / trailing return carry over from the
-    /// persisted audit (the price surface didn't change basis). Call count is
-    /// printed for the evidence record.
-    #[test]
-    #[ignore = "hits the live FMP API; set FMP_API_KEY, MARKET_SIGNAL_RUN_JSON, MARKET_SIGNAL_REFRESHED_METRICS_OUT"]
-    fn probe_refresh_statement_surface_for_band_tune() {
-        let run_path = std::env::var("MARKET_SIGNAL_RUN_JSON").expect("MARKET_SIGNAL_RUN_JSON");
-        let out_path = std::env::var("MARKET_SIGNAL_REFRESHED_METRICS_OUT")
-            .expect("MARKET_SIGNAL_REFRESHED_METRICS_OUT");
-        let run: crate::portfolio::PortfolioRun =
-            serde_json::from_str(&std::fs::read_to_string(&run_path).unwrap()).unwrap();
-        let src = FmpDataSource::from_env().expect("FMP_API_KEY set");
-        let mut refreshed: std::collections::BTreeMap<
-            String,
-            crate::portfolio::engine::ComputedMetrics,
-        > = Default::default();
-        let mut calls = 0usize;
-        for v in &run.verdicts {
-            let crate::portfolio::VerdictDisposition::Priced(g) = &v.disposition else {
-                continue;
-            };
-            if g.fund_class_label.is_some() {
-                continue;
-            }
-            let audit = run
-                .audit
-                .iter()
-                .find(|a| a.symbol == v.symbol)
-                .expect("audit row");
-            let mut fin = crate::portfolio::engine::CompanyFinancials {
-                symbol: v.symbol.clone(),
-                ..Default::default()
-            };
-            if let Ok((status, body)) = src.get(FMP_QUOTE_PATH, &[("symbol", v.symbol.as_str())])
-            {
-                if let Disposition::Value(value) = interpret_response(status, &body) {
-                    if let Some(q) = company_quote_from_value(&value) {
-                        fin.market_cap = q.market_cap;
-                        fin.current_price = q.price;
-                    }
-                }
-            }
-            let mut gaps = vec![];
-            fin.quarterly_income =
-                src.fetch_quarterly_income(&v.symbol, &mut gaps, &mut fin.unit_issues);
-            let balance = BalanceSheetLines::from_newest(&src.fetch_balance_sheet(
-                &v.symbol,
-                &mut gaps,
-                &mut fin.unit_issues,
-            ));
-            fin.total_debt = balance.total_debt;
-            fin.total_equity = balance.total_equity;
-            calls += 3;
-            let basis = crate::portfolio::dossier::apply_ttm_statement_basis(&mut fin);
-            let merged = crate::portfolio::dossier::merge_financials(
-                fin,
-                &crate::sec::CompanyFacts::default(),
-                basis,
-            );
-            let mut m = crate::portfolio::engine::compute_metrics(&merged);
-            m.return_volatility = audit.metrics.return_volatility;
-            m.trailing_return = audit.metrics.trailing_return;
-            eprintln!(
-                "{}: ttm={} nm={:?} gm={:?} rg={:?} de={:?} pe={:?} ps={:?} pb={:?} gaps={:?}",
-                v.symbol,
-                basis,
-                m.net_margin,
-                m.gross_margin,
-                m.revenue_growth,
-                m.debt_to_equity,
-                m.pe_ratio,
-                m.ps_ratio,
-                m.pb_ratio,
-                gaps
-            );
-            refreshed.insert(v.symbol.clone(), m);
-            // Politeness pacing between symbols — a probe, not a throughput race.
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        std::fs::write(&out_path, serde_json::to_string_pretty(&refreshed).unwrap()).unwrap();
-        eprintln!(
-            "{} stocks refreshed, {} HTTP calls → {}",
-            refreshed.len(),
-            calls,
-            out_path
-        );
-    }
-
     #[test]
     #[ignore = "hits the live FMP API; set FMP_API_KEY"]
     fn fmp_baseline_smoke() {
@@ -10606,7 +10512,7 @@ mod suite_tests {
                 assert_eq!(fin.pe_ratio, None);
                 assert_eq!(fin.unit_issues[0].reported_currency.as_deref(), currency);
                 assert!(
-                    matches!(engine::analyze(&fin, &engine::RateAnchors::default()), engine::EngineVerdict::InsufficientEvidence(reason) if reason.contains("unsupported financial units"))
+                    matches!(engine::analyze(&fin, &engine::RateAnchors::default(), Default::default()), engine::EngineVerdict::InsufficientEvidence(reason) if reason.contains("unsupported financial units"))
                 );
             }
         }

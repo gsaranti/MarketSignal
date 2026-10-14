@@ -63,6 +63,7 @@
     "dead_money": "fails",
     "low_confidence_grade": true,
     "fund_class_label": "US equity fund",
+    "grade_basis": null,
     "engine_rung": "trim",
     "authored_band_relation": null
   },
@@ -161,7 +162,9 @@
       "consensus_eps_mid": null,
       "consensus_eps_periods": []
     },
-    "implied_expectations": null
+    "implied_expectations": null,
+    "factors": null,
+    "value_creation": null
   },
   "research_combined": "The Invesco S&P 500 Momentum ETF (SPMO) is actively managed by Invesco Capital Management LLC under a copyright date of 2026, maintaining its mandate to track momentum factors within the S&P 500 without recent disclosed changes to strategy or personnel. As of September 14, 2026, the fund holds exactly 102 equity positions with significant concentration risk, where the top 10 holdings represent approximately 51.8% of assets. The portfolio is heavily tilted toward technology and semiconductor sectors, led by Micron Technology (10.65%) and NVIDIA (8.82%), resulting in a Price-to-Earnings ratio of 29.88 as of the reporting date. While specific expense ratios were not disclosed in the fetched documents, structural mechanics require share redemptions only in Creation Unit aggregations ranging from 10,000 to 150,000 shares."
 }

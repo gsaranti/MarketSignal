@@ -319,6 +319,10 @@ pub struct ValueCreationRead {
     /// Book debt + book equity − cash + the research asset.
     pub invested_capital: Option<f64>,
     pub roic: Option<f64>,
+    /// The CAPM cost of equity at the run's `DGS10` and the Blume-adjusted
+    /// profile beta, wherever both are served — the ROE spread's hurdle
+    /// (`portfolio::factors`), standing without the debt line the WACC needs.
+    pub cost_of_equity: Option<f64>,
     pub cost_of_capital: Option<CostOfCapital>,
     /// ROIC − the cost of capital.
     pub roic_spread: Option<f64>,
@@ -385,6 +389,15 @@ fn capitalize_rnd(fin: &CompanyFinancials, windows: &[TtmWindow]) -> RndCapitali
     RndCapitalization::Capitalized { ttm_rnd: years[0], research_asset, amortization }
 }
 
+/// The CAPM cost of equity and the Blume-adjusted beta it priced: `DGS10` plus
+/// (0.67β + 0.33) × the equity risk premium; `None` without a finite `DGS10` or a
+/// served beta.
+fn capm_cost_of_equity(fin: &CompanyFinancials, dgs10: f64) -> Option<(f64, f64)> {
+    let beta = fin.beta.filter(|b| b.is_finite() && dgs10.is_finite())?;
+    let adjusted_beta = BLUME_WEIGHT * beta + (1.0 - BLUME_WEIGHT);
+    Some((dgs10 + adjusted_beta * EQUITY_RISK_PREMIUM, adjusted_beta))
+}
+
 /// The cost of capital at the run's `DGS10`: a CAPM cost of equity over the
 /// Blume-adjusted beta and [`EQUITY_RISK_PREMIUM`], and an after-tax cost of debt
 /// at [`DEBT_SPREAD_OVER_RF`] over the rate, weighted by market equity against
@@ -398,7 +411,7 @@ fn cost_of_capital(
     if !dgs10.is_finite() {
         return Err("no usable DGS10 print");
     }
-    let beta = fin.beta.filter(|b| b.is_finite()).ok_or("no served beta")?;
+    let (cost_of_equity, adjusted_beta) = capm_cost_of_equity(fin, dgs10).ok_or("no served beta")?;
     let equity = fin
         .market_cap
         .filter(|m| m.is_finite() && *m > 0.0)
@@ -407,8 +420,6 @@ fn cost_of_capital(
         .total_debt
         .filter(|d| d.is_finite() && *d >= 0.0)
         .ok_or("no balance-sheet debt line")?;
-    let adjusted_beta = BLUME_WEIGHT * beta + (1.0 - BLUME_WEIGHT);
-    let cost_of_equity = dgs10 + adjusted_beta * EQUITY_RISK_PREMIUM;
     let after_tax_cost_of_debt = (dgs10 + DEBT_SPREAD_OVER_RF) * (1.0 - tax);
     let equity_weight = equity / (equity + debt);
     Ok(CostOfCapital {
@@ -446,6 +457,7 @@ pub fn value_creation_read(
     use ValueCreationLeg as Leg;
     let windows = ttm_windows(fin);
     let mut gaps = Vec::new();
+    let cost_of_equity = capm_cost_of_equity(fin, dgs10).map(|(rate, _)| rate);
     let Some(w0) = windows.first() else {
         let reason = "no contiguous four-quarter income window";
         for leg in [
@@ -470,6 +482,7 @@ pub fn value_creation_read(
             nopat: None,
             invested_capital: None,
             roic: None,
+            cost_of_equity,
             cost_of_capital: None,
             roic_spread: None,
             owner_earnings: None,
@@ -593,6 +606,7 @@ pub fn value_creation_read(
         nopat,
         invested_capital,
         roic,
+        cost_of_equity,
         cost_of_capital,
         roic_spread,
         owner_earnings,
@@ -934,6 +948,25 @@ pub(crate) mod tests {
         let coc = value_creation_read(&fin, None, 0.04).cost_of_capital.unwrap();
         assert!(approx(coc.equity_weight, 1.0));
         assert!(approx(coc.rate, coc.cost_of_equity));
+    }
+
+    #[test]
+    fn the_cost_of_equity_stands_without_the_debt_line_the_wacc_needs() {
+        let mut fin = plain_name();
+        for row in &mut fin.quarterly_balance_sheet {
+            row.total_debt = None;
+        }
+        let read = value_creation_read(&fin, None, 0.04);
+        assert_eq!(read.cost_of_capital, None);
+        close_to(read.cost_of_equity, 0.04 + (0.67 * 1.2 + 0.33) * 0.0425);
+        // No window at all: the cost of equity still reads off the beta and rate.
+        let mut bare = plain_name();
+        bare.quarterly_income.clear();
+        assert!(value_creation_read(&bare, None, 0.04).cost_of_equity.is_some());
+        let mut no_beta = plain_name();
+        no_beta.beta = None;
+        assert_eq!(value_creation_read(&no_beta, None, 0.04).cost_of_equity, None);
+        assert_eq!(value_creation_read(&plain_name(), None, f64::NAN).cost_of_equity, None);
     }
 
     #[test]

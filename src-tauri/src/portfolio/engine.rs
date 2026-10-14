@@ -18,6 +18,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::portfolio::factors::{factor_composite, Axis, FactorComposite, FactorInputs};
+use crate::portfolio::value_creation::{value_creation_read, ValueCreationRead};
 use crate::portfolio::{
     Action, Grade, OptionsSignal,
     PriceTarget, PriceTargets, SubScores,
@@ -31,57 +33,40 @@ use crate::schwab::{OptionChain, OptionKind};
 /// alongside but lives **outside the letter**, re-homed to the market-setup read in
 /// the conviction / positioning context, because a price move is the one grade input
 /// that isn't a business fundamental). `grade_from_subscores` divides by their sum,
-/// so they need not total 1.0. A sub-score that could not be computed is imputed to
-/// the neutral midpoint (50) by `analyze` before the roll-up, so a missing input
+/// so they need not total 1.0. A stock's sub-scores are the factor composite's
+/// axes (`portfolio::factors`); an axis none of whose factors resolved is imputed
+/// to the neutral midpoint (50) by `analyze` before the roll-up, so a missing input
 /// pulls the composite toward neutral rather than being dropped — an
-/// impute-to-neutral, not a renormalization over the present sub-scores.
+/// impute-to-neutral, not a renormalization over the present sub-scores. One
+/// roll-up serves both branches.
 const W_QUALITY: f64 = 0.40;
 const W_VALUATION: f64 = 0.30;
 const W_RISK: f64 = 0.30;
 
-/// Composite-score cutoffs for each letter grade (0–100, higher better).
-const GRADE_A: f64 = 85.0;
-const GRADE_B: f64 = 70.0;
-const GRADE_C: f64 = 55.0;
-const GRADE_D: f64 = 40.0;
+/// Composite-score cutoffs for each letter grade (0–100, higher better). Drafted
+/// for grade-v3's scores, where 50 is a sector-typical name: a factor scores 50
+/// at its band's anchor and at its own history's median, so C spans the
+/// sector-typical middle. Shadow-tuned after the dev-run batch.
+const GRADE_A: f64 = 70.0;
+const GRADE_B: f64 = 60.0;
+const GRADE_C: f64 = 45.0;
+const GRADE_D: f64 = 35.0;
 
-/// Evidence floor: the minimum number of computable **letter** sub-scores
-/// (quality / valuation / risk — momentum is context, not a letter input) below
-/// which the holding abstains rather than grading on too little
-/// (`docs/portfolio-analysis.md` §Evidence floor).
+/// Evidence floor: the minimum number of real **letter** sub-scores (quality /
+/// valuation / risk — momentum is context, not a letter input) below which the
+/// holding abstains rather than grading on too little
+/// (`docs/portfolio-analysis.md` §Evidence floor). A stock's sub-score is real
+/// when at least one of its axis's factors resolved ([`letter_axis`]).
 const MIN_SUBSCORES_FOR_GRADE: usize = 2;
 
-// -- Sub-score normalization bands (`docs/portfolio-analysis.md` §Starting
-//    parameters — clamped linear maps, each `(lo, hi)` pair mapping lo → 0 and
-//    hi → 100 through `scale`; an inverted pair scores lower inputs higher).
-//    Shadow-tuned against run `3b21ae85` (the first calibration dataset) —
-//    the tune is versioned by [`GRADE_PARAMETER_VERSION`].
+// -- The momentum sub-score's band on the fund branch (`docs/portfolio-analysis.md`
+//    §Starting parameters — a clamped linear map, `(lo, hi)` mapping lo → 0 and
+//    hi → 100 through `scale`). A stock's sub-scores are the factor composite's
+//    axes (`portfolio::factors`), its momentum among them; the stock bands this
+//    block carried through grade-v2.3 retired with grade-v3.
 
-/// Quality: net margin 0 → 0, 30%+ → 100.
-const QUALITY_NET_MARGIN_BAND: (f64, f64) = (0.0, 0.30);
-/// Quality: gross margin 15% → 0, 65%+ → 100.
-const QUALITY_GROSS_MARGIN_BAND: (f64, f64) = (0.15, 0.65);
-/// Valuation: P/E 70+ → 0, 12 → 100 (inverted — cheaper is better). The v1
-/// (40, 10) band read normal large-cap-growth multiples as junk-expensive —
-/// the 2026-07-31 run's whole-book C/D/F compression (F4).
-const VALUATION_PE_BAND: (f64, f64) = (70.0, 12.0);
-/// Valuation: the fixed low score for a non-positive P/E (a loss-maker is never
-/// "cheap", never off the scale).
-const VALUATION_NEGATIVE_PE_SCORE: f64 = 20.0;
-/// Valuation: P/S 25+ → 0, 2 → 100 (inverted).
-const VALUATION_PS_BAND: (f64, f64) = (25.0, 2.0);
-/// Valuation: P/B 30+ → 0, 2 → 100 (inverted).
-const VALUATION_PB_BAND: (f64, f64) = (30.0, 2.0);
 /// Momentum (context, outside the letter): trailing return −30% → 0, +30% → 100.
 const MOMENTUM_TRAILING_RETURN_BAND: (f64, f64) = (-0.30, 0.30);
-/// Risk: per-period (daily) realized volatility 4.5%+ → 0, 0.5% → 100 (inverted —
-/// calmer is safer).
-const RISK_VOLATILITY_BAND: (f64, f64) = (0.045, 0.005);
-/// Risk: debt/equity 2.5×+ → 0, unlevered → 100 (inverted). A **negative**
-/// debt/equity (negative equity — levered beyond the equity base) scores 0, the
-/// mirror of the negative-P/E rule: the inverted clamp would otherwise read it as
-/// maximally safe (`risk_score`).
-const RISK_DEBT_EQUITY_BAND: (f64, f64) = (2.5, 0.0);
 
 /// The grade-parameter version, stamped on each run's audit
 /// (`HoldingAudit.grade_parameter_version`) so a parameter boundary — a band
@@ -106,9 +91,16 @@ const RISK_DEBT_EQUITY_BAND: (f64, f64) = (2.5, 0.0);
 // v2.3 (2026-08-30, Review 2 N5): the fund valuation admits a sector-P/E
 // surface only when both exchange legs served, so a partial board response can
 // no longer move a fund's valuation sub-score or letter without a source gap.
+// v3 (2026-10-13, the factor machinery's task 2): a stock's quality, valuation,
+// risk and momentum sub-scores are the factor composite's axes
+// (`portfolio::factors`) — sector- and history-normalized factors chosen by the
+// metric class — replacing the clamped maps over margins, multiples, volatility
+// and leverage; the letter cutoffs move to A 70 / B 60 / C 45 / D 35 on both
+// branches, the weights unchanged. The fund's sub-scores read as before, so only
+// its letter can move.
 // Consumers read what a boundary changed through [`grade_parameter_change`] —
 // extend it with every bump.
-pub const GRADE_PARAMETER_VERSION: &str = "grade-v2.3";
+pub const GRADE_PARAMETER_VERSION: &str = "grade-v3";
 
 /// What a grade-parameter boundary changed for a persisted record — the meaning a
 /// stamp mismatch carries to its consumer (the self-review's method-change
@@ -125,6 +117,29 @@ pub(crate) enum GradeParameterChange {
     /// The fund sector-P/E source now requires both exchange legs. A fund's
     /// valuation sub-score and letter can move on the same served rows.
     FundSectorPeBasis,
+    /// A stock's sub-scores are rebuilt from the factor composite — every score
+    /// and the letter can move with no input change.
+    FactorScores,
+    /// Only the letter cutoffs moved: a fund's letter can move, its scores
+    /// cannot.
+    LetterCutoffs,
+}
+
+impl GradeParameterChange {
+    /// Which change a boundary crossing several names: the stock's factor
+    /// rebuild over the letter recalibration it supersedes; on the fund branch
+    /// the source-basis change over the momentum re-homing, and the redrawn
+    /// cutoffs below every earlier fund change, so a fund prior across one
+    /// keeps that change's sentence.
+    fn precedence(self) -> u8 {
+        match self {
+            GradeParameterChange::FactorScores => 4,
+            GradeParameterChange::Letters => 3,
+            GradeParameterChange::FundSectorPeBasis => 2,
+            GradeParameterChange::FundMomentum => 1,
+            GradeParameterChange::LetterCutoffs => 0,
+        }
+    }
 }
 
 /// The branch a stamped record was graded on. The fund path carries its own
@@ -161,6 +176,13 @@ const GRADE_PARAMETER_HISTORY: &[(
     // v2.3: a one-board sector-P/E response is a typed gap rather than a fund
     // valuation input. Stock valuation never reads this source.
     ("grade-v2.3", None, Some(GradeParameterChange::FundSectorPeBasis)),
+    // v3: the stock sub-scores rebuilt from the factor composite; the shared
+    // cutoffs redrawn, so a fund's letter alone can move.
+    (
+        "grade-v3",
+        Some(GradeParameterChange::FactorScores),
+        Some(GradeParameterChange::LetterCutoffs),
+    ),
 ];
 
 /// The change a prior record's stamp sits across on `branch` — the branch the
@@ -187,18 +209,9 @@ pub(crate) fn grade_parameter_change(
             GradeBranch::Stock => *stock,
             GradeBranch::Fund => *fund,
         })
-        // A general letter recalibration dominates; otherwise the more recent
-        // fund source-basis change dominates the older momentum-only re-homing.
-        .fold(None, |acc, change| match (acc, change) {
-            (Some(GradeParameterChange::Letters), _) | (_, GradeParameterChange::Letters) => {
-                Some(GradeParameterChange::Letters)
-            }
-            (Some(GradeParameterChange::FundSectorPeBasis), _)
-            | (_, GradeParameterChange::FundSectorPeBasis) => {
-                Some(GradeParameterChange::FundSectorPeBasis)
-            }
-            _ => Some(change),
-        })
+        // The highest-precedence change names the boundary
+        // (`GradeParameterChange::precedence`).
+        .max_by_key(|change| change.precedence())
 }
 
 /// Fallback three-month scenario half-band (fraction of the base target) when
@@ -1211,6 +1224,12 @@ pub struct EngineOutput {
     /// stock path; `None` on the fund path (its settled flat driver prices no driver
     /// trajectory to invert), the current-multiple carry.
     pub implied_expectations: Option<ImpliedExpectations>,
+    /// The factor composite a stock's sub-scores are its axes of, with every
+    /// factor's methodology exposed; `None` on the fund path.
+    pub factors: Option<FactorComposite>,
+    /// The value-creation read the composite's spreads stand on — the prompt
+    /// names each spread's return and hurdle from it; `None` on the fund path.
+    pub value_creation: Option<ValueCreationRead>,
 }
 
 /// What the engine resolved to: an analysis, or an explicit abstention when the
@@ -1369,14 +1388,42 @@ pub fn usable_price(value: Option<f64>) -> Option<f64> {
 /// review's Codex I16, its reviewer round (the stamp off its Codex round 1;
 /// ruled 2026-08-29).
 /// v5 rejects unverified statement units and routes option-overlay funds to role/risk.
-pub const EVIDENCE_FLOOR_VERSION: &str = "evidence-floor-v5";
+/// v6 (grade-v3): a stock's letter sub-score is real when at least one of its
+/// factor-composite axis's factors resolved ([`letter_axis`]), where under v5 it
+/// was real when its clamped map had an input.
+pub const EVIDENCE_FLOOR_VERSION: &str = "evidence-floor-v6";
+
+/// The profile labels a stock's grade reads: the sector picks its factors'
+/// bands, the industry with the sector its metric class
+/// (`portfolio::factors::metric_class`). Either may be absent — an unverified
+/// profile still grades, on the market-wide row and the general factor set.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct GradeProfile<'a> {
+    pub sector: Option<&'a str>,
+    pub industry: Option<&'a str>,
+}
+
+/// A letter axis's score — the composite's mean over the axis's factors, an
+/// unresolved factor at its neutral midpoint — when at least one of its factors
+/// resolved; `None` when every factor was imputed, so the axis is not a real
+/// sub-score.
+pub(crate) fn letter_axis(composite: &FactorComposite, axis: Axis) -> Option<f64> {
+    composite
+        .factors
+        .iter()
+        .any(|f| f.factor.axis() == axis && !f.imputed)
+        .then(|| composite.axes.iter().find(|a| a.axis == axis).map(|a| a.score))
+        .flatten()
+}
 
 /// Analyze a holding's financials into sub-scores, a grade, and scenario targets — or
-/// abstain. The evidence floor fails when there is no usable current price
-/// ([`usable_price`] — nothing to target or value against) or fewer than
-/// [`MIN_SUBSCORES_FOR_GRADE`] sub-scores are computable; either is an explicit
-/// `insufficient-evidence`, never a low-conviction guess.
-pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors) -> EngineVerdict {
+/// abstain. The sub-scores are the factor composite's axes — quality, value, low
+/// risk and momentum — under the profile's sector and metric class, with no
+/// archetype and no revision pace. The evidence floor fails when there is no
+/// usable current price ([`usable_price`] — nothing to target or value against)
+/// or fewer than [`MIN_SUBSCORES_FOR_GRADE`] letter sub-scores are real; either
+/// is an explicit `insufficient-evidence`, never a low-conviction guess.
+pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors, profile: GradeProfile) -> EngineVerdict {
     if !fin.unit_issues.is_empty() {
         return EngineVerdict::InsufficientEvidence(format!(
             "unsupported financial units: {}",
@@ -1389,10 +1436,21 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors) -> EngineVerdict {
     }
     let metrics = compute_metrics(fin);
 
-    let quality = quality_score(&metrics);
-    let valuation = valuation_score(&metrics);
-    let momentum = momentum_score(&metrics);
-    let risk = risk_score(&metrics);
+    let value_creation = value_creation_read(fin, profile.sector, rates.dgs10);
+    let factors = factor_composite(
+        &FactorInputs {
+            fin,
+            sector: profile.sector,
+            industry: profile.industry,
+            value_creation: &value_creation,
+            revision_pace: None,
+        },
+        None,
+    );
+    let quality = letter_axis(&factors, Axis::Quality);
+    let valuation = letter_axis(&factors, Axis::Value);
+    let momentum = letter_axis(&factors, Axis::Momentum);
+    let risk = letter_axis(&factors, Axis::LowRisk);
 
     // The evidence floor counts **letter** sub-scores only — momentum is computed
     // alongside but lives outside the letter (`docs/portfolio-analysis.md` §Starting
@@ -1477,6 +1535,8 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors) -> EngineVerdict {
         fund_class_label: None,
         quick_basis: Some(bundle.basis),
         implied_expectations: bundle.implied,
+        factors: Some(factors),
+        value_creation: Some(value_creation),
     }))
 }
 
@@ -1555,58 +1615,13 @@ fn average(parts: &[Option<f64>]) -> Option<f64> {
     }
 }
 
-/// Quality (higher better): profitability margins on one statement basis.
-fn quality_score(m: &ComputedMetrics) -> Option<f64> {
-    let (nl, nh) = QUALITY_NET_MARGIN_BAND;
-    let (gl, gh) = QUALITY_GROSS_MARGIN_BAND;
-    average(&[
-        m.net_margin.map(|x| scale(x, nl, nh)),
-        m.gross_margin.map(|x| scale(x, gl, gh)),
-    ])
-}
-
-/// Valuation (higher better == cheaper): inverted multiples. A negative P/E (no
-/// earnings) is not "cheap" — it scores low rather than off the scale.
-fn valuation_score(m: &ComputedMetrics) -> Option<f64> {
-    let (pel, peh) = VALUATION_PE_BAND;
-    let (psl, psh) = VALUATION_PS_BAND;
-    let (pbl, pbh) = VALUATION_PB_BAND;
-    let pe = m.pe_ratio.map(|x| {
-        if x <= 0.0 {
-            VALUATION_NEGATIVE_PE_SCORE
-        } else {
-            scale(x, pel, peh)
-        }
-    });
-    average(&[
-        pe,
-        m.ps_ratio.map(|x| scale(x, psl, psh)),
-        m.pb_ratio.map(|x| scale(x, pbl, pbh)),
-    ])
-}
-
 /// Momentum (higher better): trailing price return over the short undated
-/// `price_history` window — the one momentum read. The fund path scores through
-/// this same function over its [`compute_metrics`] price legs, so no second
-/// window or band can drift from the stock read (`docs/portfolio-analysis.md`
-/// §Starting parameters).
+/// `price_history` window — the fund branch's momentum read, over its
+/// [`compute_metrics`] price legs. A stock's momentum is the factor composite's
+/// momentum axis (`docs/portfolio-analysis.md` §Starting parameters).
 pub(crate) fn momentum_score(m: &ComputedMetrics) -> Option<f64> {
     let (lo, hi) = MOMENTUM_TRAILING_RETURN_BAND;
     m.trailing_return.map(|r| scale(r, lo, hi))
-}
-
-/// Risk (higher == safer): low realized volatility and low leverage. Negative
-/// equity makes the D/E ratio negative — levered beyond the equity base, not
-/// unlevered — so it takes the band's floor rather than riding the inverted
-/// clamp to "maximally safe" (the mirror of the negative-P/E rule).
-fn risk_score(m: &ComputedMetrics) -> Option<f64> {
-    let (vl, vh) = RISK_VOLATILITY_BAND;
-    let (dl, dh) = RISK_DEBT_EQUITY_BAND;
-    average(&[
-        m.return_volatility.map(|v| scale(v, vl, vh)),
-        m.debt_to_equity
-            .map(|d| if d < 0.0 { 0.0 } else { scale(d, dl, dh) }),
-    ])
 }
 
 /// Simple total return from the first to the last close.
@@ -2841,8 +2856,9 @@ pub fn assign_stock_tier(
         || annual_vol.map(|v| v > TIER_HIGH_MIN_ANNUAL_VOL).unwrap_or(false)
         // Negative equity is levered beyond the equity base — maximal leverage, not
         // minimal. The naked `>` read it as passing neither leg, so a negative-book
-        // issuer fell through to the Low conjunction below. Same stance as
-        // `risk_score`'s `RISK_DEBT_EQUITY_BAND` guard, which scores it 0.
+        // issuer fell through to the Low conjunction below. Same stance as the
+        // debt / equity factor, which scores it the band's floor
+        // (`portfolio::factors`).
         || m.debt_to_equity.map(|d| !(0.0..=TIER_HIGH_MIN_DEBT_EQUITY).contains(&d)).unwrap_or(false)
         || profitable.map(|p| !p).unwrap_or(false)
         || drawdown.map(|d| d > TIER_HIGH_MIN_DRAWDOWN).unwrap_or(false);
@@ -3552,8 +3568,11 @@ mod tests {
                 revenue: Some(100.0 - i as f64),
                 eps_diluted: Some(1.55 - 0.01 * i as f64),
                 diluted_shares: Some(1.5e10),
-                net_income: None,
-                gross_profit: None,
+                // Net income on the market capitalization's scale (an earnings
+                // yield near 3%), gross profit on revenue's — the factor
+                // composite's value and quality legs (grade-v3).
+                net_income: Some(2.5e10),
+                gross_profit: Some(45.0),
                 cost_of_revenue: None,
                 operating_income: None,
                 research_and_development: None,
@@ -3603,7 +3622,18 @@ mod tests {
             quarterly_cash_flow: vec![],
             cash_and_equivalents: None,
             short_term_investments: None,
-            quarterly_balance_sheet: vec![],
+            quarterly_balance_sheet: ends
+                .iter()
+                .map(|end| QuarterlyBalanceSheetRow {
+                    period_end: end.clone(),
+                    total_assets: Some(600.0),
+                    total_debt: Some(100.0),
+                    total_equity: Some(200.0),
+                    cash_and_equivalents: Some(50.0),
+                    short_term_investments: Some(0.0),
+                    ..Default::default()
+                })
+                .collect(),
             financial_scores: None,
             consensus: Some(ConsensusEstimate {
                 period_end: "2027-06-30".into(),
@@ -3625,13 +3655,13 @@ mod tests {
             year_high: None,
             year_low: None,
             gaps: vec![],
-            beta: None,
+            beta: Some(1.1),
         }
     }
 
     #[test]
     fn strong_company_grades_and_computes_v2_targets() {
-        match analyze(&strong(), &rates()) {
+        match analyze(&strong(), &rates(), Default::default()) {
             EngineVerdict::Analyzed(out) => {
                 for s in [
                     out.sub_scores.quality,
@@ -3677,8 +3707,8 @@ mod tests {
 
     #[test]
     fn grade_is_deterministic_for_the_same_inputs() {
-        let a = analyze(&strong(), &rates());
-        let b = analyze(&strong(), &rates());
+        let a = analyze(&strong(), &rates(), Default::default());
+        let b = analyze(&strong(), &rates(), Default::default());
         assert_eq!(a, b, "same financials always grade identically");
     }
 
@@ -3686,7 +3716,7 @@ mod tests {
     fn missing_price_abstains_below_the_evidence_floor() {
         let mut fin = strong();
         fin.current_price = None;
-        match analyze(&fin, &rates()) {
+        match analyze(&fin, &rates(), Default::default()) {
             EngineVerdict::InsufficientEvidence(reason) => {
                 assert!(reason.contains("no current price"), "{reason}");
             }
@@ -3705,7 +3735,7 @@ mod tests {
         for served in [0.0, -5.0, f64::NAN, f64::INFINITY] {
             let mut fin = strong();
             fin.current_price = Some(served);
-            match analyze(&fin, &rates()) {
+            match analyze(&fin, &rates(), Default::default()) {
                 EngineVerdict::InsufficientEvidence(reason) => {
                     assert!(reason.contains("no usable current price"), "{served}: {reason}");
                     assert!(reason.contains(&format!("served {served}")), "{served}: {reason}");
@@ -3725,7 +3755,7 @@ mod tests {
             ps_ratio: Some(3.0),
             ..CompanyFinancials::default()
         };
-        match analyze(&fin, &rates()) {
+        match analyze(&fin, &rates(), Default::default()) {
             EngineVerdict::InsufficientEvidence(reason) => {
                 assert!(reason.contains("sub-scores"), "{reason}");
             }
@@ -3740,7 +3770,7 @@ mod tests {
         // pricing off nothing (`docs/portfolio-analysis.md` §Evidence floor).
         let mut fin = strong();
         fin.consensus = None;
-        match analyze(&fin, &rates()) {
+        match analyze(&fin, &rates(), Default::default()) {
             EngineVerdict::InsufficientEvidence(reason) => {
                 assert!(reason.contains("no-admissible-driver"), "{reason}");
             }
@@ -3755,7 +3785,7 @@ mod tests {
         c.eps_mid = Some(-0.50); // pre-profit: reciprocal-yield math is meaningless
         c.eps_low = None;
         c.eps_high = None;
-        match analyze(&fin, &rates()) {
+        match analyze(&fin, &rates(), Default::default()) {
             EngineVerdict::Analyzed(out) => {
                 assert_eq!(
                     out.target_meta.driver_rung,
@@ -3772,7 +3802,7 @@ mod tests {
         let c = fin.consensus.as_mut().unwrap();
         c.eps_low = None;
         c.eps_high = None;
-        match analyze(&fin, &rates()) {
+        match analyze(&fin, &rates(), Default::default()) {
             EngineVerdict::Analyzed(out) => {
                 assert!(out.target_meta.flat_driver);
                 let tm = out.price_targets.twelve_month.unwrap();
@@ -3900,7 +3930,7 @@ mod tests {
             r.revenue = None;
             r.diluted_shares = Some(1e-300);
         }
-        match analyze(&fin, &rates()) {
+        match analyze(&fin, &rates(), Default::default()) {
             EngineVerdict::InsufficientEvidence(reason) => {
                 assert!(reason.contains("non-finite"), "{reason}");
             }
@@ -4333,14 +4363,14 @@ mod tests {
             c.periods_used = 2;
             c.near_weight = 0.3;
         }
-        match analyze(&fin, &rates()) {
+        match analyze(&fin, &rates(), Default::default()) {
             EngineVerdict::Analyzed(out) => {
                 assert_eq!(out.target_meta.consensus_rows, Some(2));
                 assert_eq!(out.target_meta.consensus_near_weight, Some(0.3));
             }
             other => panic!("{other:?}"),
         }
-        match analyze(&strong(), &rates()) {
+        match analyze(&strong(), &rates(), Default::default()) {
             EngineVerdict::Analyzed(out) => {
                 assert_eq!(out.target_meta.consensus_rows, Some(1), "fixture floor");
                 assert_eq!(out.target_meta.consensus_near_weight, None);
@@ -4595,7 +4625,7 @@ mod tests {
         let c = fin.consensus.as_mut().unwrap();
         c.eps_growth_rows = ConsensusGrowthRows { near: Some(6.5), far: Some(7.8) };
         c.revenue_growth_rows = ConsensusGrowthRows { near: Some(430.0e9), far: Some(400.0e9) };
-        let out = match analyze(&fin, &rates()) {
+        let out = match analyze(&fin, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -4688,16 +4718,16 @@ mod tests {
     }
 
     /// A stamp boundary is read cumulatively from the history on the prior
-    /// record's branch: the current stamp is no boundary; a stock crossing
-    /// v2.1 → v2.3 sees nothing while a fund sees the complete-exchange
-    /// correction (which dominates the earlier momentum re-homing); a
-    /// `grade-v2` stock crosses the signed-P/E letter change; a prior
-    /// with no stamp and an unrecognized stamp assert no cause. The history's
-    /// last row must be the current stamp.
+    /// record's branch: the current stamp is no boundary; every earlier stock
+    /// prior crosses the grade-v3 factor rebuild, while a fund at v2.3 sees the
+    /// cutoffs alone and an older fund the complete-exchange correction (which
+    /// dominates the cutoffs and the earlier momentum re-homing); a prior with no
+    /// stamp and an unrecognized stamp assert no cause. The history's last row
+    /// must be the current stamp.
     #[test]
     fn grade_parameter_change_reads_the_history_per_branch() {
         use GradeBranch::{Fund, Stock};
-        use GradeParameterChange::{FundSectorPeBasis, Letters};
+        use GradeParameterChange::{FactorScores, FundSectorPeBasis, LetterCutoffs};
         assert_eq!(
             GRADE_PARAMETER_HISTORY.last().map(|(v, _, _)| *v),
             Some(GRADE_PARAMETER_VERSION),
@@ -4714,25 +4744,25 @@ mod tests {
         // No stamp at all (no audit row for the symbol) asserts no cause either.
         assert_eq!(grade_parameter_change(None, Stock), None);
         assert_eq!(grade_parameter_change(None, Fund), None);
-        assert_eq!(grade_parameter_change(Some("grade-v2.1"), Stock), None);
-        assert_eq!(grade_parameter_change(Some("grade-v2.2"), Stock), None);
-        assert_eq!(
-            grade_parameter_change(Some("grade-v2.2"), Fund),
-            Some(FundSectorPeBasis)
-        );
-        assert_eq!(
-            grade_parameter_change(Some("grade-v2.1"), Fund),
-            Some(FundSectorPeBasis),
-            "the letter-bearing source-basis change dominates the older momentum move"
-        );
-        assert_eq!(
-            grade_parameter_change(Some("grade-v2"), Stock),
-            Some(Letters)
-        );
-        assert_eq!(
-            grade_parameter_change(Some("grade-v2"), Fund),
-            Some(FundSectorPeBasis)
-        );
+        // Every earlier stock prior crosses the factor rebuild, which dominates
+        // the v2.1 letter change.
+        for prior in ["grade-v2", "grade-v2.1", "grade-v2.2", "grade-v2.3"] {
+            assert_eq!(grade_parameter_change(Some(prior), Stock), Some(FactorScores), "{prior}");
+        }
+        // A fund prior at v2.3 crosses the cutoffs alone; an older one the
+        // complete-exchange correction, which also moves the letter and
+        // dominates both the cutoffs and the momentum re-homing.
+        assert_eq!(grade_parameter_change(Some("grade-v2.3"), Fund), Some(LetterCutoffs));
+        // The cutoffs rank below every earlier fund change, the momentum
+        // re-homing included, though no prior crosses those two alone.
+        assert!(LetterCutoffs.precedence() < GradeParameterChange::FundMomentum.precedence());
+        for prior in ["grade-v2", "grade-v2.1", "grade-v2.2"] {
+            assert_eq!(
+                grade_parameter_change(Some(prior), Fund),
+                Some(FundSectorPeBasis),
+                "{prior}"
+            );
+        }
     }
 
     /// The target stamp reads its own history the same way — per branch,
@@ -4850,17 +4880,16 @@ mod tests {
             })
         };
         assert_eq!(f(95.0, 0.0), Grade::A);
-        assert_eq!(f(72.0, 0.0), Grade::B);
-        assert_eq!(f(60.0, 0.0), Grade::C);
-        assert_eq!(f(45.0, 0.0), Grade::D);
+        assert_eq!(f(65.0, 0.0), Grade::B);
+        assert_eq!(f(50.0, 0.0), Grade::C, "a sector-typical name reads C");
+        assert_eq!(f(40.0, 0.0), Grade::D);
         assert_eq!(f(10.0, 0.0), Grade::F);
         // Momentum no longer moves the letter — the settled ex-momentum re-weight.
-        assert_eq!(f(72.0, 0.0), f(72.0, 100.0));
+        assert_eq!(f(65.0, 0.0), f(65.0, 100.0));
     }
 
-    /// The letter cutoffs are ≥-inclusive at exactly A 85 / B 70 / C 55 / D 40
-    /// (`docs/portfolio-analysis.md` §Starting parameters), certified with the
-    /// grade-band shadow-tune slice.
+    /// The letter cutoffs are ≥-inclusive at exactly A 70 / B 60 / C 45 / D 35
+    /// (`docs/portfolio-analysis.md` §Starting parameters, grade-v3).
     #[test]
     fn letter_cutoffs_are_inclusive_at_the_documented_boundaries() {
         let at = |v: f64| {
@@ -4871,6 +4900,7 @@ mod tests {
                 risk: v,
             })
         };
+        assert_eq!((GRADE_A, GRADE_B, GRADE_C, GRADE_D), (70.0, 60.0, 45.0, 35.0));
         assert_eq!(at(GRADE_A), Grade::A);
         assert_eq!(at(GRADE_A - 0.01), Grade::B);
         assert_eq!(at(GRADE_B), Grade::B);
@@ -4881,18 +4911,20 @@ mod tests {
         assert_eq!(at(GRADE_D - 0.01), Grade::F);
     }
 
-    /// A missing sub-score is imputed to the neutral midpoint (50) — the composite
-    /// divides by the full weight sum, never renormalizes over the present axes —
-    /// and the letter carries the visible low-confidence marker
-    /// (`docs/portfolio-analysis.md` §Starting parameters).
+    /// A letter axis none of whose factors resolved is imputed to the neutral
+    /// midpoint (50) — the composite divides by the full weight sum, never
+    /// renormalizes over the present axes — and the letter carries the visible
+    /// low-confidence marker (`docs/portfolio-analysis.md` §Starting parameters).
     #[test]
     fn missing_subscore_imputes_neutral_and_marks_low_confidence() {
         let mut fin = strong();
-        // Kill both quality legs (margins) while valuation/risk stay computable;
-        // the multiples ride the fixture's direct pe/ps/pb fields.
-        fin.net_income = None;
-        fin.gross_profit = None;
-        let EngineVerdict::Analyzed(out) = analyze(&fin, &rates()) else {
+        // Kill every quality factor's input — gross profit, operating income (the
+        // ROIC spread's NOPAT) and the cash-flow rows were never served — while
+        // the value and low-risk axes stay real.
+        for row in &mut fin.quarterly_income {
+            row.gross_profit = None;
+        }
+        let EngineVerdict::Analyzed(out) = analyze(&fin, &rates(), Default::default()) else {
             panic!("two real sub-scores must still grade");
         };
         assert_eq!(out.sub_scores.quality, 50.0, "imputed to the neutral midpoint");
@@ -4901,31 +4933,136 @@ mod tests {
         // full-weight-sum arithmetic, not a present-axes renormalization.
         assert_eq!(out.grade, grade_from_subscores(&out.sub_scores));
         // And a fully-supplied strong company carries no marker.
-        let EngineVerdict::Analyzed(full) = analyze(&strong(), &rates()) else {
+        let EngineVerdict::Analyzed(full) = analyze(&strong(), &rates(), Default::default()) else {
             panic!("strong fixture grades");
         };
         assert!(!full.low_confidence_grade);
     }
 
-    /// A negative P/E (no earnings) scores low — never "cheap", never off the scale
-    /// (`docs/portfolio-analysis.md` §Starting parameters).
+    /// A stock's sub-scores are its factor composite's axes: quality, value,
+    /// low risk and momentum, each the axis mean when one of its factors
+    /// resolved (`docs/portfolio-analysis.md` §Starting parameters).
     #[test]
-    fn negative_pe_scores_low_never_cheap() {
-        let m = |pe: Option<f64>| ComputedMetrics {
-            pe_ratio: pe,
-            ..ComputedMetrics::default()
+    fn a_stocks_sub_scores_are_its_factor_axes() {
+        let EngineVerdict::Analyzed(out) = analyze(&strong(), &rates(), Default::default()) else {
+            panic!("strong fixture grades");
         };
-        let negative = valuation_score(&m(Some(-5.0))).unwrap();
-        let cheap = valuation_score(&m(Some(12.0))).unwrap();
-        assert_eq!(negative, 20.0, "the fixed low score for a loss-maker");
-        assert!(negative < cheap, "a loss-maker must never outscore a cheap earner");
+        let factors = out.factors.as_ref().expect("a stock carries its composite");
+        assert_eq!(factors.archetype, None);
+        assert_eq!(factors.class, crate::portfolio::factors::MetricClass::General);
+        assert_eq!(factors.sector_anchor, "market-wide", "no profile sector");
+        let axis = |a: Axis| factors.axes.iter().find(|x| x.axis == a).unwrap().score;
+        assert_eq!(out.sub_scores.quality, axis(Axis::Quality));
+        assert_eq!(out.sub_scores.valuation, axis(Axis::Value));
+        assert_eq!(out.sub_scores.risk, axis(Axis::LowRisk));
+        // The fixture's dated closes are quarterly, so no momentum factor
+        // resolves: the momentum score stands at the neutral midpoint.
+        assert_eq!(out.sub_scores.momentum, 50.0);
+        assert_eq!(letter_axis(factors, Axis::Momentum), None);
     }
 
-    /// The tier legs read a negative debt/equity the same way `risk_score` does —
-    /// as maximal leverage. The naked `>` / `<` comparisons passed neither the High
-    /// leg nor failed the Low one, so a negative-book large cap landed on `Low`:
-    /// the smallest hurdle premium, admitting the add family on a scenario the
-    /// correct tier leaves indeterminate.
+    /// The profile's sector and industry reach the composite: a bank grades on
+    /// the bank row and the bank factor set.
+    #[test]
+    fn the_grade_profile_picks_the_class_and_the_row() {
+        let profile = GradeProfile {
+            sector: Some("Financial Services"),
+            industry: Some("Banks - Regional"),
+        };
+        let EngineVerdict::Analyzed(out) = analyze(&strong(), &rates(), profile) else {
+            panic!("a bank grades on its own factors");
+        };
+        let factors = out.factors.unwrap();
+        assert_eq!(factors.class, crate::portfolio::factors::MetricClass::Bank);
+        assert_eq!(factors.sector_anchor, "Banks");
+        assert!(factors
+            .factors
+            .iter()
+            .all(|f| f.factor != crate::portfolio::factors::Factor::DebtToEquity));
+    }
+
+    /// An equity REIT grades end to end on its own row and factor set: the FFO
+    /// proxy on the value and quality axes, debt over total assets on the
+    /// low-risk axis.
+    #[test]
+    fn an_equity_reit_grades_on_its_ffo_proxy_and_asset_leverage() {
+        use crate::portfolio::factors::{Factor, MetricClass};
+        let profile = GradeProfile { sector: Some("Real Estate"), industry: Some("REIT - Industrial") };
+        // The FFO proxy reads the cash-flow statement's D&A beside net income;
+        // without it only the low-risk axis is real, so the REIT abstains.
+        assert!(matches!(
+            analyze(&strong(), &rates(), profile),
+            EngineVerdict::InsufficientEvidence(reason) if reason.starts_with("only 1 of 3")
+        ));
+        let mut fin = strong();
+        fin.quarterly_cash_flow = fin
+            .quarterly_income
+            .iter()
+            .map(|row| QuarterlyCashFlowRow {
+                period_end: row.period_end.clone(),
+                depreciation_and_amortization: Some(1.0e10),
+                ..Default::default()
+            })
+            .collect();
+        let EngineVerdict::Analyzed(out) = analyze(&fin, &rates(), profile) else {
+            panic!("a REIT grades on its own factors");
+        };
+        let c = out.factors.as_ref().unwrap();
+        assert_eq!((c.class, c.sector_anchor.as_str()), (MetricClass::EquityReit, "REITs"));
+        let resolved = |f: Factor| c.factors.iter().any(|s| s.factor == f && !s.imputed);
+        for f in [Factor::FfoYield, Factor::FfoToAssets, Factor::DebtToAssets] {
+            assert!(resolved(f), "{f:?}");
+        }
+        for f in [Factor::EarningsYield, Factor::GrossProfitability, Factor::DebtToEquity] {
+            assert!(c.factors.iter().all(|s| s.factor != f), "{f:?} is a general factor");
+        }
+        assert_eq!(Some(out.sub_scores.valuation), letter_axis(c, Axis::Value));
+        assert_eq!(Some(out.sub_scores.quality), letter_axis(c, Axis::Quality));
+        assert!(!out.low_confidence_grade);
+    }
+
+    /// The evidence floor counts real letter axes: one real axis abstains, two
+    /// grade (`docs/portfolio-analysis.md` §Evidence floor).
+    #[test]
+    fn the_floor_needs_two_real_letter_axes() {
+        // Only the low-risk axis: no statement window at all, a served beta.
+        let mut fin = strong();
+        fin.quarterly_income.clear();
+        fin.quarterly_balance_sheet.clear();
+        assert!(matches!(
+            analyze(&fin, &rates(), Default::default()),
+            EngineVerdict::InsufficientEvidence(reason) if reason.starts_with("only 1 of 3")
+        ));
+        // The statements back with no gross profit: the quality axis stays
+        // imputed, but net income makes the value axis real beside the
+        // low-risk axis — two real axes grade.
+        let mut fin = strong();
+        for row in &mut fin.quarterly_income {
+            row.gross_profit = None;
+        }
+        assert!(matches!(analyze(&fin, &rates(), Default::default()), EngineVerdict::Analyzed(_)));
+    }
+
+    /// A loss-maker's earnings yield sits below its band's floor — never
+    /// "cheap" — so its value axis reads below a profitable twin's.
+    #[test]
+    fn a_loss_never_reads_cheap() {
+        let mut loss = strong();
+        for row in &mut loss.quarterly_income {
+            row.net_income = Some(-2.5e10);
+        }
+        let value = |fin: &CompanyFinancials| match analyze(fin, &rates(), Default::default()) {
+            EngineVerdict::Analyzed(out) => out.sub_scores.valuation,
+            other => panic!("{other:?}"),
+        };
+        assert!(value(&loss) < value(&strong()));
+    }
+
+    /// The tier legs read a negative debt/equity as maximal leverage, as the
+    /// debt / equity factor does. The naked `>` / `<` comparisons passed neither
+    /// the High leg nor failed the Low one, so a negative-book large cap landed
+    /// on `Low`: the smallest hurdle premium, admitting the add family on a
+    /// scenario the correct tier leaves indeterminate.
     #[test]
     fn negative_equity_reads_as_maximal_leverage_in_the_tier_not_minimal() {
         // Strong on every other leg — large cap, profitable, calm — so only the
@@ -4942,13 +5079,6 @@ mod tests {
             RiskTier::High,
             "negative equity is levered beyond the equity base"
         );
-        // And the same input reads the same way on the risk sub-score's leverage
-        // leg — isolated, since `risk_score` averages it with the volatility leg.
-        let leverage_only = ComputedMetrics {
-            debt_to_equity: m.debt_to_equity,
-            ..ComputedMetrics::default()
-        };
-        assert_eq!(risk_score(&leverage_only).unwrap(), 0.0);
 
         // The Low conjunction rejects it on its own, independent of leg order.
         let low_ok = m
@@ -4956,19 +5086,6 @@ mod tests {
             .map(|d| (0.0..TIER_LOW_MAX_DEBT_EQUITY).contains(&d))
             .unwrap_or(false);
         assert!(!low_ok, "a negative ratio must never satisfy the Low leg");
-    }
-
-    /// A negative debt/equity (negative equity) takes the leverage band's floor —
-    /// the inverted clamp must never read "levered beyond the equity base" as
-    /// maximally safe (the grade-v2 guard, the negative-P/E rule's mirror).
-    #[test]
-    fn negative_debt_equity_scores_zero_never_safe() {
-        let m = |de: Option<f64>| ComputedMetrics {
-            debt_to_equity: de,
-            ..ComputedMetrics::default()
-        };
-        assert_eq!(risk_score(&m(Some(-2.9))).unwrap(), 0.0);
-        assert_eq!(risk_score(&m(Some(0.0))).unwrap(), 100.0, "unlevered stays safest");
     }
 
     #[test]
@@ -5453,17 +5570,135 @@ mod tests {
         assert!(sig.iv_skew.unwrap() > 0.0);
     }
 
-    /// Certification replay over a persisted live run — the grade-band shadow-tune
-    /// slice's opening step (`docs/verification/2026-07-31-first-live-portfolio-run.md`
-    /// §F4: the sub-score formulas were judged by their outputs, never audited against
-    /// spec): recompute each priced holding's sub-scores and letter from its audit's
-    /// persisted metrics and diff them against the persisted verdict. Stocks get the
-    /// full derivation check; a priced fund's valuation/risk derive from the composite
-    /// path whose history inputs the audit doesn't carry, so funds get the
-    /// sub-scores→letter roll-up check only. Ignored like the live smokes: it reads a
-    /// run exported from a real store (`MARKET_SIGNAL_RUN_JSON` = path to a
-    /// `portfolio_runs.run_json` export), which holds a real book and never enters the
-    /// repo.
+    /// One candidate grade parameter set for the replay below: the letter
+    /// weights and cutoffs, the own-history leg's weight, a scale on every
+    /// band's half-width (1.0 is each factor's persisted band), and a shift on
+    /// every band's anchor.
+    struct GradeParams {
+        name: &'static str,
+        weights: (f64, f64, f64),
+        cutoffs: [f64; 4],
+        own_history_weight: f64,
+        half_width_scale: f64,
+        /// How far every band's anchor moves, in its persisted half-widths,
+        /// against the name — up for a higher-is-better factor, down for a
+        /// lower-is-better one — so a positive shift raises the bar on every
+        /// factor and a negative one lowers it (0.0 is each persisted anchor).
+        bar_shift: f64,
+    }
+
+    impl GradeParams {
+        /// The shipped constants — after a retune this is the NEW basis, not the
+        /// vintage the run was graded under.
+        fn shipped() -> GradeParams {
+            GradeParams {
+                name: "shipped",
+                weights: (W_QUALITY, W_VALUATION, W_RISK),
+                cutoffs: [GRADE_A, GRADE_B, GRADE_C, GRADE_D],
+                own_history_weight: crate::portfolio::factors::OWN_HISTORY_WEIGHT,
+                half_width_scale: 1.0,
+                bar_shift: 0.0,
+            }
+        }
+    }
+
+    /// A persisted composite replayed under `p`: each factor re-scored from its
+    /// persisted legs under its shifted and scaled band, the axes re-averaged,
+    /// the letter axes imputed where none of their factors resolved, then rolled
+    /// up. Returns the sub-scores, the 0–100 composite, the letter and the
+    /// low-confidence marker.
+    fn replay(c: &FactorComposite, p: &GradeParams) -> (SubScores, f64, Grade, bool) {
+        use crate::portfolio::factors::{rescore, Band};
+        let axis = |axis: Axis| -> Option<f64> {
+            let factors: Vec<_> = c.factors.iter().filter(|f| f.factor.axis() == axis).collect();
+            factors.iter().any(|f| !f.imputed).then(|| {
+                factors
+                    .iter()
+                    .map(|f| {
+                        let against = if f.factor.higher_is_better() { 1.0 } else { -1.0 };
+                        let band = Band {
+                            anchor: f.band.anchor + against * p.bar_shift * f.band.half_width,
+                            half_width: f.band.half_width * p.half_width_scale,
+                            ..f.band
+                        };
+                        rescore(f, band, p.own_history_weight)
+                    })
+                    .sum::<f64>()
+                    / factors.len() as f64
+            })
+        };
+        let (q, v, r) = (axis(Axis::Quality), axis(Axis::Value), axis(Axis::LowRisk));
+        let s = SubScores {
+            quality: q.unwrap_or(50.0),
+            valuation: v.unwrap_or(50.0),
+            momentum: axis(Axis::Momentum).unwrap_or(50.0),
+            risk: r.unwrap_or(50.0),
+        };
+        let (wq, wv, wr) = p.weights;
+        let composite = (s.quality * wq + s.valuation * wv + s.risk * wr) / (wq + wv + wr);
+        let [a, b, c_, d] = p.cutoffs;
+        let letter = if composite >= a {
+            Grade::A
+        } else if composite >= b {
+            Grade::B
+        } else if composite >= c_ {
+            Grade::C
+        } else if composite >= d {
+            Grade::D
+        } else {
+            Grade::F
+        };
+        (s, composite, letter, q.is_none() || v.is_none() || r.is_none())
+    }
+
+    /// The replay under the shipped constants reproduces the engine's own
+    /// sub-scores, letter and marker — the certification below stands on it.
+    #[test]
+    fn the_shipped_replay_reproduces_the_engines_letter() {
+        for profile in [
+            GradeProfile::default(),
+            GradeProfile { sector: Some("Technology"), industry: None },
+            GradeProfile { sector: Some("Financial Services"), industry: Some("Banks - Regional") },
+        ] {
+            let EngineVerdict::Analyzed(out) = analyze(&strong(), &rates(), profile) else {
+                panic!("strong fixture grades");
+            };
+            let (s, _, letter, low) = replay(out.factors.as_ref().unwrap(), &GradeParams::shipped());
+            let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+            assert!(close(s.quality, out.sub_scores.quality));
+            assert!(close(s.valuation, out.sub_scores.valuation));
+            assert!(close(s.momentum, out.sub_scores.momentum));
+            assert!(close(s.risk, out.sub_scores.risk));
+            assert_eq!((letter, low), (out.grade, out.low_confidence_grade));
+        }
+    }
+
+    /// The sweep's bar shift moves every band against the name: raised, no
+    /// factor scores higher and the composite falls; lowered, the reverse.
+    #[test]
+    fn the_bar_shift_raises_or_lowers_every_factors_bar() {
+        let profile = GradeProfile { sector: Some("Technology"), industry: None };
+        let EngineVerdict::Analyzed(out) = analyze(&strong(), &rates(), profile) else {
+            panic!("strong fixture grades");
+        };
+        let c = out.factors.as_ref().unwrap();
+        let composite = |bar_shift: f64| replay(c, &GradeParams { bar_shift, ..GradeParams::shipped() }).1;
+        let shipped = composite(0.0);
+        assert!(composite(0.25) < shipped, "{} vs {shipped}", composite(0.25));
+        assert!(composite(-0.25) > shipped, "{} vs {shipped}", composite(-0.25));
+    }
+
+    /// Certification replay over a persisted live run: recompute each priced
+    /// holding's sub-scores and letter and diff them against the persisted
+    /// verdict. A stock stamped with the current grade parameters replays from
+    /// its audit's persisted factor composite — every factor re-scored from its
+    /// persisted band and legs, the axes, the imputation and the letter; a
+    /// priced fund's valuation/risk derive from the composite-yield path whose
+    /// history inputs the audit doesn't carry, so funds (and an older-vintage
+    /// stock) get the sub-scores → letter roll-up check only. Ignored like the
+    /// live smokes: it reads a run exported from a real store
+    /// (`MARKET_SIGNAL_RUN_JSON` = path to a `portfolio_runs.run_json` export),
+    /// which holds a real book and never enters the repo.
     #[test]
     #[ignore]
     fn certify_run_grade_path() {
@@ -5480,7 +5715,7 @@ mod tests {
         let (mut derivation_mismatches, mut rollup_mismatches) = (0usize, 0usize);
 
         println!(
-            "symbol   | persisted Q/V/M/R → letter    | recomputed Q/V/M/R → letter   | missing inputs"
+            "symbol   | persisted Q/V/M/R → letter    | replayed Q/V/M/R → letter     | class, row, imputed"
         );
         for v in &run.verdicts {
             let crate::portfolio::VerdictDisposition::Priced(g) = &v.disposition else {
@@ -5490,7 +5725,6 @@ mod tests {
             let audit = audits
                 .get(v.symbol.as_str())
                 .unwrap_or_else(|| panic!("no audit row for {}", v.symbol));
-            let m = &audit.metrics;
 
             // Roll-up leg (every priced holding): the persisted sub-scores must
             // reproduce the persisted letter through the fixed weights and cutoffs.
@@ -5504,51 +5738,36 @@ mod tests {
                     rolled.as_str()
                 );
             }
-            if g.fund_class_label.is_some() {
+            if g.fund_class_label.is_some() || audit.grade_parameter_version != GRADE_PARAMETER_VERSION
+            {
                 continue;
             }
-            // The derivation leg replays the CURRENT band constants, so it only
-            // certifies a run stamped with the current grade parameter version —
-            // an older-vintage run keeps the roll-up check alone. (Run `3b21ae85`
-            // was derivation-certified exact against its own v1 bands on
-            // 2026-08-03, before the grade-v2 retune — the evidence record in
-            // `docs/verification/`.)
-            if audit.grade_parameter_version != GRADE_PARAMETER_VERSION {
-                continue;
-            }
+            let composite = audit
+                .factors
+                .as_ref()
+                .unwrap_or_else(|| panic!("a current-stamp stock carries its composite: {}", v.symbol));
 
-            // Derivation leg (stocks): metrics → sub-score maps → imputation → letter.
+            // Derivation leg (stocks): persisted factor legs → axes → imputation → letter.
             stocks += 1;
-            let q = quality_score(m);
-            let val = valuation_score(m);
-            let mom = momentum_score(m);
-            let r = risk_score(m);
-            let recomputed = SubScores {
-                quality: q.unwrap_or(50.0),
-                valuation: val.unwrap_or(50.0),
-                momentum: mom.unwrap_or(50.0),
-                risk: r.unwrap_or(50.0),
-            };
-            let letter = grade_from_subscores(&recomputed);
+            let (recomputed, _, letter, low) = replay(composite, &GradeParams::shipped());
             let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
             let ok = close(recomputed.quality, g.sub_scores.quality)
                 && close(recomputed.valuation, g.sub_scores.valuation)
                 && close(recomputed.momentum, g.sub_scores.momentum)
                 && close(recomputed.risk, g.sub_scores.risk)
                 && letter == g.grade
-                && (q.is_none() || val.is_none() || r.is_none()) == g.low_confidence_grade;
+                && low == g.low_confidence_grade;
             if !ok {
                 derivation_mismatches += 1;
             }
-            let gap = |name: &str, x: Option<f64>| {
-                if x.is_none() {
-                    format!("{name} ")
-                } else {
-                    String::new()
-                }
-            };
+            let imputed: Vec<String> = composite
+                .factors
+                .iter()
+                .filter(|f| f.imputed)
+                .map(|f| format!("{:?}", f.factor))
+                .collect();
             println!(
-                "{:8} | {:5.1}/{:5.1}/{:5.1}/{:5.1} → {} | {:5.1}/{:5.1}/{:5.1}/{:5.1} → {} {}| {}{}{}{}{}{}{}{}",
+                "{:8} | {:5.1}/{:5.1}/{:5.1}/{:5.1} → {} | {:5.1}/{:5.1}/{:5.1}/{:5.1} → {} {}| {:?}, {}, [{}]",
                 v.symbol,
                 g.sub_scores.quality,
                 g.sub_scores.valuation,
@@ -5561,14 +5780,9 @@ mod tests {
                 recomputed.risk,
                 letter.as_str(),
                 if ok { "" } else { "← MISMATCH " },
-                gap("net_margin", m.net_margin),
-                gap("gross_margin", m.gross_margin),
-                gap("pe", m.pe_ratio),
-                gap("ps", m.ps_ratio),
-                gap("pb", m.pb_ratio),
-                gap("vol", m.return_volatility),
-                gap("d/e", m.debt_to_equity),
-                gap("rev_growth", m.revenue_growth),
+                composite.class,
+                composite.sector_anchor,
+                imputed.join(" "),
             );
         }
         println!(
@@ -5583,69 +5797,6 @@ mod tests {
             rollup_mismatches, 0,
             "sub-scores → letter roll-up must reproduce the persisted grade"
         );
-    }
-
-    /// One candidate normalization-band set for the shadow-tune sweep below —
-    /// the same clamped-map shapes as the shipped formulas, parameterized.
-    struct BandSet {
-        name: &'static str,
-        nm: (f64, f64),
-        gm: (f64, f64),
-        pe: (f64, f64),
-        ps: (f64, f64),
-        pb: (f64, f64),
-        vol: (f64, f64),
-        de: (f64, f64),
-        /// Score a negative debt/equity (negative equity — levered beyond the
-        /// equity base) as 0 instead of letting the inverted clamp read it as
-        /// maximally safe (the mirror of the negative-P/E rule).
-        negative_de_scores_zero: bool,
-    }
-
-    impl BandSet {
-        fn scores(&self, m: &ComputedMetrics) -> (Option<f64>, Option<f64>, Option<f64>) {
-            let quality = average(&[
-                m.net_margin.map(|x| scale(x, self.nm.0, self.nm.1)),
-                m.gross_margin.map(|x| scale(x, self.gm.0, self.gm.1)),
-            ]);
-            let pe = m.pe_ratio.map(|x| {
-                if x <= 0.0 {
-                    VALUATION_NEGATIVE_PE_SCORE
-                } else {
-                    scale(x, self.pe.0, self.pe.1)
-                }
-            });
-            let valuation = average(&[
-                pe,
-                m.ps_ratio.map(|x| scale(x, self.ps.0, self.ps.1)),
-                m.pb_ratio.map(|x| scale(x, self.pb.0, self.pb.1)),
-            ]);
-            let de = m.debt_to_equity.map(|d| {
-                if d < 0.0 && self.negative_de_scores_zero {
-                    0.0
-                } else {
-                    scale(d, self.de.0, self.de.1)
-                }
-            });
-            let risk = average(&[
-                m.return_volatility.map(|v| scale(v, self.vol.0, self.vol.1)),
-                de,
-            ]);
-            (quality, valuation, risk)
-        }
-
-        fn letter(&self, m: &ComputedMetrics) -> (f64, Grade) {
-            let (q, v, r) = self.scores(m);
-            let s = SubScores {
-                quality: q.unwrap_or(50.0),
-                valuation: v.unwrap_or(50.0),
-                momentum: 50.0,
-                risk: r.unwrap_or(50.0),
-            };
-            let composite = (s.quality * W_QUALITY + s.valuation * W_VALUATION + s.risk * W_RISK)
-                / (W_QUALITY + W_VALUATION + W_RISK);
-            (composite, grade_from_subscores(&s))
-        }
     }
 
     /// Spearman rank correlation between two equal-length score vectors — the
@@ -5701,111 +5852,56 @@ mod tests {
         assert!((spearman(&ascending, &reversed) + 1.0).abs() < 1e-12);
     }
 
-    /// The grade-band shadow-tune sweep (the slice's closing step): candidate band
-    /// sets over the persisted metric surface AND the probe-refreshed surface
-    /// (`MARKET_SIGNAL_REFRESHED_METRICS` — optional), printing per-stock letters,
-    /// the letter distribution, and rank correlation against the shipped bands.
-    /// A decision aid, not a gate: the chosen constants land in the calibration
-    /// surface above and re-certify through `certify_run_grade_path`.
+    /// The grade shadow-tune sweep: candidate parameter sets — the letter
+    /// weights and cutoffs, the own-history weight, the band anchors and
+    /// widths — replayed over a run's persisted stock composites, printing each
+    /// stock's composite and letter, the letter distribution, and rank
+    /// correlation against the shipped set. A decision aid, not a gate: the
+    /// chosen constants land in the calibration surfaces (here and in
+    /// `portfolio::factors`) and re-certify through `certify_run_grade_path`.
     #[test]
     #[ignore]
     fn sweep_grade_bands() {
         let path = std::env::var("MARKET_SIGNAL_RUN_JSON").expect("MARKET_SIGNAL_RUN_JSON");
         let run: crate::portfolio::PortfolioRun =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let refreshed: std::collections::BTreeMap<String, ComputedMetrics> =
-            match std::env::var("MARKET_SIGNAL_REFRESHED_METRICS") {
-                Ok(p) => serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap(),
-                Err(_) => Default::default(),
-            };
 
-        let baseline = BandSet {
-            // Reads whatever constants are currently shipped — after a retune this
-            // is the NEW basis, not the vintage the run was graded under. The
-            // negative-D/E guard mirrors production `risk_score` (grade-v2+), so
-            // the baseline is the real shipped behavior, not a hybrid.
-            name: "current consts (shipped)",
-            nm: QUALITY_NET_MARGIN_BAND,
-            gm: QUALITY_GROSS_MARGIN_BAND,
-            pe: VALUATION_PE_BAND,
-            ps: VALUATION_PS_BAND,
-            pb: VALUATION_PB_BAND,
-            vol: RISK_VOLATILITY_BAND,
-            de: RISK_DEBT_EQUITY_BAND,
-            negative_de_scores_zero: true,
-        };
-        let moderate = BandSet {
-            name: "moderate",
-            nm: (0.0, 0.25),
-            gm: (0.20, 0.60),
-            pe: (55.0, 10.0),
-            ps: (18.0, 1.5),
-            pb: (20.0, 1.5),
-            vol: (0.04, 0.0),
-            de: (2.0, 0.0),
-            negative_de_scores_zero: true,
-        };
-        let recentered = BandSet {
-            name: "recentered-growth",
-            nm: (0.0, 0.30),
-            gm: (0.15, 0.65),
-            pe: (70.0, 12.0),
-            ps: (25.0, 2.0),
-            pb: (30.0, 2.0),
-            vol: (0.045, 0.005),
-            de: (2.5, 0.0),
-            negative_de_scores_zero: true,
-        };
+        let shipped = GradeParams::shipped();
+        let candidates = [
+            GradeParams { name: "quality 0.50", weights: (0.50, 0.25, 0.25), ..GradeParams::shipped() },
+            GradeParams { name: "equal thirds", weights: (1.0, 1.0, 1.0), ..GradeParams::shipped() },
+            GradeParams {
+                name: "cutoffs 75/62/48/35",
+                cutoffs: [75.0, 62.0, 48.0, 35.0],
+                ..GradeParams::shipped()
+            },
+            GradeParams { name: "bands alone", own_history_weight: 0.0, ..GradeParams::shipped() },
+            GradeParams { name: "bands ×1.5 wide", half_width_scale: 1.5, ..GradeParams::shipped() },
+            GradeParams { name: "bar up 0.25", bar_shift: 0.25, ..GradeParams::shipped() },
+            GradeParams { name: "bar down 0.25", bar_shift: -0.25, ..GradeParams::shipped() },
+        ];
 
-        let stocks: Vec<(&str, &ComputedMetrics)> = run
-            .verdicts
+        let stocks: Vec<(&str, &FactorComposite)> = run
+            .audit
             .iter()
-            .filter_map(|v| match &v.disposition {
-                crate::portfolio::VerdictDisposition::Priced(g) if g.fund_class_label.is_none() => {
-                    run.audit
-                        .iter()
-                        .find(|a| a.symbol == v.symbol)
-                        .map(|a| (v.symbol.as_str(), &a.metrics))
-                }
-                _ => None,
-            })
+            .filter_map(|a| a.factors.as_ref().map(|c| (a.symbol.as_str(), c)))
             .collect();
-
-        let surfaces: Vec<(&str, Vec<(&str, &ComputedMetrics)>)> = if refreshed.is_empty() {
-            vec![("as-persisted", stocks.clone())]
-        } else {
-            vec![
-                ("as-persisted", stocks.clone()),
-                (
-                    "refreshed",
-                    stocks
-                        .iter()
-                        .map(|(s, m)| (*s, refreshed.get(*s).unwrap_or(m)))
-                        .collect(),
-                ),
-            ]
-        };
-
-        for (surface_name, surface) in &surfaces {
-            println!("\n=== surface: {surface_name} ===");
-            let base_composites: Vec<f64> =
-                surface.iter().map(|(_, m)| baseline.letter(m).0).collect();
-            for bands in [&baseline, &moderate, &recentered] {
-                let mut dist = std::collections::BTreeMap::new();
-                let mut composites = vec![];
-                println!("--- {} ---", bands.name);
-                for (symbol, m) in surface {
-                    let (composite, letter) = bands.letter(m);
-                    composites.push(composite);
-                    *dist.entry(letter.as_str()).or_insert(0usize) += 1;
-                    println!("{symbol:8} {composite:5.1} {}", letter.as_str());
-                }
-                println!(
-                    "distribution: {:?}  spearman-vs-shipped: {:.3}",
-                    dist,
-                    spearman(&base_composites, &composites)
-                );
+        let base: Vec<f64> = stocks.iter().map(|(_, c)| replay(c, &shipped).1).collect();
+        for params in std::iter::once(&shipped).chain(candidates.iter()) {
+            let mut dist = std::collections::BTreeMap::new();
+            let mut composites = vec![];
+            println!("--- {} ---", params.name);
+            for (symbol, c) in &stocks {
+                let (_, composite, letter, _) = replay(c, params);
+                composites.push(composite);
+                *dist.entry(letter.as_str()).or_insert(0usize) += 1;
+                println!("{symbol:8} {composite:5.1} {}", letter.as_str());
             }
+            println!(
+                "distribution: {:?}  spearman-vs-shipped: {:.3}",
+                dist,
+                spearman(&base, &composites)
+            );
         }
     }
 
@@ -6119,7 +6215,7 @@ mod tests {
     fn unit_issue_cannot_be_rescued_by_otherwise_complete_financials() {
         let mut fin = strong();
         assert!(matches!(
-            analyze(&fin, &rates()),
+            analyze(&fin, &rates(), Default::default()),
             EngineVerdict::Analyzed(_)
         ));
         fin.unit_issues.push(StatementUnitIssue {
@@ -6127,7 +6223,7 @@ mod tests {
             reported_currency: Some("TWD".into()),
         });
         assert!(
-            matches!(analyze(&fin, &rates()), EngineVerdict::InsufficientEvidence(reason) if reason.contains("TWD"))
+            matches!(analyze(&fin, &rates(), Default::default()), EngineVerdict::InsufficientEvidence(reason) if reason.contains("TWD"))
         );
     }
 }

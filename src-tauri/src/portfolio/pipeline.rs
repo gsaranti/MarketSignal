@@ -29,6 +29,7 @@ use anyhow::{Context, Result};
 use crate::local_model::{options, ChatMessage, ChatRequest, LocalModelClient, StreamRole};
 use crate::portfolio::dossier::HoldingDossier;
 use crate::portfolio::engine::{self, EngineOutput, EngineVerdict, RateAnchors};
+use crate::portfolio::factors::OWN_HISTORY_MIN_POINTS;
 use crate::portfolio::fund::{self, FundEngineVerdict, FundStructuralKind, RoleRiskReadout};
 use crate::portfolio::pre_profit::{self, PreProfitOverlay};
 use crate::portfolio::soft_forensic::{LineLeg, SoftFlagState, SoftForensicFlags};
@@ -697,6 +698,7 @@ pub fn analyze_holding(
         action_annotations: Vec::new(),
         target_meta,
         grade_parameter_version: engine::GRADE_PARAMETER_VERSION.to_string(),
+        factors: None,
         quick_basis: None,
         authoring_close: authoring_close.clone(),
         fund_exposure: fund_exposure.clone(),
@@ -1023,7 +1025,12 @@ pub fn analyze_holding(
         // enter.
         pre_profit_overlay = Some(pre_profit::compute_overlay(&dossier.financials));
         soft_forensic_flags = Some(crate::portfolio::soft_forensic::compute(&dossier.financials));
-        match engine::analyze(&dossier.financials, rates) {
+        let issuer = dossier.issuer.as_ref();
+        let profile = engine::GradeProfile {
+            sector: issuer.and_then(|i| i.sector.as_deref()),
+            industry: issuer.and_then(|i| i.industry.as_deref()),
+        };
+        match engine::analyze(&dossier.financials, rates, profile) {
             EngineVerdict::Analyzed(out) => out,
             EngineVerdict::InsufficientEvidence(reason) => {
                 return abstain(
@@ -1295,6 +1302,7 @@ pub fn analyze_holding(
             .collect(),
         target_meta: Some(engine_output.target_meta.clone()),
         grade_parameter_version: engine::GRADE_PARAMETER_VERSION.to_string(),
+        factors: engine_output.factors.clone(),
         // The basis beneath this pass's own anchor — persisted on every priced
         // pass, so the sweep's conversions read one basis.
         quick_basis: engine_output.quick_basis.clone(),
@@ -2046,12 +2054,25 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
         p.push_str(&format!("Data gaps: {}\n", d.financials.gaps.join("; ")));
     }
 
-    // SCORES
+    // SCORES — a stock's four scores with the factors each is the mean of
+    // (`docs/portfolio-workflow.md` §Step 6f).
+    let factor_gloss = if e.factors.is_some() {
+        format!(
+            " Each score is the mean of the factors listed under it, each read over the trailing \
+             twelve months where it reads the statements. A factor scores 50 at its band's \
+             anchor and 0 or 100 at the band's edges, a value past an edge held at it. Where \
+             the company has {OWN_HISTORY_MIN_POINTS} or more earlier trailing-year readings of \
+             a factor, that score is averaged with the factor's rank among them, on the same \
+             scale. A factor that could not be computed scores 50."
+        )
+    } else {
+        String::new()
+    };
     p.push_str(&format!(
         "\nSCORES\nFour scores from 0 to 100, higher is better on every axis: quality; \
          valuation, where higher means more attractive; momentum; risk, where higher means \
          more resilient. The grade is a letter derived from the quality, valuation and risk \
-         scores.\n\
+         scores.{factor_gloss}\n\
          quality {:.0}, valuation {:.0}, momentum {:.0}, risk {:.0}. Grade {}.{} Risk tier: {}.\n",
         e.sub_scores.quality,
         e.sub_scores.valuation,
@@ -2061,6 +2082,7 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
         if e.low_confidence_grade { " One score is imputed." } else { "" },
         e.risk_tier.as_str(),
     ));
+    p.push_str(&factor_score_lines(e));
 
     // PRICE BANDS — the three legs, each with its method clause so the
     // three-year leg is weighed as the extrapolation it is
@@ -3194,6 +3216,116 @@ fn consensus_blend_line(fin: &engine::CompanyFinancials) -> String {
     )
 }
 
+/// The SCORES block's factor lines: under each of the four scores, the factors
+/// it is the mean of — the value, its band and the band's anchor row, the band
+/// score, the rank among the company's earlier readings, the blended score —
+/// then the thin-history line where most factors had no earlier readings.
+/// Empty without a composite (a fund).
+fn factor_score_lines(e: &engine::EngineOutput) -> String {
+    use crate::portfolio::factors::Axis;
+    let Some(c) = &e.factors else {
+        return String::new();
+    };
+    let mut p = String::new();
+    for (name, axis) in [
+        ("quality", Axis::Quality),
+        ("valuation", Axis::Value),
+        ("momentum", Axis::Momentum),
+        ("risk", Axis::LowRisk),
+    ] {
+        p.push_str(name);
+        p.push('\n');
+        for f in c.factors.iter().filter(|f| f.factor.axis() == axis) {
+            p.push_str(&factor_line(f, &c.sector_anchor, e.value_creation.as_ref()));
+        }
+    }
+    if c.thin_own_history {
+        p.push_str(&format!(
+            "Most of these factors had fewer than {OWN_HISTORY_MIN_POINTS} earlier readings, so \
+             their scores rest mainly on the bands.\n"
+        ));
+    }
+    p
+}
+
+/// What a factor measures, in words.
+fn factor_label(factor: crate::portfolio::factors::Factor) -> &'static str {
+    use crate::portfolio::factors::Factor::*;
+    match factor {
+        EarningsYield => "net income over market value",
+        FcfYield => "free cash flow over market value",
+        EbitToEv => "operating income over enterprise value",
+        BookToPrice => "book equity over market value",
+        FfoYield => "net income plus depreciation and amortization over market value",
+        Momentum => "price return from a year ago to a month ago",
+        Trend => "last close over its 200-session average, less one",
+        GrossProfitability => "gross profit over total assets",
+        OperatingMargin => "operating income over revenue",
+        RoicSpread => "return on invested capital less its cost of capital",
+        FcfConversion => "free cash flow over net income",
+        RoeSpread => "return on equity less its cost of equity",
+        ReturnOnAssets => "net income over total assets",
+        FfoToAssets => "net income plus depreciation and amortization over total assets",
+        RevenueGrowth => "revenue growth over the prior year",
+        Beta => "beta",
+        Volatility => "annualized volatility of daily returns over the trailing year",
+        DebtToEquity => "debt over equity",
+        DebtToAssets => "debt over total assets",
+        AssetGrowth => "total-asset growth over the prior year",
+        Revision => "consensus estimate revision",
+    }
+}
+
+/// One factor line of the SCORES block.
+fn factor_line(
+    f: &crate::portfolio::factors::FactorScore,
+    anchor_row: &str,
+    value_creation: Option<&crate::portfolio::value_creation::ValueCreationRead>,
+) -> String {
+    use crate::portfolio::factors::{BandBasis, Factor};
+    let label = factor_label(f.factor);
+    let direction = if f.factor.higher_is_better() { "" } else { " (lower is better)" };
+    if f.imputed {
+        return format!("- {label}{direction}: not available; scored 50\n");
+    }
+    let value = match f.raw {
+        Some(v) => {
+            let parts = match (f.factor, value_creation) {
+                (Factor::RoicSpread, Some(vc)) => match (vc.roic, vc.cost_of_capital.as_ref()) {
+                    (Some(roic), Some(coc)) => {
+                        format!(" (return {roic:.4} less cost of capital {:.4})", coc.rate)
+                    }
+                    _ => String::new(),
+                },
+                (Factor::RoeSpread, Some(vc)) => match vc.cost_of_equity {
+                    Some(ke) => format!(" (return on equity {:.4} less cost of equity {ke:.4})", v + ke),
+                    None => String::new(),
+                },
+                _ => String::new(),
+            };
+            format!("{v:.4}{parts}")
+        }
+        None => "positive debt over a zero or negative equity".to_string(),
+    };
+    let basis = match f.band.basis {
+        BandBasis::Sector => anchor_row.to_string(),
+        BandBasis::UnmappedSector => "market-wide; the sector has no anchors".to_string(),
+        BandBasis::MarketWide => "market-wide".to_string(),
+    };
+    let edge = if f.winsorized { ", past its edge" } else { "" };
+    let own = f
+        .own_history
+        .map(|o| format!("; rank among {} earlier readings: {:.0}", o.points, o.score))
+        .unwrap_or_default();
+    format!(
+        "- {label}{direction}: {value}; band {:.4} ± {:.4} ({basis}): {:.0}{edge}{own}; score {:.0}\n",
+        f.band.anchor,
+        f.band.half_width,
+        f.band_score.unwrap_or(f.score),
+        f.score,
+    )
+}
+
 /// The computed metric lines under COMPUTED (`portfolio-v40`): one per series
 /// the engine computes for this vehicle kind — the value and its unit gloss.
 /// A missing value prints "(gap)". The price and the expense ratio are
@@ -4003,6 +4135,7 @@ pub(crate) fn graded_verdict_from_model_arm(
         dead_money: engine_output.hurdle.state,
         low_confidence_grade: engine_output.low_confidence_grade,
         fund_class_label: engine_output.fund_class_label.clone(),
+        grade_basis: engine_output.factors.as_ref().map(crate::portfolio::GradeBasis::of),
         engine_rung,
         authored_band_relation,
     }
@@ -4948,7 +5081,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::portfolio::engine::{
         CompanyFinancials, ConsensusEpsPeriod, ConsensusEstimate, DatedValue,
-        QuarterlyIncomeRow,
+        QuarterlyBalanceSheetRow, QuarterlyIncomeRow,
     };
     use crate::portfolio::fund::{FundContext, FundData, SectorPe};
     use crate::portfolio::{
@@ -5095,8 +5228,8 @@ pub(crate) mod tests {
                 revenue: Some(100.0e9 - 1.0e9 * i as f64),
                 eps_diluted: Some(1.55 - 0.01 * i as f64),
                 diluted_shares: Some(1.5e10),
-                net_income: None,
-                gross_profit: None,
+                net_income: Some(2.5e10),
+                gross_profit: Some(45.0e9),
                 cost_of_revenue: None,
                 operating_income: None,
                 research_and_development: None,
@@ -5134,6 +5267,20 @@ pub(crate) mod tests {
             price_history: vec![170.0, 180.0, 188.0, 195.0],
             daily_closes,
             quarterly_income,
+            // The factor composite's value, quality and low-risk legs (grade-v3).
+            quarterly_balance_sheet: ends
+                .iter()
+                .map(|end| QuarterlyBalanceSheetRow {
+                    period_end: end.to_string(),
+                    total_assets: Some(3.5e11),
+                    total_debt: Some(1.0e11),
+                    total_equity: Some(7.0e10),
+                    cash_and_equivalents: Some(6.0e10),
+                    short_term_investments: Some(0.0),
+                    ..Default::default()
+                })
+                .collect(),
+            beta: Some(1.1),
             consensus: Some(ConsensusEstimate {
                 period_end: "2027-06-30".into(),
                 eps_low: Some(6.0),
@@ -6319,7 +6466,7 @@ pub(crate) mod tests {
         // The thesis-document message never carries PRIOR ANALYSIS — it reads
         // this run's analysis under ANALYSIS and the prior document under
         // PRIOR THESIS (`docs/portfolio-workflow.md` §Step 6f).
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -6361,7 +6508,7 @@ pub(crate) mod tests {
         // the model never reads pre-split figures as today's; a fresh
         // analysis renders undated with no line.
         let d = dossier(AssetClass::Stock, strong_financials());
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -6510,7 +6657,7 @@ pub(crate) mod tests {
                 value: 82.1,
             }),
         }];
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -6978,6 +7125,170 @@ pub(crate) mod tests {
         assert!(!plain.iter().any(|s| s.contains("M&A feed")), "{plain:?}");
     }
 
+    /// The thesis message's SCORES block for a stock under a profile.
+    fn scores_block(fin: CompanyFinancials, profile: engine::GradeProfile) -> String {
+        let d = dossier(AssetClass::Stock, fin);
+        let engine_output = match engine::analyze(&d.financials, &rates(), profile) {
+            EngineVerdict::Analyzed(o) => o,
+            other => panic!("{other:?}"),
+        };
+        let user = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
+            dossier: &d,
+            engine: &engine_output,
+            analysis: analysis_record("findings"),
+            pre_profit: None,
+            tech_pre_flag: None,
+            narrative: None,
+            review: None,
+        });
+        let start = user.find("\nSCORES\n").unwrap();
+        let end = user.find("\nPRICE BANDS (USD)\n").unwrap();
+        user[start..end].to_string()
+    }
+
+    #[test]
+    fn the_scores_block_lists_each_scores_factors_with_their_bands() {
+        let tech = engine::GradeProfile { sector: Some("Technology"), industry: None };
+        let block = scores_block(strong_financials(), tech);
+        assert!(
+            block.contains(
+                "The grade is a letter derived from the quality, valuation and risk scores. Each \
+                 score is the mean of the factors listed under it, each read over the trailing \
+                 twelve months where it reads the statements. A factor scores 50 at its band's \
+                 anchor and 0 or 100 at the band's edges, a value past an edge held at it. Where \
+                 the company has 8 or more earlier trailing-year readings of a factor, that score \
+                 is averaged with the factor's rank among them, on the same scale. A factor that \
+                 could not be computed scores 50.\nquality "
+            ),
+            "{block}"
+        );
+        // Each score's factors, in the four scores' order, with the band, its
+        // anchor row, both legs and the blend; an unresolved factor scored 50.
+        assert!(
+            block.contains(
+                "\nquality\n- gross profit over total assets: 0.5143; band 0.3500 ± 0.3500 \
+                 (Technology): 73; rank among 12 earlier readings: 50; score 62\n\
+                 - operating income over revenue: not available; scored 50\n"
+            ),
+            "{block}"
+        );
+        assert!(block.contains("\nvaluation\n- net income over market value: 0.0333; band 0.0264 ± 0.0264 (Technology): 63; score 63\n"), "{block}");
+        assert!(block.contains("\nmomentum\n- price return from a year ago to a month ago: not available; scored 50\n"), "{block}");
+        // A lower-is-better factor says so; a value past an edge is marked.
+        assert!(block.contains("\nrisk\n- beta (lower is better): 1.1000; band 1.0000 ± 0.6000 (market-wide): 42; score 42\n"), "{block}");
+        assert!(
+            block.contains("- debt over equity (lower is better): 1.4286; band 0.4000 ± 0.4000 (Technology): 0, past its edge; rank among 12 earlier readings: 50; score 25\n"),
+            "{block}"
+        );
+        assert!(!block.contains("One score is imputed"), "{block}");
+        assert!(!block.contains("earlier readings, so"), "not thin: {block}");
+    }
+
+    #[test]
+    fn a_banks_scores_read_its_own_factors_and_name_the_return_and_hurdle() {
+        let bank = engine::GradeProfile {
+            sector: Some("Financial Services"),
+            industry: Some("Banks - Regional"),
+        };
+        let block = scores_block(strong_financials(), bank);
+        assert!(
+            block.contains(
+                "\nquality\n- return on equity less its cost of equity: 1.3382 (return on equity \
+                 1.4286 less cost of equity 0.0903); band 0.0000 ± 0.1500 (market-wide): 100, past \
+                 its edge; rank among 12 earlier readings: 50; score 75\n\
+                 - net income over total assets: 0.2857; band 0.0120 ± 0.0120 (Banks): 100, past \
+                 its edge; rank among 12 earlier readings: 50; score 75\nvaluation\n"
+            ),
+            "{block}"
+        );
+        assert!(block.contains("- book equity over market value: 0.0233; band 0.7470 ± 0.7470 (Banks): 2; score 2\n"), "{block}");
+        assert!(!block.contains("debt over equity"), "a bank reads no debt / equity: {block}");
+        assert!(!block.contains("gross profit"), "{block}");
+    }
+
+    #[test]
+    fn the_roic_spread_line_names_its_return_and_cost_of_capital() {
+        let mut fin = strong_financials();
+        for row in &mut fin.quarterly_income {
+            row.operating_income = Some(30.0e9);
+        }
+        let block = scores_block(fin, engine::GradeProfile::default());
+        let line = block
+            .lines()
+            .find(|l| l.starts_with("- return on invested capital less its cost of capital: "))
+            .unwrap_or_else(|| panic!("{block}"));
+        assert!(line.contains(" (return 0."), "{line}");
+        assert!(line.contains(" less cost of capital 0."), "{line}");
+        assert!(line.contains("(market-wide): "), "{line}");
+    }
+
+    #[test]
+    fn an_imputed_axis_and_thin_history_are_said_once() {
+        // No gross profit and no operating income or cash flows: every quality
+        // factor is unavailable, so the score is imputed.
+        let mut fin = strong_financials();
+        for row in &mut fin.quarterly_income {
+            row.gross_profit = None;
+        }
+        let block = scores_block(fin, engine::GradeProfile::default());
+        assert!(block.contains(". One score is imputed. Risk tier: "), "{block}");
+        assert!(
+            block.contains(
+                "\nquality\n- gross profit over total assets: not available; scored 50\n\
+                 - operating income over revenue: not available; scored 50\n"
+            ),
+            "{block}"
+        );
+        // Four quarters alone: one window, no earlier readings — thin.
+        let mut fin = strong_financials();
+        fin.quarterly_income.truncate(4);
+        fin.quarterly_balance_sheet.truncate(4);
+        let block = scores_block(fin, engine::GradeProfile::default());
+        assert!(
+            block.ends_with(
+                "Most of these factors had fewer than 8 earlier readings, so their scores rest \
+                 mainly on the bands.\n"
+            ),
+            "{block}"
+        );
+    }
+
+    #[test]
+    fn a_funds_scores_carry_no_factor_lines() {
+        let fd = fund_dossier(us_equity_fund());
+        let ctx = fd.fund.as_ref().unwrap();
+        let FundEngineVerdict::Priced(out) = fund::analyze_fund(&fund::FundEngineInputs {
+            fund: &ctx.fund,
+            financials: &fd.financials,
+            sector_pe: &ctx.sector_pe,
+            sector_pe_history: &ctx.sector_pe_history,
+            rates: &rates(),
+            as_of: ctx.as_of,
+        }) else {
+            panic!("a priced fund");
+        };
+        let user = thesis_user_prompt(&ThesisInput {
+            rates: rates_static(),
+            soft_forensic: None,
+            prior_split: None,
+            dossier: &fd,
+            engine: &out,
+            analysis: analysis_record("findings"),
+            pre_profit: None,
+            tech_pre_flag: None,
+            narrative: None,
+            review: None,
+        });
+        let block = &user[user.find("\nSCORES\n").unwrap()..user.find("\nPRICE BANDS (USD)\n").unwrap()];
+        // The gloss ends at the grade sentence and the scores follow it.
+        assert!(block.contains("risk scores.\nquality 50, valuation "), "{block}");
+        assert!(!block.contains("Each score is the mean"), "{block}");
+        assert!(!block.contains("\nquality\n"), "{block}");
+    }
+
     #[test]
     fn the_research_brief_fetched_values_are_the_thesis_message_block_to_the_byte() {
         let mut fin = strong_financials();
@@ -6995,7 +7306,7 @@ pub(crate) mod tests {
             })
             .collect();
         let d = dossier(AssetClass::Stock, fin);
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -7006,8 +7317,8 @@ pub(crate) mod tests {
                 "period end: revenue; gross profit; operating income; net income; diluted \
                  EPS; diluted shares; operating cash flow; free cash flow; capital \
                  expenditure; total debt; total equity; cash and equivalents.\n\
-                 - 2026-06-30: 100.0B; (gap); (gap); (gap); 1.55; 15.0B; 28.0B; 20.0B; \
-                 -8.0B; (gap); (gap); (gap)\n"
+                 - 2026-06-30: 100.0B; 45.0B; (gap); 25.0B; 1.55; 15.0B; 28.0B; 20.0B; \
+                 -8.0B; 100.0B; 70.0B; 60.0B\n"
             ),
             "{block}"
         );
@@ -7041,7 +7352,7 @@ pub(crate) mod tests {
     #[test]
     fn a_fired_pre_flag_renders_and_an_unfired_one_stays_silent() {
         let d = dossier(AssetClass::Stock, strong_financials());
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -7249,7 +7560,7 @@ pub(crate) mod tests {
         };
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.put_call_backdrop = Some(backdrop.clone());
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -7326,7 +7637,7 @@ pub(crate) mod tests {
         };
         assert!(matches!(graded.engine_rung, Action::Trim | Action::SellAll), "{:?}", graded.engine_rung);
         // Both prompts render the typed section; the sweep is a consulted source.
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -7438,7 +7749,7 @@ pub(crate) mod tests {
         let crate::portfolio::VerdictDisposition::Priced(graded) = &v.disposition else {
             panic!("expected a priced verdict");
         };
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -7635,7 +7946,7 @@ pub(crate) mod tests {
         let VerdictDisposition::Priced(graded) = &v.disposition else {
             panic!("expected a priced verdict");
         };
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -7695,7 +8006,7 @@ pub(crate) mod tests {
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let (prior, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         let VerdictDisposition::Priced(graded) = &prior.disposition else { panic!("priced"); };
-        let mut engine = match engine::analyze(&d.financials, &rates()) {
+        let mut engine = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(engine) => engine,
             _ => panic!("priced"),
         };
@@ -7781,7 +8092,7 @@ pub(crate) mod tests {
             OptionOverlay, OverlayClass, OverlayDirection, OverlayLeg,
         };
         let mut d = dossier(AssetClass::Stock, strong_financials());
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -8069,12 +8380,17 @@ pub(crate) mod tests {
         // The M&A line (2026-10-12): FETCHED VALUES names the feed as SEC merger
         // registration filings and each match's date as its filing date — v76;
         // the trail and the archive stay.
-        assert_eq!(PROMPT_VERSION, "portfolio-v76");
+        // The factor machinery's task 2 (2026-10-13): a stock's SCORES lists the
+        // factors each score is the mean of, and the review names the factor
+        // rebuild and the redrawn cutoffs — v77; the audit's composite and the
+        // verdict's grade basis move the trail to checkpoint-v26 and the archive
+        // to format 23.
+        assert_eq!(PROMPT_VERSION, "portfolio-v77");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
-            "checkpoint-v25"
+            "checkpoint-v26"
         );
-        assert_eq!(crate::portability::FORMAT_VERSION, 22);
+        assert_eq!(crate::portability::FORMAT_VERSION, 23);
     }
 
     #[test]
@@ -8117,7 +8433,7 @@ pub(crate) mod tests {
             analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         let prior_action = crate::portfolio::carried_action(&prior).unwrap();
         d.prior_verdict = Some(prior);
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -8202,7 +8518,7 @@ pub(crate) mod tests {
         };
         assert_eq!(g.action, Action::AddAggressively, "persists as authored");
         assert_eq!(g.action_rationale, "rogue: aggressive regardless of the engine set");
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -8218,7 +8534,7 @@ pub(crate) mod tests {
     #[test]
     fn target_provenance_renders_the_anchored_and_carry_branches() {
         let d = dossier(AssetClass::Stock, strong_financials());
-        let mut engine_output = match engine::analyze(&d.financials, &rates()) {
+        let mut engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -8308,7 +8624,7 @@ pub(crate) mod tests {
     fn house_view_renders_as_market_analysis_on_both_interpretation_messages() {
         let mut d = dossier(AssetClass::Stock, strong_financials());
         d.house_view.latest_sections = Some("Thesis: risk-off.".into());
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -8555,7 +8871,7 @@ pub(crate) mod tests {
         // but shipped code: open-end never renders, a closed-end premium renders
         // the shared line, an absent NAV renders the explicit gap line.
         let mut d = fund_dossier(us_equity_fund());
-        let mut engine_output = match engine::analyze(&strong_financials(), &rates()) {
+        let mut engine_output = match engine::analyze(&strong_financials(), &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -8611,7 +8927,7 @@ pub(crate) mod tests {
         // The convention is the line's label, not the value's: it renders
         // beside a positive, a negative, and a `(gap)` alike, so the line keeps
         // one shape across holdings.
-        let engine_output = match engine::analyze(&strong_financials(), &rates()) {
+        let engine_output = match engine::analyze(&strong_financials(), &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -8693,7 +9009,7 @@ pub(crate) mod tests {
             let mut fund = us_equity_fund();
             fund.country_weights = weights;
             let d = fund_dossier(fund);
-            let engine_output = match engine::analyze(&strong_financials(), &rates()) {
+            let engine_output = match engine::analyze(&strong_financials(), &rates(), Default::default()) {
                 EngineVerdict::Analyzed(o) => o,
                 other => panic!("{other:?}"),
             };
@@ -8777,7 +9093,7 @@ pub(crate) mod tests {
         assert!(!role.contains("fund expense ratio:"), "{role}");
         assert!(!role.contains("EXPENSE RATIO ("), "{role}");
 
-        let engine_output = match engine::analyze(&strong_financials(), &rates()) {
+        let engine_output = match engine::analyze(&strong_financials(), &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -8879,7 +9195,7 @@ pub(crate) mod tests {
             assert!(!role.contains(narration), "`{narration}` leaked: {role}");
         }
         // The priced fund message renders the same line under FUND.
-        let engine_output = match engine::analyze(&strong_financials(), &rates()) {
+        let engine_output = match engine::analyze(&strong_financials(), &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -8978,7 +9294,7 @@ pub(crate) mod tests {
             "one num_ctx per model"
         );
 
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -9666,7 +9982,7 @@ pub(crate) mod tests {
     #[test]
     fn the_review_request_is_a_thinking_prose_call_at_the_interpret_context() {
         let d = dossier(AssetClass::Stock, strong_financials());
-        let now = match engine::analyze(&d.financials, &rates()) {
+        let now = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -9712,7 +10028,7 @@ pub(crate) mod tests {
         };
         d.prior_metrics = Some(audit.metrics.clone());
         d.prior_vintage = Some("2026-07-29T12:00:00Z".into());
-        let current = match engine::analyze(&d.financials, &rates()) {
+        let current = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -9948,7 +10264,7 @@ pub(crate) mod tests {
     #[test]
     fn the_thesis_conversation_requests_are_scoped_to_the_vehicle_and_the_debut_shape() {
         let stock = dossier(AssetClass::Stock, strong_financials());
-        let engine_output = match engine::analyze(&stock.financials, &rates()) {
+        let engine_output = match engine::analyze(&stock.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -10144,7 +10460,7 @@ pub(crate) mod tests {
             WorkingCapitalBuild,
         };
         let d = dossier(AssetClass::Stock, strong_financials());
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -10280,16 +10596,22 @@ pub(crate) mod tests {
         assert!(overlay.is_eligible());
         assert_eq!(overlay.execution, crate::portfolio::pre_profit::ExecutionLeg::Unscorable);
         // The execution leg has no producer, the engine caps no conviction,
-        // and the model's High persists as authored.
+        // and the model's conviction — the stub's, off the letter — persists as
+        // authored.
         assert!(overlay.consequences.matched_rules.is_empty());
         let VerdictDisposition::Priced(g) = verdict.disposition else {
             panic!("expected a priced verdict");
         };
-        assert_eq!(g.appendix.conviction, Some(Conviction::High));
+        let authored = match g.grade {
+            crate::portfolio::Grade::A | crate::portfolio::Grade::B => Conviction::High,
+            crate::portfolio::Grade::C => Conviction::Medium,
+            _ => Conviction::Low,
+        };
+        assert_eq!(g.appendix.conviction, Some(authored));
 
         // The prompt renders the overlay block under the same input the live
         // call builds.
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -10410,7 +10732,7 @@ pub(crate) mod tests {
 
         // The overlay section keeps the engine rule factual in both prompts and
         // states the model arm's freedom only where that prompt returns the field.
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -10571,7 +10893,7 @@ pub(crate) mod tests {
         });
         let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         let VerdictDisposition::Priced(graded) = &v.disposition else { panic!("priced") };
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -10752,7 +11074,7 @@ pub(crate) mod tests {
         // the action packet's alone (`docs/portfolio-analysis.md` §Intrinsic
         // verdict).
         let d = dossier(AssetClass::Stock, strong_financials());
-        let engine_output = match engine::analyze(&d.financials, &rates()) {
+        let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };

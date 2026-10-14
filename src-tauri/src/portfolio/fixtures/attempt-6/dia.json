@@ -63,6 +63,7 @@
     "dead_money": "indeterminate",
     "low_confidence_grade": true,
     "fund_class_label": "US equity fund",
+    "grade_basis": null,
     "engine_rung": "hold",
     "authored_band_relation": null
   },
@@ -161,7 +162,9 @@
       "consensus_eps_mid": null,
       "consensus_eps_periods": []
     },
-    "implied_expectations": null
+    "implied_expectations": null,
+    "factors": null,
+    "value_creation": null
   },
   "research_combined": "The SPDR Dow Jones Industrial Average ETF Trust (DIA) maintains a stable mandate to track the price and yield performance of the Dow Jones Industrial Average (DJIA), a price-weighted index of 30 blue-chip U.S. stocks, as confirmed by State Street Global Advisors data from September 2026. The fund operates with a gross expense ratio of 0.16% and distributes dividends monthly. As of September 14, 2026, the ETF held $45.7 billion in assets under management, traded at a negligible discount to NAV (-0.01%), and exhibited high liquidity with over 500,000 daily shares exchanged. The portfolio is characterized by significant concentration risk, with the top 10 holdings comprising 54.7% of total assets as of September 2026, driven by its price-weighted methodology which disproportionately favors high-share-priced companies regardless of market capitalization. Morningstar rates the fund a 'Large Value' category product with an overall 4-star rating based on risk-adjusted returns through August 2026. While administrative announcements regarding entity name changes for NYSE and PDR Services LLC were noted, no evidence suggests these impact the investment mandate or core strategy."
 }

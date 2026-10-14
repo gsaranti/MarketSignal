@@ -919,12 +919,13 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         );
     };
 
-    // Momentum rides as context (outside the letter) and IS the stock read —
-    // `engine::momentum_score` over `base_metrics`' 180-day `price_history` leg,
-    // one window and one band. Scoring the ~1,600-day `daily_closes` here pinned
-    // nearly every fund at 0 / 100: a multi-year cumulative return against a band
-    // tuned to 180 days (the 2026-08-24 review's fund-momentum finding;
-    // introduced at `grade-v2.2`, carried by current `grade-v2.3`).
+    // Momentum rides as context (outside the letter): `engine::momentum_score`
+    // over `base_metrics`' 180-day `price_history` leg, one window and one band.
+    // Scoring the ~1,600-day `daily_closes` here pinned nearly every fund at
+    // 0 / 100: a multi-year cumulative return against a band tuned to 180 days
+    // (the 2026-08-24 review's fund-momentum finding; introduced at
+    // `grade-v2.2`). A stock's momentum is its factor composite's momentum axis
+    // (`portfolio::factors`), never this read.
     let mut metrics = base_metrics(fin);
     let momentum = engine::momentum_score(&metrics);
 
@@ -1067,6 +1068,9 @@ pub fn analyze_fund(inp: &FundEngineInputs) -> FundEngineVerdict {
         // exposure composite (the settled design, ruled 2026-08-21) — no driver
         // trajectory exists to invert.
         implied_expectations: None,
+        // A fund's sub-scores are its own reads, not a factor composite.
+        factors: None,
+        value_creation: None,
     }))
 }
 
@@ -1362,12 +1366,12 @@ mod tests {
         );
     }
 
-    /// The fund's momentum sub-score is the stock read — `engine::momentum_score`
-    /// over the 180-day `price_history` leg. Scoring the ~1,600-day `daily_closes`
+    /// The fund's momentum sub-score is `engine::momentum_score` over the
+    /// 180-day `price_history` leg. Scoring the ~1,600-day `daily_closes`
     /// pinned nearly every fund at 0 / 100: a multi-year cumulative return against
     /// a band tuned to 180 days (the 2026-08-24 review's fund-momentum finding).
     #[test]
-    fn fund_momentum_is_the_stock_read_over_the_short_window() {
+    fn fund_momentum_reads_the_short_window() {
         // The deep series has tripled; the 180-day window is up ~1%.
         let fin = CompanyFinancials {
             symbol: "VTI".to_string(),
@@ -1401,11 +1405,11 @@ mod tests {
         let FundEngineVerdict::Priced(out) = analyze_fund(&inputs) else {
             panic!("the fixture prices");
         };
-        let stock_read = engine::momentum_score(&engine::compute_metrics(&fin))
+        let short_read = engine::momentum_score(&engine::compute_metrics(&fin))
             .expect("the short window has two closes");
         assert_eq!(
-            out.sub_scores.momentum, stock_read,
-            "fund momentum must be the stock read over the same window and band"
+            out.sub_scores.momentum, short_read,
+            "fund momentum must be the short-window read and its band"
         );
         // Concretely: ~1% maps just above neutral, nowhere near the band's ceiling.
         assert!(

@@ -69,7 +69,7 @@ use crate::storage;
 /// statement (`checkpoint-v12`), so a v7 archive's runs would not decode under
 /// the current condition shape.
 /// v9: complete physical-attempt telemetry in run data health (checkpoint-v13).
-/// Every pre-release shape below the current one — v2 through v21, none of which
+/// Every pre-release shape below the current one — v2 through v22, none of which
 /// a shipped build wrote — is refused outright, as is a v0 stamp no build wrote
 /// (`check_format_version`, the 2026-08-29 no-compat ruling).
 /// v10: explicit dates in persisted research claims, including topic seeds.
@@ -113,7 +113,10 @@ use crate::storage;
 /// change, the audit's pre-profit overlay carries no observation history, and
 /// every `vector_memory` row is the report's; every earlier pre-release format
 /// is refused (checkpoint-v25).
-pub const FORMAT_VERSION: u32 = 22;
+/// v23: a priced stock's audit inside `portfolio_runs.run_json` carries its
+/// factor composite and its verdict the grade basis; every earlier pre-release
+/// format is refused (checkpoint-v26).
+pub const FORMAT_VERSION: u32 = 23;
 
 /// Magic prefix of the encrypted container: 8 bytes, then a 16-byte Argon2id
 /// salt, a 12-byte AES-GCM nonce, and the ciphertext of the whole zip.
@@ -156,7 +159,7 @@ const DB_ENTRY_NAMES: [&str; 11] = [
 /// closed set (`docs/data-portability.md` §Import flow): a v1 archive — the
 /// shipped build's format — predates the quick-check store, so it is complete
 /// at five entries; requiring the current format's entries of it would refuse
-/// it as truncated. The v2 through v21 shapes were pre-release dev formats no
+/// it as truncated. The v2 through v22 shapes were pre-release dev formats no
 /// shipped build wrote and are refused at [`check_format_version`] with a v0
 /// stamp (ruled 2026-08-29 — no data compat pre-release).
 fn required_db_entries(format_version: u32) -> &'static [&'static str] {
@@ -1253,7 +1256,7 @@ fn check_format_version(manifest: &Manifest) -> Result<()> {
             FORMAT_VERSION
         );
     }
-    if matches!(manifest.format_version, 0 | 2..=21) {
+    if matches!(manifest.format_version, 0 | 2..=22) {
         bail!(
             "this archive uses format v{} — a pre-release format no shipped build wrote, which this build no longer reads",
             manifest.format_version
@@ -2436,7 +2439,7 @@ mod tests {
 
     #[test]
     fn every_pre_release_format_stamp_is_refused() {
-        // v2 through v21 were pre-release formats no shipped build wrote
+        // v2 through v22 were pre-release formats no shipped build wrote
         // (ruled 2026-08-29), and no build wrote v0: a complete current export
         // re-stamped any of these ways is refused outright, never read through
         // a compat rung.

@@ -6,6 +6,7 @@ import type {
   AccuracyScores,
   BasisDirection,
   FlagTrigger,
+  GradeBasis,
   HoldingFailure,
   HoldingQuickState,
   HoldingsPull,
@@ -810,6 +811,33 @@ const LETTER_SUBSCORES = ["quality", "valuation", "risk"] as const;
 // must not be hover-only (Codex P2, ruled 2026-08-05): one copy source serves
 // pointer, keyboard, low-vision, and screen-reader users alike.
 const SETUP_NOTE = "Setup — market-setup read, outside the letter";
+
+// The basis line under the Sub-scores kicker: which metrics a stock's letter
+// read and the anchors its banded factors stood on, then the thin-history note
+// where most factors scored on their bands alone — words, never color alone.
+// A bank or a REIT reads its class's own anchors, so its class names both.
+const CLASS_METRICS: Record<GradeBasis["class"], string | null> = {
+  general: null,
+  bank: "Bank metrics",
+  "other-financial": "Financial metrics",
+  "equity-reit": "REIT metrics",
+};
+
+function gradeBasisLine(basis: GradeBasis): string {
+  const metrics = CLASS_METRICS[basis.class];
+  const ownRow = basis.class === "bank" || basis.class === "equity-reit";
+  const bands =
+    basis.anchor_row === "market-wide"
+      ? "Market-wide bands"
+      : `${basis.anchor_row} bands`;
+  const parts = [metrics, ownRow ? null : bands].filter(
+    (p): p is string => p !== null
+  );
+  if (basis.thin_own_history) {
+    parts.push("Thin own history — most factors scored on their bands alone");
+  }
+  return parts.join(" · ");
+}
 
 // ---- The typed strip and the engine line ------------------------------------
 // The strip carries the thesis document's typed appendix — the conviction and
@@ -1830,6 +1858,12 @@ const keyFigures = computed(() => {
                                context for conviction and never a grade input
                                (B10). -->
                           <span class="hc-kicker">Sub-scores</span>
+                          <p
+                            v-if="v.disposition.grade_basis"
+                            class="hc-basis-note"
+                          >
+                            {{ gradeBasisLine(v.disposition.grade_basis) }}
+                          </p>
                           <div class="hc-subscores">
                             <div
                               v-for="name in LETTER_SUBSCORES"
@@ -2729,13 +2763,25 @@ const keyFigures = computed(() => {
   padding-left: var(--s-3);
 }
 
-/* The caption rides the card's quiet note register (the kit's health-note
-   treatment); the tile row above keeps only a tight gap to it. */
+/* The engine detail's two notes ride the card's quiet note register (the
+   kit's health-note treatment). */
+.hc-basis-note,
 .hc-setup-note {
   font-family: var(--font-serif);
   font-size: 12px;
   line-height: 1.4;
   color: var(--ink-3);
+}
+
+/* The basis line: a tight gap under the kicker, the tile row's own gap
+   beneath; a long anchor-row label wraps. */
+.hc-basis-note {
+  margin: var(--s-1) 0 var(--s-2);
+  overflow-wrap: anywhere;
+}
+
+/* The setup caption: the tile row above keeps only a tight gap to it. */
+.hc-setup-note {
   margin: 0 0 var(--s-4);
 }
 

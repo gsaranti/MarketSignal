@@ -79,6 +79,11 @@ function graded(over: Partial<GradedVerdict> = {}): GradedVerdict {
     action_rationale: "Hold — the thesis is intact.",
     low_confidence_grade: false,
     fund_class_label: null,
+    grade_basis: {
+      class: "general",
+      anchor_row: "Technology",
+      thin_own_history: false,
+    },
     // The base fixture's engine rung mirrors its top-level action, so no
     // "≠ portfolio action" departure tag shows unless a test overrides the arms.
     engine_rung: "hold",
@@ -404,6 +409,45 @@ describe("PortfolioView setup tile and thesis document", () => {
       "Setup — market-setup read, outside the letter"
     );
     expect(setup.attributes("title")).toBeUndefined();
+  });
+
+  // The basis line names what the letter was scored against — the class's
+  // metrics, the anchors, the thin-history note in words — and a fund, whose
+  // scores are no factor composite, shows none.
+  test("the sub-scores name the basis they were scored against", async () => {
+    const line = async (grade_basis: GradedVerdict["grade_basis"]) => {
+      const wrapper = mountView({
+        run: {
+          ...run,
+          verdicts: [
+            verdict("AAPL", { status: "priced", ...graded({ grade_basis }) }),
+          ],
+        },
+      });
+      await wrapper.find(".holding-card .hc-reveal").trigger("click");
+      const note = wrapper.find(".hc-engine-detail .hc-basis-note");
+      return note.exists() ? note.text() : null;
+    };
+    expect(
+      await line({ class: "general", anchor_row: "Technology", thin_own_history: false })
+    ).toBe("Technology bands");
+    expect(
+      await line({ class: "general", anchor_row: "market-wide", thin_own_history: false })
+    ).toBe("Market-wide bands");
+    expect(
+      await line({ class: "bank", anchor_row: "Banks", thin_own_history: false })
+    ).toBe("Bank metrics");
+    expect(
+      await line({ class: "equity-reit", anchor_row: "REITs", thin_own_history: true })
+    ).toBe("REIT metrics · Thin own history — most factors scored on their bands alone");
+    expect(
+      await line({
+        class: "other-financial",
+        anchor_row: "Financial Services",
+        thin_own_history: false,
+      })
+    ).toBe("Financial metrics · Financial Services bands");
+    expect(await line(null)).toBeNull();
   });
 
   // The thesis document is the card's anchor on both analyzed branches,

@@ -675,6 +675,12 @@ pub struct GradedVerdict {
     /// stock) — "the classification is deterministic, shown on the card"
     /// (`docs/portfolio-analysis.md` §Asset eligibility), the priced branch included.
     pub fund_class_label: Option<String>,
+    /// What a stock's letter was scored against — its metric class, the anchor
+    /// row its banded factors read and the thin-own-history flag — the card's
+    /// basis line (`docs/portfolio-analysis.md` §Storage and display); `None`
+    /// on a fund, whose sub-scores are no factor composite.
+    #[serde(deserialize_with = "required_option")]
+    pub grade_basis: Option<GradeBasis>,
     /// The engine's own action rung — the drafted rule over its reads
     /// ([`engine::engine_action`]: the hard-forensic exit branch, dead money
     /// and the letter, the add admission, walked into the engine's own
@@ -690,6 +696,42 @@ pub struct GradedVerdict {
     /// or where an unresolvable split bridge withheld the stamp
     /// (`docs/portfolio-analysis.md` §The quick check).
     pub authored_band_relation: Option<BandRelation>,
+}
+
+/// Decode an `Option` field whose key must be present: `null` reads as none and
+/// an absent key fails the decode. A plain `Option` field reads an absent key
+/// as `None`, so a record written before the field existed would read as
+/// "none"; a new persisted field is required (the pre-release no-compat rule),
+/// so it decodes through this.
+pub(crate) fn required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
+/// What a stock's letter was scored against, read off its factor composite
+/// ([`factors::FactorComposite`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GradeBasis {
+    pub class: factors::MetricClass,
+    /// The anchor row's label: the sector, `"market-wide"` where the sector was
+    /// absent or unmapped, or the class's own row (`"Banks"`, `"REITs"`).
+    pub anchor_row: String,
+    /// More than half the resolved factors scored on their band alone — a
+    /// data-health note, never a gate.
+    pub thin_own_history: bool,
+}
+
+impl GradeBasis {
+    pub fn of(composite: &factors::FactorComposite) -> GradeBasis {
+        GradeBasis {
+            class: composite.class,
+            anchor_row: composite.sector_anchor.clone(),
+            thin_own_history: composite.thin_own_history,
+        }
+    }
 }
 
 /// One exposure weight (a sector or country label and its fraction of the fund).
@@ -1253,6 +1295,14 @@ pub struct HoldingAudit {
     /// ([`engine::grade_parameter_change`]). Stamped on every audit, the early
     /// exits included.
     pub grade_parameter_version: String,
+    /// The factor composite a priced stock's sub-scores are its axes of — every
+    /// factor's raw value, band, band and own-history legs, score and imputed
+    /// flag — so a run's letters can be recomputed and the weights, cutoffs and
+    /// bands shadow-tuned from the record (`docs/portfolio-analysis.md`
+    /// §Starting parameters). `None` on a fund and on every exit before a
+    /// priced stock's engine output.
+    #[serde(deserialize_with = "required_option")]
+    pub factors: Option<factors::FactorComposite>,
     /// The stored closed-form re-anchor basis for the engine-only quick paths
     /// (`docs/portfolio-analysis.md` §The quick check) — the anchor-window spread
     /// percentiles, drivers, and comparators the last full pass computed. `None` on
@@ -2185,7 +2235,17 @@ pub struct HoldingAudit {
 /// as SEC merger registration filings — a filing follows a deal's
 /// announcement, typically by several weeks, and covers deals paid at least
 /// partly in stock — and dates each match as filed, not announced.
-pub const PROMPT_VERSION: &str = "portfolio-v76";
+/// `portfolio-v77` (the factor machinery, task 2 — the letter inherits the
+/// factor scores): a stock's SCORES block glosses how a factor scores and
+/// lists, under each of the four scores, the factors it is the mean of — the
+/// value, the band with its anchor row, the band score, the rank among the
+/// company's earlier readings and the blend, each spread naming its return and
+/// hurdle — with the thin-history line where most factors had no earlier
+/// readings; a fund's block is unchanged. The review's method-change line names
+/// the stock scores' factor rebuild and the fund's redrawn cutoffs. The audit's
+/// factor composite and the verdict's grade basis move the trail to
+/// `checkpoint-v26` and the archive to format 23.
+pub const PROMPT_VERSION: &str = "portfolio-v77";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`): the holdings snapshot it ran against, the per-holding
@@ -2821,6 +2881,7 @@ mod tests {
             dead_money: HurdleState::Indeterminate,
             low_confidence_grade: false,
             fund_class_label: None,
+            grade_basis: None,
             engine_rung: Action::Hold,
             authored_band_relation: None,
         };

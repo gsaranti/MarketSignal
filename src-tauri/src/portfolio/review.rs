@@ -823,8 +823,9 @@ fn prior_band<'a>(g: &'a GradedVerdict, name: &str) -> Option<&'a crate::portfol
 
 /// The grade-parameter boundary named for what it changed
 /// (`docs/portfolio-analysis.md` §Starting parameters): a band
-/// recalibration, the fund momentum re-homing, or the fund sector-P/E
-/// exchange-basis correction.
+/// recalibration, the fund momentum re-homing, the fund sector-P/E
+/// exchange-basis correction, the stock scores' factor rebuild, or the letter
+/// cutoffs alone.
 fn grade_boundary_line(change: engine::GradeParameterChange) -> &'static str {
     match change {
         engine::GradeParameterChange::Letters => {
@@ -839,6 +840,15 @@ fn grade_boundary_line(change: engine::GradeParameterChange) -> &'static str {
             "Method change: the fund's valuation score now reads sector P/E figures only where \
              both exchanges serve them, so the valuation score and the grade can move with no \
              change in the inputs.\n"
+        }
+        engine::GradeParameterChange::FactorScores => {
+            "Method change: the grade's scores were rebuilt from sector- and history-normalized \
+             factors after the prior analysis, so the grade and the scores can move with no change \
+             in the inputs.\n"
+        }
+        engine::GradeParameterChange::LetterCutoffs => {
+            "Method change: the letter cutoffs were redrawn after the prior analysis, so the grade \
+             can move with no change in the scores.\n"
         }
     }
 }
@@ -991,7 +1001,7 @@ mod tests {
     fn continuity() -> (HoldingDossier, EngineOutput) {
         let mut d = dossier(AssetClass::Stock, strong_financials());
         let (prior, audit) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-07-01").unwrap();
-        let now = match engine::analyze(&d.financials, &rates()) {
+        let now = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
         };
@@ -1236,13 +1246,32 @@ mod tests {
             user.contains("Method change: the method behind the three-month and three-year price bands changed after the prior analysis"),
             "{user}"
         );
-        // A prior grade stamp across the letter recalibration names it.
+        // A prior grade stamp across the factor rebuild names it.
         d.prior_grade_parameter_version = Some("grade-v2".into());
         let user = render(&d, &now, Some(1.0));
-        assert!(user.contains("Method change: the scoring bands behind the grade were recalibrated"), "{user}");
+        assert!(
+            user.contains(
+                "Method change: the grade's scores were rebuilt from sector- and \
+                 history-normalized factors after the prior analysis"
+            ),
+            "{user}"
+        );
         // An unresolvable bridge withholds the prior bands.
         let user = render(&d, &now, None);
         assert!(user.contains("three-month withheld → "), "{user}");
+    }
+
+    /// Each grade boundary names what it changed: a stock's factor rebuild
+    /// moves its scores and letter, the redrawn cutoffs a fund's letter alone.
+    #[test]
+    fn the_grade_boundary_lines_name_what_moved() {
+        use engine::GradeParameterChange::*;
+        assert!(grade_boundary_line(FactorScores).contains("the grade and the scores can move"));
+        assert_eq!(
+            grade_boundary_line(LetterCutoffs),
+            "Method change: the letter cutoffs were redrawn after the prior analysis, so the \
+             grade can move with no change in the scores.\n"
+        );
     }
 
     #[test]
