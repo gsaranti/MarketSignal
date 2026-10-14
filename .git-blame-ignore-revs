@@ -6,3 +6,8 @@
 
 # docs: strip ruling dates, review provenance and build-status markers (provenance-only; the rules are unchanged)
 bc97d3bd9eb351d69315943b5caf5d605d2542b7
+
+# code: strip narration, restated-docs prose and audit-log provenance from the comments (comment-only; no code line changed)
+6582a1f7b44f8e4c520af18d3ad76fb9026fe9cc
+fc98efa147c3001b52014f4132522ebfc8671701
+2ddce65fc991276231028b6af16b088aff655364
