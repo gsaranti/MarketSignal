@@ -18,7 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::portfolio::factors::{factor_composite, Axis, FactorComposite, FactorInputs};
+use crate::portfolio::factors::{factor_composite, Archetype, Axis, FactorComposite, FactorInputs};
 use crate::portfolio::value_creation::{value_creation_read, ValueCreationRead};
 use crate::portfolio::{
     Action, Grade, OptionsSignal,
@@ -510,6 +510,17 @@ pub struct DatedValue {
     pub value: f64,
 }
 
+/// One dated daily bar with its share volume — the tradability flag's input
+/// (`portfolio::tradability`), parsed from the same deep EOD feed as the dated
+/// closes. `volume` is `None` where the row served no finite, non-negative
+/// volume: that session is a missing volume day, never a zero.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DailyBar {
+    pub date: String,
+    pub close: f64,
+    pub volume: Option<f64>,
+}
+
 /// The run-level rate anchors (`docs/portfolio-workflow.md` §Step 5): the `DGS2` and
 /// `DGS10` prints plus the dated `DGS10` anchor-window history the v2 percentile join
 /// reads. All values are **decimal ratios** (`4.5%` → `0.045` — the suite's shared
@@ -564,6 +575,20 @@ pub struct QuarterlyIncomeRow {
     /// effective tax rate for NOPAT (`portfolio::value_creation`).
     pub income_before_tax: Option<f64>,
     pub income_tax_expense: Option<f64>,
+}
+
+/// One annual income-statement print — the commodity cyclical's mid-cycle
+/// margin source (the driver override's normalization window,
+/// `docs/trade-opportunities.md` §Starting parameters). Any order and
+/// duplicates are tolerated: the mid-cycle read canonicalizes by period end,
+/// the latest filing winning a restatement.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AnnualIncomeRow {
+    /// Fiscal-year end, ISO date.
+    pub period_end: String,
+    pub filing_date: Option<String>,
+    pub revenue: Option<f64>,
+    pub net_income: Option<f64>,
 }
 
 /// One quarterly cash-flow-statement print (newest first in
@@ -1148,7 +1173,9 @@ pub struct HurdleRead {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TargetMeta {
     /// The ladder rung: "consensus forward EPS", "consensus forward revenue per
-    /// share", or "fund exposure composite".
+    /// share", "fund exposure composite", or — under the commodity cyclical's
+    /// driver override — the mid-cycle EPS rung with its margin, or the shared
+    /// rung taken with the reason the override fell back.
     pub driver_rung: String,
     /// True when the multiples were spread-anchored on the DGS10 history; false on
     /// the raw-percentile fallback (window below the observation floor).
@@ -1481,7 +1508,7 @@ pub fn analyze(fin: &CompanyFinancials, rates: &RateAnchors, profile: GradeProfi
 
     // The v2 rate-anchored scenario targets. No admissible driver on any ladder rung
     // is the named evidence-floor reason (`docs/portfolio-analysis.md` §Evidence floor).
-    let bundle = match scenario_targets_v2(price, fin, rates, &metrics) {
+    let bundle = match scenario_targets_v2(price, fin, rates, &metrics, None, &[]) {
         // The output gate ([`price_targets_finite`]): a non-finite target exits
         // the holding here, per-holding and never run-level.
         TargetOutcome::Computed(b) if !price_targets_finite(&b.targets) => {
@@ -2203,7 +2230,7 @@ struct AnchorScan {
 fn stock_anchor_observations(
     fin: &CompanyFinancials,
     rates: &RateAnchors,
-    use_eps: bool,
+    rung: DriverRung,
     current_multiple: Option<f64>,
 ) -> AnchorScan {
     use chrono::NaiveDate;
@@ -2225,7 +2252,7 @@ fn stock_anchor_observations(
         if !quarters_contiguous(window.iter().map(|r| r.period_end.as_str())) {
             continue;
         }
-        let ttm: Option<f64> = if use_eps {
+        let ttm: Option<f64> = if rung == DriverRung::ForwardEps {
             window.iter().map(|r| r.eps_diluted).sum()
         } else {
             let revenue: Option<f64> = window.iter().map(|r| r.revenue).sum();
@@ -2238,7 +2265,14 @@ fn stock_anchor_observations(
             // (`docs/portfolio-analysis.md` §Starting parameters).
             let shares = window.iter().find_map(|r| r.diluted_shares);
             match (revenue, shares) {
-                (Some(rev), Some(sh)) if sh > 0.0 => Some(rev / sh),
+                // The mid-cycle rung's history stands on the same normalized
+                // basis as its driver: the median margin times each window's
+                // revenue per share, so cycle-extreme earnings never leak back
+                // in through the multiples.
+                (Some(rev), Some(sh)) if sh > 0.0 => Some(match rung {
+                    DriverRung::MidCycleEps { margin } => margin * rev / sh,
+                    _ => rev / sh,
+                }),
                 _ => None,
             }
         };
@@ -2292,6 +2326,95 @@ fn stock_anchor_observations(
     }
 }
 
+/// The fiscal years the commodity cyclical's mid-cycle margin is the median
+/// over — the trailing cycle window (`docs/trade-opportunities.md` §Starting
+/// parameters; drafted, calibratable: Damodaran and Graham–Dodd normalize over
+/// five to ten years).
+pub const MID_CYCLE_YEARS: usize = 5;
+
+/// Adjacent fiscal-year ends this many days apart or closer still read as
+/// consecutive years — a 52/53-week calendar or a fiscal-year change stub; a
+/// wider gap is a skipped year.
+const FISCAL_YEAR_GAP_DAYS: std::ops::RangeInclusive<i64> = 300..=430;
+
+/// Which rung the driver ladder priced on — the basis every downstream leg
+/// reads: the anchor history's trailing print, the clamp release's
+/// corroborating consensus rows, the three-year leg's growth rows and the
+/// implied read's margin caveat.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DriverRung {
+    /// Consensus forward EPS on P/E.
+    ForwardEps,
+    /// Consensus forward revenue per share on P/S.
+    ForwardRevenuePerShare,
+    /// The commodity cyclical's mid-cycle EPS on P/E: the median net margin
+    /// over [`MID_CYCLE_YEARS`] fiscal years times consensus forward revenue per
+    /// share — revenue-based for the consensus rows it reads.
+    MidCycleEps { margin: f64 },
+}
+
+impl DriverRung {
+    /// Whether the rung reads the EPS consensus rows (the clamp release's
+    /// corroboration, the three-year growth) — else the revenue rows.
+    fn reads_eps_rows(self) -> bool {
+        self == DriverRung::ForwardEps
+    }
+}
+
+/// The commodity cyclical's **mid-cycle net margin** — the median of the latest
+/// [`MID_CYCLE_YEARS`] fiscal years' net income over revenue
+/// (`docs/trade-opportunities.md` §Starting parameters, the driver override).
+/// The rows are canonicalized locally (newest fiscal year first, the latest
+/// filing winning a restated year). `Err` is the typed reason the override
+/// falls back to the shared ladder: fewer than five fiscal years, a skipped
+/// year, a year without positive revenue or a net-income line, or a median at
+/// or below zero.
+pub fn mid_cycle_margin(annual: &[AnnualIncomeRow]) -> std::result::Result<f64, String> {
+    let mut rows: Vec<&AnnualIncomeRow> = annual.iter().collect();
+    rows.sort_by(|a, b| {
+        b.period_end
+            .cmp(&a.period_end)
+            .then_with(|| b.filing_date.cmp(&a.filing_date))
+    });
+    rows.dedup_by(|a, b| a.period_end == b.period_end);
+    if rows.len() < MID_CYCLE_YEARS {
+        return Err(format!(
+            "{} fiscal year(s) of annual statements (need {MID_CYCLE_YEARS})",
+            rows.len()
+        ));
+    }
+    let rows = &rows[..MID_CYCLE_YEARS];
+    let ends: Vec<chrono::NaiveDate> = rows
+        .iter()
+        .map(|r| chrono::NaiveDate::parse_from_str(&r.period_end, "%Y-%m-%d"))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|_| "an undatable fiscal-year end".to_string())?;
+    if ends
+        .windows(2)
+        .any(|pair| !FISCAL_YEAR_GAP_DAYS.contains(&(pair[0] - pair[1]).num_days()))
+    {
+        return Err(format!("the latest {MID_CYCLE_YEARS} fiscal years are not consecutive"));
+    }
+    let mut margins = rows
+        .iter()
+        .map(|r| match (r.net_income, r.revenue) {
+            (Some(ni), Some(rev)) if ni.is_finite() && rev.is_finite() && rev > 0.0 => {
+                Some(ni / rev)
+            }
+            _ => None,
+        })
+        .collect::<Option<Vec<f64>>>()
+        .ok_or_else(|| {
+            "a fiscal year without positive revenue or a net-income line".to_string()
+        })?;
+    margins.sort_by(f64::total_cmp);
+    let median = margins[MID_CYCLE_YEARS / 2];
+    if !(median.is_finite() && median > 0.0) {
+        return Err(format!("a {MID_CYCLE_YEARS}-year median net margin at or below zero"));
+    }
+    Ok(median)
+}
+
 /// What the driver ladder picked: the scenario drivers plus the derivation record.
 struct DriverRead {
     /// `[bear, base, bull]` per-share drivers.
@@ -2303,8 +2426,9 @@ struct DriverRead {
     /// The rung-matching trailing TTM print (EPS or revenue per share) — the
     /// current-multiple denominator for the v4 anchor bound and release signature.
     trailing_print: Option<f64>,
-    rung: &'static str,
-    use_eps: bool,
+    rung: DriverRung,
+    /// The recorded rung label ([`TargetMeta::driver_rung`]).
+    label: String,
     /// No published low/high spread — the driver held at mid.
     flat_driver: bool,
     /// A published spread collapsed to a single value by the growth clamp — recorded
@@ -2318,7 +2442,21 @@ struct DriverRead {
 /// diluted share count — with each scenario driver's implied growth clamped by the v1
 /// sanity bound against the trailing print, and a missing published spread holding
 /// the driver flat (recorded). `None` when no rung is admissible.
-fn driver_ladder(fin: &CompanyFinancials) -> Option<DriverRead> {
+///
+/// The archetype's **driver override** (`docs/trade-opportunities.md` §Starting
+/// parameters) runs ahead of the shared rungs: a commodity cyclical prices
+/// **mid-cycle EPS** — the [`mid_cycle_margin`] over `annual_income` times
+/// consensus forward revenue per share — on P/E, falling back to the shared
+/// ladder, its reason recorded in the rung label, where that rung is not
+/// computable. The compounders, ai-infra and disruptor archetypes resolve to the
+/// shared ladder itself (forward EPS where a positive consensus exists, else
+/// forward revenue per share), and no archetype — Portfolio's case — is the
+/// shared ladder unchanged.
+fn driver_ladder(
+    fin: &CompanyFinancials,
+    archetype: Option<Archetype>,
+    annual_income: &[AnnualIncomeRow],
+) -> Option<DriverRead> {
     let c = fin.consensus.as_ref();
 
     // Trailing TTM prints for the growth clamp (newest four quarters) — only a
@@ -2378,6 +2516,61 @@ fn driver_ladder(fin: &CompanyFinancials) -> Option<DriverRead> {
         }
     };
 
+    // The forward revenue per share consensus mid and the latest diluted count —
+    // the revenue rung's and the mid-cycle rung's shared inputs.
+    let revenue_mid = c.and_then(|c| c.revenue_mid).filter(|m| m.is_finite() && *m > 0.0);
+    let shares = latest_shares.filter(|s| *s > 0.0);
+
+    // The commodity cyclical's override: mid-cycle EPS, every leg — the
+    // drivers, the spread and the trailing print the clamp reads — on the
+    // normalized basis (the median margin times revenue per share).
+    let mut fallback_reason: Option<String> = None;
+    if archetype == Some(Archetype::CommodityCyclical) {
+        match (mid_cycle_margin(annual_income), revenue_mid, shares) {
+            (Ok(margin), Some(mid), Some(sh)) => {
+                let normalized = |revenue: f64| margin * revenue / sh;
+                let trailing = ttm_rev_ps.map(|t| margin * t);
+                let base = clamp(normalized(mid), trailing, normalized(mid));
+                let spread = c.and_then(|c| c.revenue_low.zip(c.revenue_high));
+                let flat = spread.is_none();
+                let (low, high) = spread
+                    .map(|(l, h)| (normalized(l), normalized(h)))
+                    .unwrap_or((normalized(mid), normalized(mid)));
+                let drivers = [clamp(low, trailing, base), base, clamp(high, trailing, base)];
+                return Some(DriverRead {
+                    clamp_flattened: clamp_collapse(&drivers, flat),
+                    drivers,
+                    unclamped_drivers: [
+                        sanitize(low, normalized(mid)),
+                        normalized(mid),
+                        sanitize(high, normalized(mid)),
+                    ],
+                    trailing_print: trailing,
+                    rung: DriverRung::MidCycleEps { margin },
+                    label: format!(
+                        "mid-cycle EPS (the {MID_CYCLE_YEARS}-year median net margin {:.1}% × \
+                         consensus forward revenue per share)",
+                        margin * 100.0
+                    ),
+                    flat_driver: flat,
+                });
+            }
+            (Err(reason), _, _) => fallback_reason = Some(reason),
+            (Ok(_), None, _) => {
+                fallback_reason = Some("no positive revenue consensus".to_string())
+            }
+            (Ok(_), Some(_), None) => {
+                fallback_reason = Some("no positive diluted share count".to_string())
+            }
+        }
+    }
+    let label = |shared: &str| match &fallback_reason {
+        Some(reason) => {
+            format!("{shared} (commodity-cyclical mid-cycle EPS unavailable: {reason})")
+        }
+        None => shared.to_string(),
+    };
+
     // Rung 1: forward EPS, eligible only on a finite positive consensus mid.
     if let Some(mid) = c.and_then(|c| c.eps_mid).filter(|m| m.is_finite() && *m > 0.0) {
         let base = clamp(mid, ttm_eps, mid);
@@ -2399,17 +2592,14 @@ fn driver_ladder(fin: &CompanyFinancials) -> Option<DriverRead> {
             drivers,
             unclamped_drivers: [sanitize(low, mid), mid, sanitize(high, mid)],
             trailing_print: ttm_eps,
-            rung: "consensus forward EPS",
-            use_eps: true,
+            rung: DriverRung::ForwardEps,
+            label: label("consensus forward EPS"),
             flat_driver: flat,
         });
     }
 
     // Rung 2: forward revenue per share on the latest reported diluted count.
-    if let (Some(mid), Some(sh)) = (
-        c.and_then(|c| c.revenue_mid).filter(|m| m.is_finite() && *m > 0.0),
-        latest_shares.filter(|s| *s > 0.0),
-    ) {
+    if let (Some(mid), Some(sh)) = (revenue_mid, shares) {
         let base = clamp(mid / sh, ttm_rev_ps, mid / sh);
         // Same half-published-spread convention as the EPS rung above.
         let spread = c.and_then(|c| c.revenue_low.zip(c.revenue_high));
@@ -2427,8 +2617,8 @@ fn driver_ladder(fin: &CompanyFinancials) -> Option<DriverRead> {
             drivers,
             unclamped_drivers: [sanitize(low, mid / sh), mid / sh, sanitize(high, mid / sh)],
             trailing_print: ttm_rev_ps,
-            rung: "consensus forward revenue per share",
-            use_eps: false,
+            rung: DriverRung::ForwardRevenuePerShare,
+            label: label("consensus forward revenue per share"),
             flat_driver: flat,
         });
     }
@@ -2456,14 +2646,18 @@ fn consensus_growth(rows: ConsensusGrowthRows) -> Option<f64> {
 /// the three-month leg is the near-horizon form (base = spot × (1 + PR_base ⁄ 4),
 /// the price-return leg, dividends excluded; the volatility-scaled band with its
 /// fixed fallback); the three-year leg is the declared extrapolation
-/// ([`ThreeYearLeg::Extrapolated`]).
+/// ([`ThreeYearLeg::Extrapolated`]). `archetype` and `annual_income` feed the
+/// driver override ([`driver_ladder`]); Portfolio passes no archetype, which
+/// prices the shared ladder unchanged.
 pub fn scenario_targets_v2(
     spot: f64,
     fin: &CompanyFinancials,
     rates: &RateAnchors,
     m: &ComputedMetrics,
+    archetype: Option<Archetype>,
+    annual_income: &[AnnualIncomeRow],
 ) -> TargetOutcome {
-    let Some(read) = driver_ladder(fin) else {
+    let Some(read) = driver_ladder(fin, archetype, annual_income) else {
         return TargetOutcome::NoAdmissibleDriver;
     };
 
@@ -2474,7 +2668,7 @@ pub fn scenario_targets_v2(
         .filter(|t| *t > 0.0)
         .map(|t| spot / t)
         .filter(|cm| cm.is_finite() && *cm > 0.0);
-    let scan = stock_anchor_observations(fin, rates, read.use_eps, current_multiple);
+    let scan = stock_anchor_observations(fin, rates, read.rung, current_multiple);
     let (observations, anchor_bounded) = (scan.observations, scan.bounded);
 
     // The targets-v4 trough clamp release — three gates, each closing a distinct
@@ -2496,7 +2690,7 @@ pub fn scenario_targets_v2(
         .filter(|r| r.is_finite())
         .collect();
     let corroborated = fin.consensus.as_ref().is_some_and(|c| {
-        let rows = if read.use_eps {
+        let rows = if read.rung.reads_eps_rows() {
             c.eps_mid_rows
         } else {
             c.revenue_mid_rows
@@ -2557,13 +2751,19 @@ pub fn scenario_targets_v2(
     let three_year_growth = fin
         .consensus
         .as_ref()
-        .map(|c| if read.use_eps { c.eps_growth_rows } else { c.revenue_growth_rows })
+        .map(|c| {
+            if read.rung.reads_eps_rows() {
+                c.eps_growth_rows
+            } else {
+                c.revenue_growth_rows
+            }
+        })
         .and_then(consensus_growth);
     let built = build_price_targets(
         spot,
         &scenario,
         m,
-        read.rung,
+        &read.label,
         read.flat_driver,
         anchor_bounded,
         clamp_released,
@@ -2571,7 +2771,7 @@ pub fn scenario_targets_v2(
     );
     let targets = built.targets;
     let meta = TargetMeta {
-        driver_rung: read.rung.to_string(),
+        driver_rung: read.label.clone(),
         rate_anchored: scenario.rate_anchored,
         anchor_observations: scenario.anchor_observations,
         flat_driver: read.flat_driver,
@@ -2601,8 +2801,8 @@ pub fn scenario_targets_v2(
         spot,
         &scenario,
         read.trailing_print,
-        read.rung,
-        read.use_eps,
+        &read.label,
+        read.rung.reads_eps_rows(),
         rates.dgs10,
     );
     TargetOutcome::Computed(Box::new(TargetBundle {
@@ -3237,6 +3437,32 @@ pub fn consensus_revision_pair(
     })
 }
 
+/// The revision form's two legs between an earlier consensus snapshot (its spot
+/// and raw fiscal-period rows) and today's: the forward-multiple change and the
+/// consensus revision on the fiscal periods present in both, each a decimal.
+/// The earlier snapshot's NTM weights are held constant, so calendar
+/// roll-forward cannot move either leg. `None` where no matched period carries
+/// a positive consensus on both snapshots — the caller's fallback form takes
+/// over. Both jobs' narrative reads stand on it (`docs/trade-opportunities.md`
+/// §The two non-negotiables, §Starting parameters).
+pub fn revision_form_legs(
+    fin: &CompanyFinancials,
+    spot: f64,
+    prior_spot: f64,
+    prior_consensus_eps_periods: &[ConsensusEpsPeriod],
+) -> Option<(f64, f64)> {
+    let pair = fin
+        .consensus
+        .as_ref()
+        .and_then(|current| {
+            consensus_revision_pair(prior_consensus_eps_periods, &current.eps_periods, 1.0)
+        })
+        .filter(|pair| pair.prior > 0.0 && pair.current > 0.0)?;
+    let expansion = (spot / pair.current) / (prior_spot / pair.prior) - 1.0;
+    let reality = pair.current / pair.prior - 1.0;
+    Some((expansion, reality))
+}
+
 /// Compute the narrative-vs-reality read against the prior run's stored
 /// comparator ([`QuickCheckBasis`]'s spot + raw fiscal-period consensus rows —
 /// both persisted, so the pace pair needs no new history). `Err` is the typed unreadable reason
@@ -3263,21 +3489,13 @@ pub fn narrative_vs_reality(
         return Err("no positive current price".to_string());
     }
 
-    let revision = fin.consensus.as_ref().and_then(|current| {
-        consensus_revision_pair(prior_consensus_eps_periods, &current.eps_periods, 1.0)
-    });
-
-    let (form, expansion, reality) = match revision
-        .filter(|pair| pair.prior > 0.0 && pair.current > 0.0)
-    {
-        // The primary form: forward-multiple change vs consensus revision on
-        // matched fiscal periods, both over the same interval. Prior weights
-        // are held constant, so calendar roll-forward cannot move either leg.
-        Some(pair) => {
-            let expansion = (spot / pair.current) / (prior_spot / pair.prior) - 1.0;
-            let reality = pair.current / pair.prior - 1.0;
-            (NarrativeForm::RevisionBased, expansion, reality)
-        }
+    let (form, expansion, reality) = match revision_form_legs(
+        fin,
+        spot,
+        prior_spot,
+        prior_consensus_eps_periods,
+    ) {
+        Some((expansion, reality)) => (NarrativeForm::RevisionBased, expansion, reality),
         // The thin-coverage fallback (`docs/trade-opportunities.md` §The two
         // non-negotiables): the company's own reported operating momentum (TTM
         // revenue YoY — an annual rate) against the price move annualized onto
@@ -3341,6 +3559,325 @@ pub fn narrative_vs_reality(
         elapsed_days,
         matched_rule,
     })
+}
+
+// ---- The Trade Opportunities narrative read (the "mostly multiple-expansion" trip)
+
+/// The share of a positive price move above which multiple expansion reads
+/// `hype` — Trade Opportunities' own trip over the shared read, drafted
+/// separately from Portfolio's [`NARRATIVE_HYPE_RATIO`]
+/// (`docs/trade-opportunities.md` §Starting parameters; drafted, calibratable).
+pub const TO_NARRATIVE_HYPE_SHARE: f64 = 0.70;
+
+/// Trade Opportunities' multiple-expansion floor (decimal), below which the read
+/// is neutral — the same 5% Portfolio drafts, held as this job's own constant
+/// (drafted, calibratable).
+pub const TO_NARRATIVE_MIN_MULTIPLE_EXPANSION: f64 = 0.05;
+
+/// Trade Opportunities' minimum interval for the read, in days — under it the
+/// split is same-week noise and the read is `unknown`; the same seven days
+/// Portfolio drafts, held as this job's own constant (drafted, calibratable).
+pub const TO_NARRATIVE_MIN_ELAPSED_DAYS: i64 = 7;
+
+/// How far before the trailing window's start the retained anchor print may sit
+/// before the read is `unknown`, in calendar days — a monthly run cadence plus
+/// slack (drafted, calibratable).
+pub const TO_NARRATIVE_ANCHOR_PROXIMITY_DAYS: i64 = 45;
+
+/// The retained analyst-estimate print a Trade Opportunities record anchors its
+/// narrative read on — the newest print dated at or before the trailing
+/// window's start (`docs/storage.md` §Local Analysis Suite Storage).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NarrativeAnchorPrint {
+    /// The print's session, ISO.
+    pub date: String,
+    /// The session's close as stored when the print was taken — the
+    /// split-adjustment bridge's anchor ([`split_bridge_factor`]).
+    pub close: f64,
+    /// The raw fiscal-period consensus rows the print carried, on that day's
+    /// share basis.
+    pub eps_periods: Vec<ConsensusEpsPeriod>,
+}
+
+/// The Trade Opportunities narrative read: the price move since the window's
+/// start split into multiple expansion and the fundamental leg, and the share
+/// of the move the expansion carries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToNarrativeRead {
+    /// The revision form over the anchor print, or the P/S fallback.
+    pub form: NarrativeForm,
+    /// The date the move is measured from: the anchor print's on the revision
+    /// form, the window's start on the fallback.
+    pub from_date: String,
+    /// The price move since `from_date`, a decimal: `(1 + expansion) ×
+    /// (1 + reality) − 1`.
+    pub price_move: f64,
+    /// The forward-multiple change (revision form) or the trailing P/S change
+    /// (fallback), a decimal.
+    pub expansion: f64,
+    /// The matched-period consensus revision (revision form) or TTM revenue per
+    /// share growth (fallback), a decimal.
+    pub reality: f64,
+    /// `ln(1 + expansion) ÷ ln(1 + price_move)` — the expansion's share of a
+    /// positive price move; `None` where the price did not rise.
+    pub expansion_share: Option<f64>,
+    pub classification: NarrativeClass,
+    pub elapsed_days: i64,
+    /// The matched rule, recorded when the hype read fired.
+    pub matched_rule: Option<String>,
+}
+
+/// The Trade Opportunities narrative read as of `as_of` over the trailing window
+/// that starts at `window_start` — twelve months back, or the date the idea
+/// became an opportunity when it is younger (`docs/trade-opportunities.md`
+/// §Starting parameters). The **revision form** reads the anchor print against
+/// today's consensus over the interval since the print's date
+/// ([`revision_form_legs`]), the print's per-share rows and close carried onto
+/// today's split-adjusted series by the split-adjustment bridge (its stored
+/// close against the same session's close today — [`split_bridge_factor`]).
+/// With no anchor print, no matched fiscal period, or a bridge that cannot be
+/// read, the **fallback** splits the move since the window's start into the
+/// trailing P/S change and TTM revenue per share growth, each TTM the newest
+/// contiguous four quarters filed on or before its date (the latest version
+/// known by then winning a restated period) with the newest quarter's diluted
+/// count, so a debut reads from its statements alone. The fallback's two
+/// per-share prints sit on the as-filed basis and its two prices on today's, so
+/// a split after the newest quarter cancels; a diluted count moving more than
+/// [`super::factors::OWN_HISTORY_SHARE_JUMP`] quarter over quarter between the
+/// two TTMs — a split or a large issuance — leaves no continuous basis, and the
+/// read is `unknown`. The read is `hype` when the expansion carries more than
+/// [`TO_NARRATIVE_HYPE_SHARE`] of a positive price move (the log share — the move
+/// factors exactly into the two legs); `neutral` under
+/// [`TO_NARRATIVE_MIN_MULTIPLE_EXPANSION`] or on a price that did not rise;
+/// otherwise justified-expensive. `Err` is the `unknown` read with its typed
+/// reason: an anchor print more than [`TO_NARRATIVE_ANCHOR_PROXIMITY_DAYS`]
+/// before the window's start, no close near the window's start on the fallback,
+/// no contiguous TTM filed by a date or one without positive revenue or a
+/// diluted count, a share-count break between the fallback's TTMs, an interval
+/// under [`TO_NARRATIVE_MIN_ELAPSED_DAYS`], or a leg that overflows.
+pub fn to_narrative_read(
+    fin: &CompanyFinancials,
+    spot: f64,
+    closes: &[DatedValue],
+    anchor: Option<&NarrativeAnchorPrint>,
+    window_start: &str,
+    as_of: &str,
+) -> std::result::Result<ToNarrativeRead, String> {
+    use chrono::NaiveDate;
+    let parse = |d: &str| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
+    if !(spot.is_finite() && spot > 0.0) {
+        return Err("no positive current price".to_string());
+    }
+    let start = parse(window_start)
+        .ok_or_else(|| format!("the window start {window_start} does not parse"))?;
+    let today = parse(as_of).ok_or_else(|| format!("the as-of date {as_of} does not parse"))?;
+    let closes = super::factors::dedupe_closes(closes);
+    let close_on = |date: &str| {
+        super::factors::close_near(&closes, date)
+            .map(|c| c.value)
+            .filter(|v| *v > 0.0)
+            .ok_or_else(|| format!("no close near {date}"))
+    };
+
+    if let Some(print) = anchor {
+        let printed = parse(&print.date)
+            .ok_or_else(|| format!("the anchor print's date {} does not parse", print.date))?;
+        let gap = (start - printed).num_days();
+        if gap > TO_NARRATIVE_ANCHOR_PROXIMITY_DAYS {
+            return Err(format!(
+                "the anchor print sits {gap} days before the window's start (bound \
+                 {TO_NARRATIVE_ANCHOR_PROXIMITY_DAYS})"
+            ));
+        }
+    }
+
+    // The revision form needs the split-adjustment bridge as well as a shared
+    // fiscal period: the print's rows and close were taken on that day's share
+    // basis, today's closes and consensus on today's. Missing either, the
+    // fallback reads the window instead.
+    let revision = anchor.and_then(|print| {
+        let stored = DatedValue {
+            date: print.date.clone(),
+            value: print.close,
+        };
+        let factor = split_bridge_factor(&closes, &stored)?;
+        let bridged: Vec<ConsensusEpsPeriod> = print
+            .eps_periods
+            .iter()
+            .map(|p| ConsensusEpsPeriod {
+                eps_mid: p.eps_mid.map(|m| m * factor),
+                ..p.clone()
+            })
+            .collect();
+        let from = print.close * factor;
+        revision_form_legs(fin, spot, from, &bridged)
+            .map(|(expansion, reality)| (print.date.clone(), from, expansion, reality))
+    });
+    let (form, from_date, from, expansion, reality) = match revision {
+        Some((from_date, from, expansion, reality)) => {
+            (NarrativeForm::RevisionBased, from_date, from, expansion, reality)
+        }
+        None => {
+            let from = close_on(window_start)?;
+            let (then_end, then_shares, then) = ttm_revenue_per_share_as_of(fin, window_start)?;
+            let (now_end, now_shares, now) = ttm_revenue_per_share_as_of(fin, as_of)?;
+            share_basis_continuous(
+                fin,
+                (then_end.as_str(), then_shares),
+                (now_end.as_str(), now_shares),
+                as_of,
+            )?;
+            let expansion = (spot / now) / (from / then) - 1.0;
+            let reality = now / then - 1.0;
+            (
+                NarrativeForm::OperatingReality,
+                window_start.to_string(),
+                from,
+                expansion,
+                reality,
+            )
+        }
+    };
+    let elapsed_days = parse(&from_date).map_or(0, |d| (today - d).num_days());
+    if elapsed_days < TO_NARRATIVE_MIN_ELAPSED_DAYS {
+        return Err(format!(
+            "only {elapsed_days} day(s) since {from_date} (need {TO_NARRATIVE_MIN_ELAPSED_DAYS})"
+        ));
+    }
+    if !(expansion.is_finite() && reality.is_finite()) {
+        return Err("a leg overflowed over a feed-extreme print — no finite read".to_string());
+    }
+    // The move from the two prices themselves — rebuilding it from the legs
+    // would leave a flat price a rounding residue away from a rise.
+    let price_move = spot / from - 1.0;
+    let expansion_share = (price_move > 0.0)
+        .then(|| (1.0 + expansion).ln() / (spot / from).ln())
+        .filter(|s| s.is_finite());
+    // A price that did not rise has no move to be mostly expansion, and
+    // nothing underwrote a re-rating: neutral, like sub-floor expansion.
+    let classification = if expansion < TO_NARRATIVE_MIN_MULTIPLE_EXPANSION || price_move <= 0.0 {
+        NarrativeClass::Neutral
+    } else if expansion_share.is_none_or(|share| share > TO_NARRATIVE_HYPE_SHARE) {
+        NarrativeClass::Hype
+    } else {
+        NarrativeClass::JustifiedExpensive
+    };
+    let matched_rule = (classification == NarrativeClass::Hype).then(|| {
+        format!(
+            "narrative hype: {} carried more than {:.0}% of the price move since {from_date}",
+            match form {
+                NarrativeForm::RevisionBased => "forward-multiple expansion",
+                NarrativeForm::OperatingReality => "trailing P/S expansion",
+            },
+            TO_NARRATIVE_HYPE_SHARE * 100.0,
+        )
+    });
+    Ok(ToNarrativeRead {
+        form,
+        from_date,
+        price_move,
+        expansion,
+        reality,
+        expansion_share,
+        classification,
+        elapsed_days,
+        matched_rule,
+    })
+}
+
+/// The date a quarterly print became market-observable: its filing date, else
+/// its period end plus the filing grace.
+fn quarter_known_on(row: &QuarterlyIncomeRow) -> Option<String> {
+    row.filing_date.clone().or_else(|| {
+        chrono::NaiveDate::parse_from_str(&row.period_end, "%Y-%m-%d")
+            .ok()
+            .and_then(|d| d.checked_add_signed(chrono::Duration::days(FILING_GRACE_DAYS)))
+            .map(|d| d.format("%Y-%m-%d").to_string())
+    })
+}
+
+/// The quarterly income rows known on or before `date`, newest period first, the
+/// latest version known by then winning a restated period.
+fn quarters_known_by<'a>(fin: &'a CompanyFinancials, date: &str) -> Vec<&'a QuarterlyIncomeRow> {
+    let mut rows: Vec<&QuarterlyIncomeRow> = fin
+        .quarterly_income
+        .iter()
+        .filter(|r| quarter_known_on(r).is_some_and(|known| known.as_str() <= date))
+        .collect();
+    rows.sort_by(|a, b| {
+        b.period_end
+            .cmp(&a.period_end)
+            .then_with(|| quarter_known_on(b).cmp(&quarter_known_on(a)))
+    });
+    rows.dedup_by(|a, b| a.period_end == b.period_end);
+    rows
+}
+
+/// TTM revenue per share as known on `date`: the newest four contiguous
+/// quarters filed by then over the newest quarter's diluted count —
+/// `(the newest quarter's period end, its diluted count, revenue per share)`.
+fn ttm_revenue_per_share_as_of(
+    fin: &CompanyFinancials,
+    date: &str,
+) -> std::result::Result<(String, f64, f64), String> {
+    let rows = quarters_known_by(fin, date);
+    let window = rows
+        .get(..4)
+        .filter(|w| quarters_contiguous(w.iter().map(|r| r.period_end.as_str())))
+        .ok_or_else(|| format!("no contiguous TTM filed on or before {date}"))?;
+    let revenue: Option<f64> = window.iter().map(|r| r.revenue).sum();
+    match (revenue, window[0].diluted_shares) {
+        (Some(revenue), Some(shares)) if revenue > 0.0 && shares > 0.0 => {
+            Ok((window[0].period_end.clone(), shares, revenue / shares))
+        }
+        _ => Err(format!(
+            "the newest TTM filed on or before {date} lacks positive revenue or a diluted count"
+        )),
+    }
+}
+
+/// Whether the as-filed diluted count, as known on `as_of`, runs continuously
+/// from the earlier TTM's newest quarter to the later one's — every
+/// quarter-over-quarter move within [`super::factors::OWN_HISTORY_SHARE_JUMP`],
+/// the factor own-history rule. Each end is `(period end, the count its TTM
+/// read)`, so the chain starts on the very basis the earlier TTM read and ends
+/// on the later one's — two versions of one quarter (a restatement onto a new
+/// share basis) compare directly. `Err` names the break: a split or a large
+/// issuance leaves the two per-share prints on different bases.
+fn share_basis_continuous(
+    fin: &CompanyFinancials,
+    (from_end, from_shares): (&str, f64),
+    (to_end, to_shares): (&str, f64),
+    as_of: &str,
+) -> std::result::Result<(), String> {
+    let within = |newer: f64, older: f64| {
+        newer > 0.0
+            && older > 0.0
+            && (newer / older - 1.0).abs() <= super::factors::OWN_HISTORY_SHARE_JUMP
+    };
+    let mut older = from_shares;
+    let mut later: Vec<&QuarterlyIncomeRow> = quarters_known_by(fin, as_of)
+        .into_iter()
+        .filter(|r| r.period_end.as_str() > from_end && r.period_end.as_str() <= to_end)
+        .collect();
+    later.reverse();
+    let counts = later
+        .iter()
+        .map(|row| row.diluted_shares)
+        .chain(std::iter::once(Some(to_shares)));
+    for count in counts {
+        match count {
+            Some(newer) if within(newer, older) => older = newer,
+            _ => {
+                return Err(format!(
+                    "a share-count break (a split or an issuance beyond {:.0}%) between the \
+                     quarters ending {from_end} and {to_end}",
+                    super::factors::OWN_HISTORY_SHARE_JUMP * 100.0
+                ))
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---- Technology-event pre-flag (the input delta's repricing screen) -----------
@@ -3821,10 +4358,10 @@ mod tests {
         let ttm: f64 = 1.55 + 1.54 + 1.53 + 1.52;
         let mut fin = strong();
         fin.consensus.as_mut().unwrap().eps_mid = Some(20.0);
-        let drivers = driver_ladder(&fin).unwrap().drivers;
+        let drivers = driver_ladder(&fin, None, &[]).unwrap().drivers;
         assert!((drivers[1] - ttm * (1.0 + DRIVER_GROWTH_MAX)).abs() < 1e-9);
         fin.consensus.as_mut().unwrap().eps_mid = Some(1.0);
-        let drivers = driver_ladder(&fin).unwrap().drivers;
+        let drivers = driver_ladder(&fin, None, &[]).unwrap().drivers;
         assert!((drivers[1] - ttm * (1.0 + DRIVER_GROWTH_MIN)).abs() < 1e-9);
     }
 
@@ -3896,8 +4433,8 @@ mod tests {
             row.filing_date = None;
         }
         let rates = rates();
-        let baseline = stock_anchor_observations(&strong(), &rates, true, None);
-        let scan = stock_anchor_observations(&fin, &rates, true, None);
+        let baseline = stock_anchor_observations(&strong(), &rates, DriverRung::ForwardEps, None);
+        let scan = stock_anchor_observations(&fin, &rates, DriverRung::ForwardEps, None);
         assert_eq!(
             scan.observations.len(),
             baseline.observations.len() - 4,
@@ -4083,14 +4620,20 @@ mod tests {
             fin
         };
         let rates = rates();
-        let baseline = stock_anchor_observations(&buyback_profile(), &rates, false, None);
+        let baseline = stock_anchor_observations(
+            &buyback_profile(),
+            &rates,
+            DriverRung::ForwardRevenuePerShare,
+            None,
+        );
         assert_eq!(baseline.observations.len(), ANCHOR_WINDOW_QUARTERS);
 
         // Variant A: the anchoring quarter of window 6 lacks its count — the
         // nearest count inside the window (row 7's) denominates the print.
         let mut fin = buyback_profile();
         fin.quarterly_income[6].diluted_shares = None;
-        let scan = stock_anchor_observations(&fin, &rates, false, None);
+        let scan =
+            stock_anchor_observations(&fin, &rates, DriverRung::ForwardRevenuePerShare, None);
         assert_eq!(
             scan.observations.len(),
             ANCHOR_WINDOW_QUARTERS,
@@ -4123,7 +4666,8 @@ mod tests {
             fin.shares_outstanding.is_some(),
             "the old fallback was available"
         );
-        let scan = stock_anchor_observations(&fin, &rates, false, None);
+        let scan =
+            stock_anchor_observations(&fin, &rates, DriverRung::ForwardRevenuePerShare, None);
         assert_eq!(
             scan.observations.len(),
             ANCHOR_WINDOW_QUARTERS - 1,
@@ -4139,7 +4683,7 @@ mod tests {
         let fin = trough_artifact_fin();
         let rates = rates();
         let m = compute_metrics(&fin);
-        let bundle = match scenario_targets_v2(195.0, &fin, &rates, &m) {
+        let bundle = match scenario_targets_v2(195.0, &fin, &rates, &m, None, &[]) {
             TargetOutcome::Computed(b) => b,
             TargetOutcome::NoAdmissibleDriver => panic!("fixture must compute"),
         };
@@ -4197,7 +4741,7 @@ mod tests {
         let rates = rates();
         let released_fin = recent_trough_fin(2);
         let m = compute_metrics(&released_fin);
-        let released = match scenario_targets_v2(195.0, &released_fin, &rates, &m) {
+        let released = match scenario_targets_v2(195.0, &released_fin, &rates, &m, None, &[]) {
             TargetOutcome::Computed(b) => b,
             TargetOutcome::NoAdmissibleDriver => panic!("fixture must compute"),
         };
@@ -4222,7 +4766,7 @@ mod tests {
         // One EPS-carrying row is not corroboration — even though periods_used
         // still reads 2 (the blend count a single estimate can ride).
         let clamped_fin = recent_trough_fin(1);
-        let clamped = match scenario_targets_v2(195.0, &clamped_fin, &rates, &m) {
+        let clamped = match scenario_targets_v2(195.0, &clamped_fin, &rates, &m, None, &[]) {
             TargetOutcome::Computed(b) => b,
             TargetOutcome::NoAdmissibleDriver => panic!("fixture must compute"),
         };
@@ -4256,7 +4800,7 @@ mod tests {
         c.eps_mid_rows = 2; // fully corroborated — the veto must come from the print
         let rates = rates();
         let m = compute_metrics(&fin);
-        let bundle = match scenario_targets_v2(195.0, &fin, &rates, &m) {
+        let bundle = match scenario_targets_v2(195.0, &fin, &rates, &m, None, &[]) {
             TargetOutcome::Computed(b) => b,
             TargetOutcome::NoAdmissibleDriver => panic!("fixture must compute"),
         };
@@ -4286,7 +4830,7 @@ mod tests {
         c.periods_used = 2;
         let rates = rates();
         let m = compute_metrics(&fin);
-        let bundle = match scenario_targets_v2(195.0, &fin, &rates, &m) {
+        let bundle = match scenario_targets_v2(195.0, &fin, &rates, &m, None, &[]) {
             TargetOutcome::Computed(b) => b,
             TargetOutcome::NoAdmissibleDriver => panic!("fixture must compute"),
         };
@@ -4345,8 +4889,8 @@ mod tests {
         let mut shuffled = canonical.clone();
         shuffled.quarterly_income.reverse();
         canonicalize_statements(&mut shuffled);
-        let a = driver_ladder(&canonical).unwrap();
-        let b = driver_ladder(&shuffled).unwrap();
+        let a = driver_ladder(&canonical, None, &[]).unwrap();
+        let b = driver_ladder(&shuffled, None, &[]).unwrap();
         assert_eq!(a.drivers, b.drivers);
         assert!((b.drivers[1] - ttm * (1.0 + DRIVER_GROWTH_MAX)).abs() < 1e-9);
     }
@@ -4390,12 +4934,12 @@ mod tests {
         c.eps_low = Some(18.0);
         c.eps_mid = Some(20.0);
         c.eps_high = Some(22.0);
-        let read = driver_ladder(&fin).unwrap();
+        let read = driver_ladder(&fin, None, &[]).unwrap();
         assert!(!read.flat_driver, "the spread was published");
         assert!(read.clamp_flattened, "…but the clamp collapsed it");
         assert!((read.drivers[0] - read.drivers[2]).abs() < 1e-12);
         // The healthy fixture spread is not flagged.
-        let read = driver_ladder(&strong()).unwrap();
+        let read = driver_ladder(&strong(), None, &[]).unwrap();
         assert!(!read.clamp_flattened);
     }
 
@@ -4414,7 +4958,7 @@ mod tests {
         let c = fin.consensus.as_mut().unwrap();
         c.eps_low = Some(5.0);
         c.eps_high = None;
-        let read = driver_ladder(&fin).unwrap();
+        let read = driver_ladder(&fin, None, &[]).unwrap();
         assert!(read.flat_driver);
         assert!(!read.clamp_flattened);
         assert!(all_flat(&read), "both legs hold at mid: {:?}", read.drivers);
@@ -4423,7 +4967,7 @@ mod tests {
         let c = fin.consensus.as_mut().unwrap();
         c.eps_low = None;
         c.eps_high = Some(9.0);
-        let read = driver_ladder(&fin).unwrap();
+        let read = driver_ladder(&fin, None, &[]).unwrap();
         assert!(read.flat_driver);
         assert!(all_flat(&read), "both legs hold at mid: {:?}", read.drivers);
         // The revenue rung shares the convention (EPS legs removed so rung 2
@@ -4434,10 +4978,236 @@ mod tests {
         c.eps_mid = None;
         c.eps_high = None;
         c.revenue_high = None;
-        let read = driver_ladder(&fin).unwrap();
-        assert!(!read.use_eps, "rung 2 must be the driver under an EPS-less consensus");
+        let read = driver_ladder(&fin, None, &[]).unwrap();
+        assert_eq!(
+            read.rung,
+            DriverRung::ForwardRevenuePerShare,
+            "rung 2 must be the driver under an EPS-less consensus"
+        );
         assert!(read.flat_driver);
         assert!(all_flat(&read), "both legs hold at mid: {:?}", read.drivers);
+    }
+
+    /// [`strong`] with quarterly revenue on the consensus's dollar scale (TTM
+    /// revenue per share ≈ 26.3 against a forward 28.7), so every driver rung
+    /// prices inside the growth clamp.
+    fn cyclical_fin() -> CompanyFinancials {
+        let mut fin = strong();
+        for (i, row) in fin.quarterly_income.iter_mut().enumerate() {
+            row.revenue = Some(1.0e11 - 1.0e9 * i as f64);
+        }
+        let c = fin.consensus.as_mut().unwrap();
+        c.revenue_mid_rows = 2;
+        c.eps_mid_rows = 2;
+        c.revenue_growth_rows = ConsensusGrowthRows {
+            near: Some(430.0e9),
+            far: Some(473.0e9),
+        };
+        c.eps_growth_rows = ConsensusGrowthRows {
+            near: Some(6.5),
+            far: Some(6.5),
+        };
+        fin
+    }
+
+    /// Five consecutive fiscal years (newest 2025) at the given net margins on
+    /// revenue 100.
+    fn annual(margins: &[f64]) -> Vec<AnnualIncomeRow> {
+        margins
+            .iter()
+            .enumerate()
+            .map(|(i, m)| AnnualIncomeRow {
+                period_end: format!("{}-12-31", 2025 - i),
+                filing_date: Some(format!("{}-02-20", 2026 - i)),
+                revenue: Some(100.0),
+                net_income: Some(100.0 * m),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_mid_cycle_margin_is_the_five_year_median_and_types_its_absences() {
+        // Unordered, with the newest year restated: the later filing wins.
+        let mut rows = annual(&[0.05, 0.10, 0.20, 0.15, 0.30]);
+        rows.push(AnnualIncomeRow {
+            period_end: "2025-12-31".into(),
+            filing_date: Some("2026-04-01".into()),
+            revenue: Some(100.0),
+            net_income: Some(40.0),
+        });
+        rows.reverse();
+        // Margins 0.40 (restated), 0.10, 0.20, 0.15, 0.30 → median 0.20.
+        assert!((mid_cycle_margin(&rows).unwrap() - 0.20).abs() < 1e-12);
+        // An older sixth year never enters the window.
+        let mut six = annual(&[0.05, 0.10, 0.20, 0.15, 0.30]);
+        six.push(AnnualIncomeRow {
+            period_end: "2020-12-31".into(),
+            filing_date: None,
+            revenue: Some(100.0),
+            net_income: Some(90.0),
+        });
+        assert!((mid_cycle_margin(&six).unwrap() - 0.15).abs() < 1e-12);
+        let err = mid_cycle_margin(&annual(&[0.1, 0.1, 0.1, 0.1])).unwrap_err();
+        assert!(err.contains("4 fiscal year(s)"), "{err}");
+        let mut skipped = annual(&[0.1, 0.1, 0.1, 0.1, 0.1]);
+        skipped[4].period_end = "2019-12-31".into();
+        let err = mid_cycle_margin(&skipped).unwrap_err();
+        assert!(err.contains("not consecutive"), "{err}");
+        let mut missing = annual(&[0.1, 0.1, 0.1, 0.1, 0.1]);
+        missing[2].net_income = None;
+        let err = mid_cycle_margin(&missing).unwrap_err();
+        assert!(err.contains("net-income line"), "{err}");
+        let err = mid_cycle_margin(&annual(&[0.1, -0.2, -0.1, 0.0, 0.3])).unwrap_err();
+        assert!(err.contains("at or below zero"), "{err}");
+    }
+
+    #[test]
+    fn a_commodity_cyclical_prices_mid_cycle_eps_on_its_normalized_basis() {
+        let fin = cyclical_fin();
+        let rows = annual(&[0.05, 0.10, 0.20, 0.15, 0.30]);
+        let read = driver_ladder(&fin, Some(Archetype::CommodityCyclical), &rows).unwrap();
+        let DriverRung::MidCycleEps { margin } = read.rung else {
+            panic!("the mid-cycle rung prices: {:?}", read.rung);
+        };
+        assert!((margin - 0.15).abs() < 1e-12, "{margin}");
+        assert!(read.label.starts_with("mid-cycle EPS"), "{}", read.label);
+        assert!(read.label.contains("15.0%"), "{}", read.label);
+        let per_share = |revenue: f64| 0.15 * revenue / 1.5e10;
+        assert!((read.drivers[0] - per_share(420.0e9)).abs() < 1e-9, "{:?}", read.drivers);
+        assert!((read.drivers[1] - per_share(430.0e9)).abs() < 1e-9);
+        assert!((read.drivers[2] - per_share(440.0e9)).abs() < 1e-9);
+        let ttm_rev_ps = (1.0e11 + 0.99e11 + 0.98e11 + 0.97e11) / 1.5e10;
+        assert!((read.trailing_print.unwrap() - 0.15 * ttm_rev_ps).abs() < 1e-9);
+
+        // The anchor history stands on the same basis: each window's multiple is
+        // its P/S over the median margin.
+        let rates = rates();
+        let revenue = stock_anchor_observations(
+            &fin,
+            &rates,
+            DriverRung::ForwardRevenuePerShare,
+            None,
+        );
+        let normalized =
+            stock_anchor_observations(&fin, &rates, DriverRung::MidCycleEps { margin: 0.15 }, None);
+        assert!(!revenue.observations.is_empty());
+        assert_eq!(revenue.observations.len(), normalized.observations.len());
+        for (r, n) in revenue.observations.iter().zip(&normalized.observations) {
+            assert!((n.raw_multiple - r.raw_multiple / 0.15).abs() < 1e-9, "{r:?} {n:?}");
+        }
+
+        // Through the target function: the label is the recorded rung, the
+        // three-year leg compounds the revenue rows' growth, and the implied
+        // read carries the margin caveat.
+        let m = compute_metrics(&fin);
+        let bundle = match scenario_targets_v2(
+            195.0,
+            &fin,
+            &rates,
+            &m,
+            Some(Archetype::CommodityCyclical),
+            &rows,
+        ) {
+            TargetOutcome::Computed(b) => b,
+            TargetOutcome::NoAdmissibleDriver => panic!("the mid-cycle rung computes"),
+        };
+        assert_eq!(bundle.meta.driver_rung, read.label);
+        assert!((bundle.meta.three_year_growth.unwrap() - 0.10).abs() < 1e-9);
+        let implied = bundle.implied.expect("the inversion reads");
+        assert!(implied.revenue_based);
+        assert_eq!(implied.driver_rung, read.label);
+    }
+
+    #[test]
+    fn the_cyclical_override_falls_back_to_the_shared_ladder_with_its_reason() {
+        let fin = cyclical_fin();
+        let shared = driver_ladder(&fin, None, &[]).unwrap();
+        let mut skipped = annual(&[0.1, 0.1, 0.1, 0.1, 0.1]);
+        skipped[4].period_end = "2019-12-31".into();
+        let mut missing = annual(&[0.1, 0.1, 0.1, 0.1, 0.1]);
+        missing[2].net_income = None;
+        for (rows, reason) in [
+            (annual(&[0.1, 0.1, 0.1, 0.1]), "4 fiscal year(s)"),
+            (annual(&[0.1, -0.2, -0.1, 0.0, 0.3]), "at or below zero"),
+            (skipped, "not consecutive"),
+            (missing, "net-income line"),
+        ] {
+            let read = driver_ladder(&fin, Some(Archetype::CommodityCyclical), &rows).unwrap();
+            assert_eq!(read.rung, DriverRung::ForwardEps);
+            assert_eq!(read.drivers, shared.drivers);
+            assert!(
+                read.label.starts_with(
+                    "consensus forward EPS (commodity-cyclical mid-cycle EPS unavailable: "
+                ),
+                "{}",
+                read.label
+            );
+            assert!(read.label.contains(reason), "{}", read.label);
+        }
+        // No revenue consensus: the EPS rung, its reason named.
+        let mut no_revenue = cyclical_fin();
+        no_revenue.consensus.as_mut().unwrap().revenue_mid = None;
+        let read = driver_ladder(
+            &no_revenue,
+            Some(Archetype::CommodityCyclical),
+            &annual(&[0.1, 0.1, 0.1, 0.1, 0.1]),
+        )
+        .unwrap();
+        assert_eq!(read.rung, DriverRung::ForwardEps);
+        assert!(read.label.contains("no positive revenue consensus"), "{}", read.label);
+        // No diluted share count (nor a quote share count): the EPS rung.
+        let mut countless = cyclical_fin();
+        countless.quarterly_income[0].diluted_shares = None;
+        countless.shares_outstanding = None;
+        let read = driver_ladder(
+            &countless,
+            Some(Archetype::CommodityCyclical),
+            &annual(&[0.1, 0.1, 0.1, 0.1, 0.1]),
+        )
+        .unwrap();
+        assert_eq!(read.rung, DriverRung::ForwardEps);
+        assert!(read.label.contains("no positive diluted share count"), "{}", read.label);
+        // No EPS consensus either and fewer than five years: the revenue rung.
+        let mut revenue_only = cyclical_fin();
+        revenue_only.consensus.as_mut().unwrap().eps_mid = None;
+        let read =
+            driver_ladder(&revenue_only, Some(Archetype::CommodityCyclical), &[]).unwrap();
+        assert_eq!(read.rung, DriverRung::ForwardRevenuePerShare);
+        assert!(read.label.contains("0 fiscal year(s)"), "{}", read.label);
+    }
+
+    #[test]
+    fn every_other_archetype_and_none_price_the_shared_ladder_unchanged() {
+        let fin = cyclical_fin();
+        let rows = annual(&[0.05, 0.10, 0.20, 0.15, 0.30]);
+        let rates = rates();
+        let m = compute_metrics(&fin);
+        let shared = scenario_targets_v2(195.0, &fin, &rates, &m, None, &[]);
+        let TargetOutcome::Computed(bundle) = &shared else {
+            panic!("the fixture computes");
+        };
+        assert_eq!(bundle.meta.driver_rung, "consensus forward EPS");
+        for archetype in [
+            Archetype::SecularCompounder,
+            Archetype::QualityCompounder,
+            Archetype::AiInfra,
+            Archetype::Disruptor,
+        ] {
+            assert_eq!(
+                scenario_targets_v2(195.0, &fin, &rates, &m, Some(archetype), &rows),
+                shared,
+                "{archetype:?}"
+            );
+        }
+        // Ai-infra and disruptor climb back to EPS on a positive consensus and
+        // take forward revenue per share without one — the shared ladder.
+        let mut pre_profit = cyclical_fin();
+        pre_profit.consensus.as_mut().unwrap().eps_mid = Some(-0.4);
+        for archetype in [Archetype::AiInfra, Archetype::Disruptor] {
+            let read = driver_ladder(&pre_profit, Some(archetype), &rows).unwrap();
+            assert_eq!(read.rung, DriverRung::ForwardRevenuePerShare);
+            assert_eq!(read.label, "consensus forward revenue per share");
+        }
     }
 
     #[test]
@@ -5230,7 +6000,7 @@ mod tests {
         let fin = strong();
         let rates = rates();
         let m = compute_metrics(&fin);
-        let bundle = match scenario_targets_v2(195.0, &fin, &rates, &m) {
+        let bundle = match scenario_targets_v2(195.0, &fin, &rates, &m, None, &[]) {
             TargetOutcome::Computed(b) => b,
             TargetOutcome::NoAdmissibleDriver => panic!("fixture must compute"),
         };
@@ -5257,7 +6027,7 @@ mod tests {
         let fin = strong();
         let rates = rates();
         let m = compute_metrics(&fin);
-        let bundle = match scenario_targets_v2(195.0, &fin, &rates, &m) {
+        let bundle = match scenario_targets_v2(195.0, &fin, &rates, &m, None, &[]) {
             TargetOutcome::Computed(b) => b,
             TargetOutcome::NoAdmissibleDriver => panic!("fixture must compute"),
         };
@@ -6172,6 +6942,297 @@ mod tests {
         assert!(narrative_vs_reality(&fin, 140.0, Some(100.0), &[], Some(3)).is_err());
         let bare = narrative_fin(None, None);
         assert!(narrative_vs_reality(&bare, 140.0, Some(100.0), &[], Some(365)).is_err());
+    }
+
+    /// Daily closes of 100 from `from` through 2026-10-13.
+    fn flat_closes(from: &str) -> Vec<DatedValue> {
+        let mut d = chrono::NaiveDate::parse_from_str(from, "%Y-%m-%d").unwrap();
+        let end = chrono::NaiveDate::from_ymd_opt(2026, 10, 13).unwrap();
+        let mut out = Vec::new();
+        while d <= end {
+            out.push(DatedValue {
+                date: d.format("%Y-%m-%d").to_string(),
+                value: 100.0,
+            });
+            d += chrono::Duration::days(1);
+        }
+        out
+    }
+
+    /// The TO narrative fixture: [`narrative_fin`] with ten diluted shares a
+    /// quarter, TTM revenue 400 filed by the window's start and 440 today.
+    fn to_narrative_fin(mid: Option<f64>) -> CompanyFinancials {
+        let revs = [110.0, 110.0, 110.0, 110.0, 100.0, 100.0, 100.0, 100.0];
+        let mut fin = narrative_fin(mid, Some(revs));
+        for row in &mut fin.quarterly_income {
+            row.diluted_shares = Some(10.0);
+        }
+        fin
+    }
+
+    const TO_AS_OF: &str = "2026-10-13";
+    const TO_WINDOW_START: &str = "2025-10-13";
+
+    /// An anchor print on the flat series' basis (its stored close the 100 the
+    /// series still serves — no split since).
+    fn print(date: &str, mid: f64) -> NarrativeAnchorPrint {
+        NarrativeAnchorPrint {
+            date: date.into(),
+            close: 100.0,
+            eps_periods: eps_periods(mid),
+        }
+    }
+
+    #[test]
+    fn to_narrative_revision_form_splits_the_move_since_the_anchor_print() {
+        let closes = flat_closes("2025-01-01");
+        // Flat revisions under a +50% move: the multiple carried all of it.
+        let fin = to_narrative_fin(Some(10.0));
+        let anchor = print("2025-10-01", 10.0);
+        let read = to_narrative_read(&fin, 150.0, &closes, Some(&anchor), TO_WINDOW_START, TO_AS_OF)
+            .unwrap();
+        assert_eq!(read.form, NarrativeForm::RevisionBased);
+        assert_eq!(read.from_date, "2025-10-01");
+        assert_eq!(read.elapsed_days, 377);
+        assert!((read.price_move - 0.5).abs() < 1e-12, "{read:?}");
+        assert!((read.expansion_share.unwrap() - 1.0).abs() < 1e-12);
+        assert_eq!(read.classification, NarrativeClass::Hype);
+        assert!(read.matched_rule.as_deref().unwrap().contains("more than 70%"));
+        // A +20% revision underwrites most of a +30% move.
+        let fin = to_narrative_fin(Some(12.0));
+        let read = to_narrative_read(&fin, 130.0, &closes, Some(&anchor), TO_WINDOW_START, TO_AS_OF)
+            .unwrap();
+        assert!(read.expansion_share.unwrap() < 0.35, "{read:?}");
+        assert_eq!(read.classification, NarrativeClass::JustifiedExpensive);
+        assert!(read.matched_rule.is_none());
+    }
+
+    #[test]
+    fn to_narrative_trips_on_the_log_share_above_seventy_percent() {
+        let closes = flat_closes("2025-01-01");
+        let anchor = print("2025-10-01", 10.0);
+        // A +50% move split so the expansion's log share is just over and just
+        // under the trip.
+        let total = 1.5f64.ln();
+        for (share, class) in [
+            (0.71, NarrativeClass::Hype),
+            (0.69, NarrativeClass::JustifiedExpensive),
+        ] {
+            let mid = 10.0 * ((1.0 - share) * total).exp();
+            let fin = to_narrative_fin(Some(mid));
+            let read =
+                to_narrative_read(&fin, 150.0, &closes, Some(&anchor), TO_WINDOW_START, TO_AS_OF)
+                    .unwrap();
+            assert!((read.expansion_share.unwrap() - share).abs() < 1e-9, "{read:?}");
+            assert_eq!(read.classification, class, "{share}");
+        }
+    }
+
+    #[test]
+    fn to_narrative_never_reads_hype_on_a_falling_price_or_under_the_floor() {
+        let closes = flat_closes("2025-01-01");
+        let anchor = print("2025-10-01", 10.0);
+        // Estimates cut 30% while the multiple rose 14% and the price fell 20%:
+        // no positive move to be mostly expansion, and nothing underwrote a
+        // re-rating — neutral.
+        let fin = to_narrative_fin(Some(7.0));
+        let read = to_narrative_read(&fin, 80.0, &closes, Some(&anchor), TO_WINDOW_START, TO_AS_OF)
+            .unwrap();
+        assert!(read.expansion > TO_NARRATIVE_MIN_MULTIPLE_EXPANSION);
+        assert!(read.price_move < 0.0);
+        assert_eq!(read.expansion_share, None);
+        assert_eq!(read.classification, NarrativeClass::Neutral);
+        assert!(read.matched_rule.is_none());
+        // A 4% expansion over flat estimates is under the floor: neutral.
+        let fin = to_narrative_fin(Some(10.0));
+        let read = to_narrative_read(&fin, 104.0, &closes, Some(&anchor), TO_WINDOW_START, TO_AS_OF)
+            .unwrap();
+        assert_eq!(read.classification, NarrativeClass::Neutral);
+    }
+
+    #[test]
+    fn to_narrative_bridges_a_split_since_the_anchor_print() {
+        // A 2:1 split after the print: the stored close was 200 and the print's
+        // EPS 10 on that day's basis; today's series serves the session at 100,
+        // the consensus 5.50 and the price 110. Bridged, EPS grew 10% and the
+        // multiple held — never 100% expansion.
+        let closes = flat_closes("2025-01-01");
+        let fin = to_narrative_fin(Some(5.5));
+        let anchor = NarrativeAnchorPrint {
+            date: "2025-10-01".into(),
+            close: 200.0,
+            eps_periods: eps_periods(10.0),
+        };
+        let read = to_narrative_read(&fin, 110.0, &closes, Some(&anchor), TO_WINDOW_START, TO_AS_OF)
+            .unwrap();
+        assert_eq!(read.form, NarrativeForm::RevisionBased);
+        assert!(read.expansion.abs() < 1e-12, "{read:?}");
+        assert!((read.reality - 0.1).abs() < 1e-12, "{read:?}");
+        assert!((read.price_move - 0.1).abs() < 1e-12, "{read:?}");
+        assert_eq!(read.classification, NarrativeClass::Neutral);
+    }
+
+    #[test]
+    fn to_narrative_reads_a_flat_price_from_the_prices_themselves() {
+        // Unchanged price, estimates collapsing 10 → 3: the legs multiply back
+        // to a rounding residue above zero, but the move itself is zero —
+        // neutral, never hype.
+        let closes = flat_closes("2025-01-01");
+        let fin = to_narrative_fin(Some(3.0));
+        let anchor = print("2025-10-01", 10.0);
+        let read = to_narrative_read(&fin, 100.0, &closes, Some(&anchor), TO_WINDOW_START, TO_AS_OF)
+            .unwrap();
+        assert!(read.expansion > 2.0, "{read:?}");
+        assert_eq!(read.price_move, 0.0);
+        assert_eq!(read.expansion_share, None);
+        assert_eq!(read.classification, NarrativeClass::Neutral);
+    }
+
+    #[test]
+    fn to_narrative_fallback_ttms_read_only_what_was_filed_by_their_date() {
+        // A restatement of the window-start TTM's newest quarter, filed after the
+        // window's start, stays out of that TTM: revenue per share 40 then, 44
+        // now — a +10% reality leg, never the restated 800's −45%.
+        let closes = flat_closes("2025-01-01");
+        let mut fin = to_narrative_fin(None);
+        fin.quarterly_income.push(QuarterlyIncomeRow {
+            period_end: "2025-06-30".into(),
+            filing_date: Some("2025-11-20".into()),
+            revenue: Some(500.0),
+            diluted_shares: Some(10.0),
+            ..QuarterlyIncomeRow::default()
+        });
+        let read =
+            to_narrative_read(&fin, 140.0, &closes, None, TO_WINDOW_START, TO_AS_OF).unwrap();
+        assert!((read.reality - 0.1).abs() < 1e-12, "{read:?}");
+    }
+
+    #[test]
+    fn to_narrative_fallback_is_unknown_across_a_share_count_break() {
+        // A 2:1 split between the window-start TTM's newest quarter (10 shares)
+        // and the next (20): the as-filed per-share prints sit on different
+        // bases.
+        let closes = flat_closes("2025-01-01");
+        let mut fin = to_narrative_fin(None);
+        for row in fin.quarterly_income.iter_mut().take(4) {
+            row.diluted_shares = Some(20.0);
+        }
+        let err =
+            to_narrative_read(&fin, 140.0, &closes, None, TO_WINDOW_START, TO_AS_OF).unwrap_err();
+        assert!(
+            err.contains("a share-count break") && err.contains("2025-06-30 and 2026-06-30"),
+            "{err}"
+        );
+        // Both TTMs ending on one quarter, its later version restated onto a 2:1
+        // basis (revenue 400 → 440, shares 10 → 20): the two versions' counts
+        // compare directly.
+        let mut same_quarter = to_narrative_fin(None);
+        same_quarter.quarterly_income.drain(..4);
+        same_quarter.quarterly_income.push(QuarterlyIncomeRow {
+            period_end: "2025-06-30".into(),
+            filing_date: Some("2026-02-01".into()),
+            revenue: Some(140.0),
+            diluted_shares: Some(20.0),
+            ..QuarterlyIncomeRow::default()
+        });
+        let err =
+            to_narrative_read(&same_quarter, 110.0, &closes, None, TO_WINDOW_START, TO_AS_OF)
+                .unwrap_err();
+        assert!(
+            err.contains("a share-count break") && err.contains("2025-06-30 and 2025-06-30"),
+            "{err}"
+        );
+        // A drift inside 10% a quarter keeps the basis continuous.
+        let mut drift = to_narrative_fin(None);
+        for (i, row) in drift.quarterly_income.iter_mut().take(4).enumerate() {
+            row.diluted_shares = Some(10.0 * (1.0 + 0.05 * (4 - i) as f64));
+        }
+        assert!(to_narrative_read(&drift, 140.0, &closes, None, TO_WINDOW_START, TO_AS_OF).is_ok());
+    }
+
+    #[test]
+    fn to_narrative_falls_back_to_the_ps_split_since_the_window_start() {
+        let closes = flat_closes("2025-01-01");
+        // A debut: no anchor print, no consensus. TTM revenue per share 40
+        // (filed by the window's start) → 44 today.
+        let fin = to_narrative_fin(None);
+        let read =
+            to_narrative_read(&fin, 140.0, &closes, None, TO_WINDOW_START, TO_AS_OF).unwrap();
+        assert_eq!(read.form, NarrativeForm::OperatingReality);
+        assert_eq!(read.from_date, TO_WINDOW_START);
+        assert!((read.reality - 0.1).abs() < 1e-12, "{read:?}");
+        assert!((read.expansion - ((140.0 / 44.0) / (100.0 / 40.0) - 1.0)).abs() < 1e-12);
+        assert!((read.price_move - 0.4).abs() < 1e-12);
+        assert_eq!(read.classification, NarrativeClass::Hype, "{read:?}");
+        let read =
+            to_narrative_read(&fin, 120.0, &closes, None, TO_WINDOW_START, TO_AS_OF).unwrap();
+        assert_eq!(read.classification, NarrativeClass::JustifiedExpensive, "{read:?}");
+        // An anchor print sharing no fiscal period with today's consensus takes
+        // the same fallback.
+        let fin = to_narrative_fin(Some(10.0));
+        let mut stale = print("2025-10-01", 10.0);
+        stale.eps_periods[0].period_end = "2025-06-30".into();
+        let read =
+            to_narrative_read(&fin, 140.0, &closes, Some(&stale), TO_WINDOW_START, TO_AS_OF)
+                .unwrap();
+        assert_eq!(read.form, NarrativeForm::OperatingReality);
+        // So does a print whose bridge can't be read: today's series starts
+        // after the print's session.
+        let late = flat_closes("2025-10-05");
+        let anchor = print("2025-10-01", 10.0);
+        let read =
+            to_narrative_read(&fin, 140.0, &late, Some(&anchor), TO_WINDOW_START, TO_AS_OF)
+                .unwrap();
+        assert_eq!(read.form, NarrativeForm::OperatingReality);
+        assert_eq!(read.from_date, TO_WINDOW_START);
+    }
+
+    #[test]
+    fn to_narrative_reads_unknown_beyond_the_anchor_bound_and_on_every_unresolved_leg() {
+        let closes = flat_closes("2025-01-01");
+        let fin = to_narrative_fin(Some(10.0));
+        // 45 days before the window's start reads; 46 is unknown.
+        let at_bound = print("2025-08-29", 10.0);
+        assert!(to_narrative_read(&fin, 150.0, &closes, Some(&at_bound), TO_WINDOW_START, TO_AS_OF)
+            .is_ok());
+        let beyond = print("2025-08-28", 10.0);
+        let err =
+            to_narrative_read(&fin, 150.0, &closes, Some(&beyond), TO_WINDOW_START, TO_AS_OF)
+                .unwrap_err();
+        assert!(err.contains("46 days before the window's start"), "{err}");
+        // No close near the date the move starts.
+        let late = flat_closes("2026-01-01");
+        let err =
+            to_narrative_read(&fin, 150.0, &late, None, TO_WINDOW_START, TO_AS_OF).unwrap_err();
+        assert!(err.contains("no close near 2025-10-13"), "{err}");
+        // A window under the minimum interval.
+        let err =
+            to_narrative_read(&fin, 150.0, &closes, None, "2026-10-10", TO_AS_OF).unwrap_err();
+        assert!(err.contains("day(s) since"), "{err}");
+        // No TTM window filed by the window's start.
+        let err =
+            to_narrative_read(&fin, 150.0, &closes, None, "2025-02-01", TO_AS_OF).unwrap_err();
+        assert!(err.contains("no contiguous TTM filed on or before 2025-02-01"), "{err}");
+        // The newest filed window without a diluted count is unknown — never an
+        // older window standing in.
+        let mut countless = to_narrative_fin(None);
+        countless.quarterly_income[4].diluted_shares = None;
+        let err = to_narrative_read(&countless, 150.0, &closes, None, TO_WINDOW_START, TO_AS_OF)
+            .unwrap_err();
+        assert!(
+            err.contains("the newest TTM filed on or before 2025-10-13 lacks positive revenue"),
+            "{err}"
+        );
+        // A feed-extreme print overflowing a leg, and a non-positive spot.
+        let mut extreme = to_narrative_fin(None);
+        for row in &mut extreme.quarterly_income {
+            row.revenue = Some(1e-300);
+        }
+        let err =
+            to_narrative_read(&extreme, 1e300, &closes, None, TO_WINDOW_START, TO_AS_OF)
+                .unwrap_err();
+        assert!(err.contains("overflowed"), "{err}");
+        assert!(to_narrative_read(&fin, 0.0, &closes, None, TO_WINDOW_START, TO_AS_OF).is_err());
     }
 
     #[test]

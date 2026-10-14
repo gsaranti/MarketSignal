@@ -70,7 +70,7 @@ const MOMENTUM_SKIP_DAYS: i64 = 30;
 /// A price read as of a date needs a close within this many calendar days on or
 /// before it — so a gapped series can't stand one stale close in for every
 /// window, and momentum's lookback must reach a year back.
-const PRICE_PROXIMITY_DAYS: i64 = 10;
+pub(crate) const PRICE_PROXIMITY_DAYS: i64 = 10;
 
 /// One sector's anchors — the 50-point centre of each sector-banded factor, plus
 /// the gross-margin anchor the value-creation read's moat proxy compares against.
@@ -820,12 +820,13 @@ fn ratio(num: Option<f64>, den: Option<f64>) -> Option<f64> {
 }
 
 /// The closes on or before `as_of`, oldest first.
-fn closes_through<'a>(closes: &'a [DatedValue], as_of: &str) -> &'a [DatedValue] {
+pub(crate) fn closes_through<'a>(closes: &'a [DatedValue], as_of: &str) -> &'a [DatedValue] {
     let end = closes.partition_point(|c| c.date.as_str() <= as_of);
     &closes[..end]
 }
 
-fn shift(date: &str, days: i64) -> Option<String> {
+/// `date` moved `days` calendar days earlier; `None` where it doesn't parse.
+pub(crate) fn shift(date: &str, days: i64) -> Option<String> {
     chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
         .ok()
         .and_then(|d| d.checked_sub_signed(chrono::Duration::days(days)))
@@ -834,7 +835,7 @@ fn shift(date: &str, days: i64) -> Option<String> {
 
 /// The last close on or before `date`, within [`PRICE_PROXIMITY_DAYS`] of it;
 /// `None` where the series has no close that near.
-fn close_near<'a>(closes: &'a [DatedValue], date: &str) -> Option<&'a DatedValue> {
+pub(crate) fn close_near<'a>(closes: &'a [DatedValue], date: &str) -> Option<&'a DatedValue> {
     let last = closes_through(closes, date).last()?;
     let earliest = shift(date, PRICE_PROXIMITY_DAYS)?;
     (last.date >= earliest).then_some(last)
@@ -844,7 +845,7 @@ fn close_near<'a>(closes: &'a [DatedValue], date: &str) -> Option<&'a DatedValue
 /// for a duplicated date wins (the engine's
 /// [`super::engine::latest_on_or_before`] rule) — so every session-counting read
 /// counts sessions, never rows.
-fn dedupe_closes(closes: &[DatedValue]) -> Vec<DatedValue> {
+pub(crate) fn dedupe_closes(closes: &[DatedValue]) -> Vec<DatedValue> {
     let mut sorted = closes.to_vec();
     sorted.sort_by(|a, b| a.date.cmp(&b.date));
     let mut out: Vec<DatedValue> = Vec::with_capacity(sorted.len());
@@ -859,7 +860,7 @@ fn dedupe_closes(closes: &[DatedValue]) -> Vec<DatedValue> {
 
 /// The 12−1 return as of `as_of`; `None` where the series has no close near a
 /// year back or near a month back.
-fn momentum_as_of(closes: &[DatedValue], as_of: &str) -> Option<f64> {
+pub(crate) fn momentum_as_of(closes: &[DatedValue], as_of: &str) -> Option<f64> {
     let base = close_near(closes, &shift(as_of, MOMENTUM_LOOKBACK_DAYS)?)?;
     let recent = close_near(closes, &shift(as_of, MOMENTUM_SKIP_DAYS)?)?;
     (base.value > 0.0).then(|| recent.value / base.value - 1.0)

@@ -2477,6 +2477,38 @@ fn dated_eod_from_value(value: &Value) -> Result<Vec<crate::portfolio::engine::D
     Ok(dated)
 }
 
+/// Shape an FMP `/historical-price-eod/light` array body into dated
+/// chronological **bars with their share volume** — the tradability flag's
+/// input ([`FmpDataSource::fetch_dated_bars`]). A row is readable on the same
+/// rule as [`dated_eod_from_value`] (a canonical date and a usable close); its
+/// volume is kept only when finite and non-negative, so a row serving none, a
+/// negative or a non-finite volume keeps its close and reads as a missing
+/// volume day. Pure.
+fn dated_bars_from_value(value: &Value) -> Result<Vec<crate::portfolio::engine::DailyBar>> {
+    let rows = value
+        .as_array()
+        .context("FMP EOD response did not match the expected array shape")?;
+    let mut bars: Vec<crate::portfolio::engine::DailyBar> = rows
+        .iter()
+        .filter_map(|row| {
+            let date = row.get("date").and_then(Value::as_str).and_then(canonical_date)?;
+            let close =
+                crate::portfolio::engine::usable_price(row.get("price").and_then(Value::as_f64))?;
+            let volume = row
+                .get("volume")
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite() && *v >= 0.0);
+            Some(crate::portfolio::engine::DailyBar {
+                date,
+                close,
+                volume,
+            })
+        })
+        .collect();
+    bars.sort_by(|a, b| a.date.cmp(&b.date));
+    Ok(bars)
+}
+
 impl MarketDataSource for FmpDataSource {
     fn baseline_scan(&self, cadence: ReportCadence) -> Result<BaselineMarketData> {
         // Every group degrades to recorded gaps rather than failing: a thin or empty
@@ -6229,7 +6261,7 @@ mod tests {
 // actual call streams one tracker row.
 
 /// FMP endpoint paths added by the fund slice (all on the `/stable` base).
-const FMP_INCOME_QUARTERLY_PATH: &str = "/income-statement";
+const FMP_INCOME_PATH: &str = "/income-statement";
 /// Per-symbol earnings rows (actual vs estimate) — the quick check's
 /// new-earnings-actual evidence leg (`docs/portfolio-analysis.md` §Starting
 /// parameters; distinct from the report's market-wide `/earnings-calendar`).
@@ -6335,6 +6367,11 @@ const EVIDENCE_LATEST_ROW_LIMIT: &str = "4";
 /// Quarters of income-statement history requested — the v2 anchor window (12) plus
 /// the four extra quarters its oldest TTM print needs.
 const INCOME_QUARTERS_LIMIT: &str = "16";
+
+/// Fiscal years of annual income-statement history requested — the commodity
+/// cyclical's mid-cycle window, the latest five fiscal years
+/// (`docs/trade-opportunities.md` §Starting parameters).
+const ANNUAL_INCOME_YEARS_LIMIT: &str = "5";
 
 /// Quarters of cash-flow history requested — the income pull's sixteen, so the
 /// shared engine's factor reads (FCF yield, FCF conversion, owner earnings)
@@ -6508,7 +6545,7 @@ impl FmpDataSource {
             "company-income-q",
             symbol,
             "Quarterly income statements",
-            FMP_INCOME_QUARTERLY_PATH,
+            FMP_INCOME_PATH,
             &[
                 ("symbol", symbol),
                 ("period", "quarter"),
@@ -6549,6 +6586,65 @@ impl FmpDataSource {
             Err(reason) => {
                 gaps.push(format!(
                     "FMP quarterly income statements unavailable ({})",
+                    reason.as_str()
+                ));
+                vec![]
+            }
+        }
+    }
+
+    /// Annual income prints — the commodity cyclical's mid-cycle margin window
+    /// (the driver override, `portfolio::engine`). The same endpoint as the
+    /// quarterly pull with `period=annual`, and the same fail-soft and drift
+    /// rules: a gap leaves the list empty with a tagged reason, and the
+    /// override falls back to the shared ladder. The Trade Opportunities spine
+    /// is its caller.
+    pub fn fetch_annual_income(
+        &self,
+        symbol: &str,
+        gaps: &mut Vec<String>,
+        unit_issues: &mut Vec<crate::portfolio::engine::StatementUnitIssue>,
+    ) -> Vec<crate::portfolio::engine::AnnualIncomeRow> {
+        match self.suite_get_shaped(
+            "company-income-a",
+            symbol,
+            "Annual income statements",
+            FMP_INCOME_PATH,
+            &[
+                ("symbol", symbol),
+                ("period", "annual"),
+                ("limit", ANNUAL_INCOME_YEARS_LIMIT),
+            ],
+            |value| {
+                let Some(body) = value.as_array() else {
+                    gaps.push("FMP annual income statements were malformed".to_string());
+                    return Shaped::malformed(vec![])
+                        .with_detail("non-array body — malformed or drifted response");
+                };
+                if let Some(issue) = statement_unit_issue(value, "annual income statements") {
+                    let detail = issue.to_string();
+                    gaps.push(detail.clone());
+                    unit_issues.push(issue);
+                    return Shaped::empty(vec![]).with_detail(detail);
+                }
+                match annual_income_from_value(value) {
+                    rows if !rows.is_empty() => Shaped::ok(rows),
+                    rows if body.is_empty() => {
+                        gaps.push("FMP annual income statements were empty".to_string());
+                        Shaped::empty(rows)
+                    }
+                    rows => {
+                        gaps.push("FMP annual income statements were malformed".to_string());
+                        Shaped::malformed(rows)
+                            .with_detail("no served row was readable — malformed or drifted response")
+                    }
+                }
+            },
+        ) {
+            Ok(rows) => rows,
+            Err(reason) => {
+                gaps.push(format!(
+                    "FMP annual income statements unavailable ({})",
                     reason.as_str()
                 ));
                 vec![]
@@ -6985,6 +7081,51 @@ impl FmpDataSource {
             Ok(result) => result,
             Err(reason) => {
                 anyhow::bail!("FMP dated EOD unavailable ({})", reason.as_str())
+            }
+        }
+    }
+
+    /// Deep dated daily **bars with volume** over `lookback_days` — the same
+    /// endpoint as [`Self::fetch_dated_eod`], keeping each row's share volume for
+    /// the tradability flag (`portfolio::tradability`). The Trade Opportunities
+    /// spine is its caller; Portfolio reads closes alone.
+    pub fn fetch_dated_bars(
+        &self,
+        symbol: &str,
+        lookback_days: i64,
+    ) -> Result<Vec<crate::portfolio::engine::DailyBar>> {
+        // Deliberately the UTC date, not the ET session: a fetch range's
+        // inclusive upper bound, as in `fetch_dated_eod`.
+        let to = Utc::now().date_naive();
+        let from = (to - Duration::days(lookback_days))
+            .format("%Y-%m-%d")
+            .to_string();
+        let to = to.format("%Y-%m-%d").to_string();
+        match self.suite_get_shaped(
+            "company-eod-bars",
+            symbol,
+            "Deep price and volume history",
+            FMP_EOD_PATH,
+            &[("symbol", symbol), ("from", &from), ("to", &to)],
+            |value| match dated_bars_from_value(value) {
+                Ok(rows) if !rows.is_empty() => Shaped::ok(Ok(rows)),
+                // Drift, not emptiness: rows were served but none carried a
+                // readable date + price.
+                Ok(_) if value.as_array().is_some_and(|a| !a.is_empty()) => {
+                    let msg = "no served row was readable — malformed or drifted response";
+                    Shaped::malformed(Err(anyhow::anyhow!("FMP dated bars: {msg}")))
+                        .with_detail(msg)
+                }
+                Ok(rows) => Shaped::empty(Ok(rows)),
+                Err(e) => {
+                    let detail = format!("{e:#}");
+                    Shaped::malformed(Err(e)).with_detail(detail)
+                }
+            },
+        ) {
+            Ok(result) => result,
+            Err(reason) => {
+                anyhow::bail!("FMP dated bars unavailable ({})", reason.as_str())
             }
         }
     }
@@ -7834,6 +7975,40 @@ fn quarterly_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::Q
                     .and_then(Value::as_f64),
                 income_before_tax: row.get("incomeBeforeTax").and_then(Value::as_f64),
                 income_tax_expense: row.get("incomeTaxExpense").and_then(Value::as_f64),
+            })
+        })
+        .collect()
+}
+
+/// Shape annual `/income-statement` rows — the quarterly shaper's rules (a row
+/// without a datable period date is unreadable and skipped; dates kept as their
+/// canonical render; the filing date falls through to the legacy spelling),
+/// keeping the two lines the mid-cycle margin reads. Order and duplicates are
+/// left to the mid-cycle read's canonicalization. Pure.
+fn annual_income_from_value(value: &Value) -> Vec<crate::portfolio::engine::AnnualIncomeRow> {
+    let Some(rows) = value.as_array() else {
+        return vec![];
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let period_end = row
+                .get("date")
+                .and_then(Value::as_str)
+                .and_then(canonical_date)?;
+            let filing_date = row
+                .get("filingDate")
+                .and_then(Value::as_str)
+                .and_then(canonical_date)
+                .or_else(|| {
+                    row.get("fillingDate")
+                        .and_then(Value::as_str)
+                        .and_then(canonical_date)
+                });
+            Some(crate::portfolio::engine::AnnualIncomeRow {
+                period_end,
+                filing_date,
+                revenue: row.get("revenue").and_then(Value::as_f64),
+                net_income: row.get("netIncome").and_then(Value::as_f64),
             })
         })
         .collect()
@@ -9170,6 +9345,129 @@ mod suite_tests {
         assert_eq!(rows[1].filing_date.as_deref(), Some("2026-01-30"));
         assert!(gaps.is_empty());
         assert_eq!(server.request_paths(), vec!["/income-statement"]);
+    }
+
+    #[test]
+    fn annual_income_reads_the_five_fiscal_years_and_their_margin_lines() {
+        let body = r#"[
+          {"reportedCurrency":"USD","date":"2025-12-31","filingDate":"2026-02-20","revenue":40.0e9,"netIncome":4.0e9},
+          {"reportedCurrency":"USD","date":"2024-12-31","fillingDate":"2025-02-21","revenue":36.0e9,"netIncome":null},
+          {"reportedCurrency":"USD","date":"FY2023","revenue":30.0e9,"netIncome":2.0e9}
+        ]"#;
+        let server = MockHttp::serve(vec![Canned::Reply {
+            status: 200,
+            headers: vec![],
+            body,
+        }]);
+        let mut gaps = vec![];
+        let rows = source(&server.base_url).fetch_annual_income("FCX", &mut gaps, &mut vec![]);
+        assert_eq!(rows.len(), 2, "the undatable row is unreadable: {rows:?}");
+        assert_eq!(rows[0].period_end, "2025-12-31");
+        assert_eq!(rows[0].filing_date.as_deref(), Some("2026-02-20"));
+        assert_eq!(rows[0].revenue, Some(40.0e9));
+        assert_eq!(rows[0].net_income, Some(4.0e9));
+        // The legacy filing-date spelling parses; a null line stays absent.
+        assert_eq!(rows[1].filing_date.as_deref(), Some("2025-02-21"));
+        assert_eq!(rows[1].net_income, None);
+        assert!(gaps.is_empty(), "{gaps:?}");
+        let target = &server.request_targets()[0];
+        assert!(target.starts_with("/income-statement"), "{target}");
+        assert!(target.contains("period=annual"), "{target}");
+        assert!(target.contains("limit=5"), "{target}");
+    }
+
+    #[test]
+    fn annual_income_fails_soft_on_drift_and_a_foreign_currency() {
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"{"rows":[]}"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"reportedCurrency":"CAD","date":"2025-12-31","revenue":1.0,"netIncome":0.1}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"reportedCurrency":"USD","revenue":1.0}]"#,
+            },
+        ]);
+        let source = source(&server.base_url);
+        let mut gaps = vec![];
+        let mut unit_issues = vec![];
+        assert!(source
+            .fetch_annual_income("FCX", &mut gaps, &mut unit_issues)
+            .is_empty());
+        assert!(source
+            .fetch_annual_income("FCX", &mut gaps, &mut unit_issues)
+            .is_empty());
+        assert!(source
+            .fetch_annual_income("FCX", &mut gaps, &mut unit_issues)
+            .is_empty());
+        assert_eq!(gaps.len(), 3, "{gaps:?}");
+        assert!(gaps[0].contains("annual income statements were malformed"), "{gaps:?}");
+        assert!(gaps[2].contains("annual income statements were malformed"), "{gaps:?}");
+        assert_eq!(unit_issues.len(), 1, "{unit_issues:?}");
+        assert_eq!(unit_issues[0].reported_currency.as_deref(), Some("CAD"));
+    }
+
+    #[test]
+    fn dated_bars_keep_the_volume_and_read_an_unusable_one_as_missing() {
+        let body = r#"[
+          {"date":"2026-07-15","price":196.2,"volume":1200000},
+          {"date":"2026-07-10","price":192.5,"volume":-5},
+          {"date":"2026-07-14","price":195.0},
+          {"date":"2026-07-11","price":193.0,"volume":0},
+          {"date":"2026-07-09","price":0,"volume":900000},
+          {"date":"broken","price":191.0,"volume":800000}
+        ]"#;
+        let server = MockHttp::serve(vec![Canned::Reply { status: 200, headers: vec![], body }]);
+        let bars = source(&server.base_url)
+            .fetch_dated_bars("AAPL", 1_600)
+            .unwrap();
+        // The unusable close and the undatable row drop; a bad or absent
+        // volume keeps its close as a missing volume day; a served zero stays.
+        let read: Vec<(&str, Option<f64>)> =
+            bars.iter().map(|b| (b.date.as_str(), b.volume)).collect();
+        assert_eq!(
+            read,
+            vec![
+                ("2026-07-10", None),
+                ("2026-07-11", Some(0.0)),
+                ("2026-07-14", None),
+                ("2026-07-15", Some(1_200_000.0)),
+            ]
+        );
+        assert!((bars[3].close - 196.2).abs() < 1e-9);
+        let target = &server.request_targets()[0];
+        assert!(target.starts_with("/historical-price-eod/light"), "{target}");
+        assert!(target.contains("from="), "{target}");
+    }
+
+    #[test]
+    fn dated_bars_read_drift_as_an_error_never_an_empty_history() {
+        let server = MockHttp::serve(vec![
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: r#"[{"date":"2026-08-02","price":0,"volume":10}]"#,
+            },
+            Canned::Reply {
+                status: 200,
+                headers: vec![],
+                body: "[]",
+            },
+        ]);
+        let source = source(&server.base_url);
+        let err = source.fetch_dated_bars("AAPL", 30).unwrap_err().to_string();
+        assert!(err.contains("no served row was readable"), "{err}");
+        assert!(source
+            .fetch_dated_bars("AAPL", 30)
+            .expect("an empty body is an honest no-history")
+            .is_empty());
     }
 
     #[test]

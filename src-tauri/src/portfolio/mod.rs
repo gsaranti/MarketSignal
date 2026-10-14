@@ -60,12 +60,14 @@ pub mod listing;
 pub mod outcome;
 pub mod pipeline;
 pub mod pre_profit;
+pub mod price_action;
 pub mod quick_check;
 pub mod research;
 pub mod review;
 pub mod sector;
 pub mod soft_forensic;
 pub mod store;
+pub mod tradability;
 pub mod value_creation;
 
 use serde::{Deserialize, Serialize};
