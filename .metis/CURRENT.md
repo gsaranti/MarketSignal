@@ -2,27 +2,25 @@
 
 ## Active task
 
-Trade Opportunities: the job spine, engine arm and gate — next and unplanned.
+Trade Opportunities: the job spine, engine arm and gate — next in the backlog and unplanned; the Portfolio prompt review is the work in flight ahead of it.
 
 ## What happened
 
-The factor machinery's task 4, the factor-distribution store, landed (`180a411`, pushed), so the item is complete and moved to Built.
-`portfolio/factor_store.rs` keeps one current observation per issuer per factor (the raw value, or floored for debt over a non-positive equity), bucketed by profile sector × market-cap band.
-Observations age out after 24 calendar months, and the read waits for 20 other issuers holding the factor.
-Portfolio's fresh passes contribute fail-soft; the read has no caller yet.
-The store joins the archive at format v24, and import now refuses any table entry present but unlisted in the manifest whatever the archive's version (Codex's P2).
-No prompt or checkpoint stamp moved.
-The Metis reviewer approved with nits: N1–N4 applied, N5 carried, N6 left; every ruling is in the commit message.
+The prompt review restarted by checking the rendered examples under `docs/prompts/portfolio`.
+Regenerated at `portfolio-v77` they were byte-identical to the committed set, but three shapes understated a live run: the attempt-6 fixtures predate the factor machinery, so the stock SCORES block carried no factor lines (files 21, 22, 25); the SPMO fixture carries no fund context, so the fund shapes read "(name unavailable)" with no FUND block (19, 23, 24); and the action packet's tax-exempt variant showed a spurious name change (28).
+All three were fixed by synthetic layering in the examples writer (`c4b3db8`, pushed; Codex approved, its P3 taken): a factor composite on TSLA scored through the live bands, the four sub-scores its means on the engine output and the verdict alike so the review's then-and-now line reads flat; a fund context on SPMO; the variant built from the debut dossier.
+`Factor::band` became crate-visible so the harness reads the live bands rather than copies.
+The fixture JSON is unchanged, so the live harness and the offline pins still run without factors.
 
 ## Current state
 
-The TO spine is next and unplanned; the plan-task decides its task breakdown.
+The prompt review is in flight and starts at file 01 next session, file by file over many sessions; the stamp is `portfolio-v77`, the next `portfolio-v78`.
+The TO spine stays next in the backlog and unplanned; the plan-task decides its task breakdown.
 The dev-run batch (every Portfolio item's dev run) and the big run are the user's call; the next big run starts testing afresh, every earlier attempt's findings retired.
-The prompt review restarts from scratch in an upcoming session; the stamp is `portfolio-v77`, the next `portfolio-v78`.
 
 Residue, grouped by what triggers it:
 
-**For the Trade Opportunities spine (the next item)**
+**For the Trade Opportunities spine**
 1. Wire the store's read (`bucket_position`) into the dossier and audit, and contribute through `contribute`. `CapBand` also serves as discovery's stratum.
 2. Draft "runway years" and the illiquid and high-event-exposure predicates.
 3. Fetch each candidate's deep history once through `fetch_dated_bars` and derive its closes from the bars.
@@ -32,10 +30,10 @@ Residue, grouped by what triggers it:
 **After the dev-run batch (your call)**
 6. Shadow-tune the drafted cutoffs, anchors and cap bands through `sweep_grade_bands`.
 7. Two task-2 findings: the Real Estate anchor row averages REITs with real-estate operators, and the thin-history flag counts the growth and investment factors.
-8. Rebuild the fixed-evidence set, which fixes examples 21–22's missing factor lines and the TSLA "(name unavailable)" header.
+8. Rebuild the fixed-evidence set so the live harness and the offline pins carry factors and a fund context; the examples no longer wait on it.
 
-**For the restarted prompt review**
-9. METRICS still renders P/E, P/S and P/B beside the factor lines.
+**For the prompt review**
+9. METRICS still renders P/E, P/S and P/B beside the factor lines that restate them (files 21–22, now visible in the examples).
 
 **Needs a live run**
 10. A denied client-secret read still errors `schwab_status`, so Settings hides its Schwab section; a live denied prompt has only been checked against fixtures.
@@ -58,5 +56,5 @@ None.
 
 ## Where to start
 
-`/metis-session-start`, then `/metis-plan-task` for the Trade Opportunities job spine: read its BUILD entry's docs (TO-workflow §Steps 1, 2, 5a–5c, 5h, 6, 9; trade-opportunities.md §Evidence floor, §The opportunity space, §Archetype, §Starting parameters, §Failure posture), decide its task breakdown, then put every flag and assumption through the selector.
+`/metis-session-start`, then the prompt review from `docs/prompts/portfolio/01-research-gathering-root-pass-first-analysis.md`, one file at a time: read the rendered request against `local-models.md §Prompt posture` and the call's contract in `portfolio-workflow.md`, put each finding through the selector, land accepted changes in the code, bump the stamp to `portfolio-v78` on the first, regenerate the set and read the diff; Codex reviews each slice.
 Never propose the run.
