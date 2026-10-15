@@ -10,6 +10,7 @@ The prompt review restarted by checking the rendered examples under `docs/prompt
 Regenerated at `portfolio-v77` they were byte-identical to the committed set, but three shapes understated a live run: the attempt-6 fixtures predate the factor machinery, so the stock SCORES block carried no factor lines (files 21, 22, 25); the SPMO fixture carries no fund context, so the fund shapes read "(name unavailable)" with no FUND block (19, 23, 24); and the action packet's tax-exempt variant showed a spurious name change (28).
 All three were fixed by synthetic layering in the examples writer (`c4b3db8`, pushed; Codex approved, its P3 taken): a factor composite on TSLA scored through the live bands, the four sub-scores its means on the engine output and the verdict alike so the review's then-and-now line reads flat; a fund context on SPMO; the variant built from the debut dossier.
 `Factor::band` became crate-visible so the harness reads the live bands rather than copies.
+Both calls were put to the user and ruled to stand: the prior's scores stay the synthetic means, and the band lookup stays crate-visible rather than a test-only accessor or copied bands.
 The fixture JSON is unchanged, so the live harness and the offline pins still run without factors.
 
 ## Current state
