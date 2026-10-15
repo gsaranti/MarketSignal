@@ -925,8 +925,8 @@ fn attempt_6_thesis_messages_are_two_parts_with_no_app_concept() {
         assert!(part1.contains("- three-month: bear ") && part1.contains("prorated to three months"), "{}", f.symbol);
         assert!(part1.contains("- three-year: bear ") && part1.contains("extrapolation"), "{}", f.symbol);
         assert!(part1.contains("; hurdle ") && part1.contains("; read: "), "{}: {part1}", f.symbol);
-        assert!(part1.contains(&format!("Quote: {:.2} per share (the live print, undated).\n", f.spot)), "{}: {part1}", f.symbol);
-        assert!(part1.contains("Treasury yields (FRED): 10-year "), "{}: {part1}", f.symbol);
+        assert!(part1.contains(&format!("\nQUOTE AND CLOSES\n- quote: {:.2} per share (the live print, undated)\n", f.spot)), "{}: {part1}", f.symbol);
+        assert!(part1.contains("\nRATES\n- Treasury yields (FRED): 10-year "), "{}: {part1}", f.symbol);
         assert!(f.is_fund || !part1.contains("\nFUND\n"), "{}", f.symbol);
         assert!(!part1.contains("Return "), "{}: Part 1 instructs\n{part1}", f.symbol);
         assert!(!part1.to_lowercase().contains("your "), "{}: Part 1 addresses the model\n{part1}", f.symbol);
@@ -1122,8 +1122,8 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
         assert!(part1.contains("\nEVIDENCE GAPS\nno duration, credit or yield-curve data for this fund\n"), "{label}: {part1}");
         assert!(part1.contains("\nRISK PROFILE\nAnnualized realized volatility: "), "{label}: {part1}");
         assert!(part1.contains("\nANALYSIS\nThe Vanguard Total Bond Market ETF tracks") || !debut, "{label}: {part1}");
-        assert!(part1.contains("Fund: asset class Fixed Income; expense ratio 0.0003 (0.03%/yr); assets under management 340.0B; NAV 72.41.\n"), "{label}: {part1}");
-        assert!(part1.contains("Country weights: United States 94.0%, Supranational 2.0%, Canada 1.0%.\n"), "{label}: {part1}");
+        assert!(part1.contains("\nPROFILE\n- name: Vanguard Total Bond Market ETF\n- asset class: Fixed Income\n- expense ratio: 0.0003 (0.03%/yr)\n- assets under management: 340.0B\n- NAV: 72.41\n"), "{label}: {part1}");
+        assert!(part1.contains("\nWEIGHTS\n- countries, largest first: United States 94.0%, Supranational 2.0%, Canada 1.0%\n"), "{label}: {part1}");
         assert_eq!(part1.matches("daily realized return volatility: ").count(), 1, "{label}: the daily volatility renders once\n{part1}");
         assert!(!part1.contains("Return "), "{label}: Part 1 instructs\n{part1}");
         assert!(!part1.to_lowercase().contains("your "), "{label}: Part 1 addresses the model\n{part1}");
@@ -1402,7 +1402,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
     // The tool descriptions are prompt text too.
     let tools = super::research::research_tools().to_string();
     assert!(
-        tools.contains("The source tier runs from 0 to 5: 0 is a primary source") && tools.contains("extraction quality"),
+        tools.contains("The source tier runs from 0 to 5: 0 a primary source (a filing, the issuer, a regulator); 1 a licensed data provider; 2 high-trust factual reporting; 3 a specialist source, trusted within its vertical; 4 opinion-heavy commentary; 5 sentiment only.") && tools.contains("extraction quality"),
         "{tools}"
     );
     assert!(banned_hits(&tools).is_empty(), "tools carry {:?}\n{tools}", banned_hits(&tools));
@@ -1428,16 +1428,22 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             // The tool results' fields are glossed on the tool descriptions,
             // not under a heading in Part 1.
             assert!(
-                !part1.contains("TOOL RESULTS") && !part1.contains("0 is a primary source"),
+                !part1.contains("TOOL RESULTS") && !part1.contains("0 a primary source"),
                 "{}: a tool-results legend in Part 1\n{part1}",
                 s.label
             );
             assert!(s.tools.is_some(), "{}", s.label);
+            assert!(
+                s.user.contains("\nUse FETCHED VALUES as background to shape how "),
+                "{}: Part 2 leaves FETCHED VALUES unplaced\n{}",
+                s.label,
+                s.user
+            );
             let at = |section: &str| part1.find(section).unwrap_or_else(|| panic!("{}: {section}", s.label));
             assert!(at("\nFETCHED VALUES\n") < at("\nNEWS LEADS\n") && at("\nNEWS LEADS\n") < at("\nTOPIC\n"), "{}: {part1}", s.label);
         } else {
-            assert!(part1.contains("0 is a primary source"), "{}: the tier scale is unstated\n{part1}", s.label);
-            assert!(part1.contains("source tier (0 to 5: 0 is a primary source"), "{}: the tier scale's range is unstated\n{part1}", s.label);
+            assert!(part1.contains("0 a primary source"), "{}: the tier scale is unstated\n{part1}", s.label);
+            assert!(part1.contains("source tier (0 to 5: 0 a primary source — a filing, the issuer, a regulator; 1 a licensed data provider; 2 high-trust factual reporting; 3 a specialist source, trusted within its vertical; 4 opinion-heavy commentary; 5 sentiment only)"), "{}: the tier scale's rungs are unstated\n{part1}", s.label);
             let questions = if s.label.contains("disconfirming") { "the question" } else { "the questions" };
             assert!(
                 part1.contains(&format!("\nEVIDENCE\nThe pages retrieved for {questions} under TOPIC, each under a header of: its id; its address; the published date, where the search reported one; when it was retrieved; its source tier (0 to 5:")),

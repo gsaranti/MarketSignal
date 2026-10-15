@@ -2045,129 +2045,192 @@ fn fmt_split_leg(v: f64) -> String {
 }
 
 /// FETCHED VALUES (`docs/portfolio-workflow.md` §Step 6c): the holding's data
-/// as the providers return it, in the docs' order, never engine-computed (the
-/// TTM basis, the trailing dividend sum, the short-interest trend and the
-/// split bridge are computations and stay out). A row whose source is absent
-/// is omitted; a cell the provider left empty reads `(gap)`. One renderer,
-/// shared by the research brief and both thesis-document branches, byte for
-/// byte.
+/// as the providers return it, in the docs' order under group labels, one
+/// figure or record per line, never engine-computed (the TTM basis, the
+/// trailing dividend sum, the short-interest trend and the split bridge are
+/// computations and stay out). A row whose source is absent is omitted, and
+/// so is a group left with no row; a cell the provider left empty reads
+/// `(gap)`. One renderer, shared by the research brief and both
+/// thesis-document branches, byte for byte.
 pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) -> String {
     use crate::portfolio::evidence::{
-        MaRole, PriceTargetWindow, FUND_COUNTRY_WEIGHTS_SHOWN, SURPRISE_QUARTERS,
+        MaRole, PriceTargetWindow, SegmentYear, FUND_COUNTRY_WEIGHTS_SHOWN, SURPRISE_QUARTERS,
     };
     let fin = &d.financials;
     let gap = || "(gap)".to_string();
     let money = |v: Option<f64>| v.map(fmt_magnitude).unwrap_or_else(gap);
     let num = |v: Option<f64>| v.map(|x| format!("{x:.2}")).unwrap_or_else(gap);
     let pct = |v: Option<f64>| v.map(|x| format!("{:.1}%", x * 100.0)).unwrap_or_else(gap);
+    let whole = |v: Option<f64>| v.map(|x| format!("{x:.0}")).unwrap_or_else(gap);
     let count = |v: Option<u64>| v.map(|x| x.to_string()).unwrap_or_else(gap);
     let score = |v: Option<i64>| v.map(|x| x.to_string()).unwrap_or_else(gap);
     let text = |v: Option<&str>| v.unwrap_or("(gap)").to_string();
+    let group = |p: &mut String, label: &str, rows: Vec<String>| {
+        if rows.is_empty() {
+            return;
+        }
+        p.push_str(&format!("\n{label}\n"));
+        for row in rows {
+            p.push_str(&row);
+            p.push('\n');
+        }
+    };
     let mut p = String::from(
-        "\nFETCHED VALUES\nThe holding's data as its providers return it, each figure as \
-         reported (USD; B is billions, M is millions; a yield or a return as a percentage); \
-         none is computed, and a cell the provider left empty reads (gap).\n",
+        "\nFETCHED VALUES\nThe holding's data (USD; B is billions, M is millions; a yield or a \
+         return as a percentage); a missing figure reads (gap). The rows follow under their \
+         labels.\n",
     );
+
     let mut profile = Vec::new();
     let name = d
         .company_name
         .as_deref()
         .or_else(|| d.fund.as_ref().and_then(|f| f.fund.name.as_deref()));
     if let Some(name) = name {
-        profile.push(format!("name {name}"));
+        profile.push(format!("- name: {name}"));
     }
     if let Some(issuer) = &d.issuer {
         if let Some(x) = issuer.exchange.as_deref() {
-            profile.push(format!("exchange {x}"));
+            profile.push(format!("- exchange: {x}"));
         }
         if let Some(x) = issuer.sector.as_deref() {
-            profile.push(format!("sector {x}"));
+            profile.push(format!("- sector: {x}"));
         }
         if let Some(x) = issuer.industry.as_deref() {
-            profile.push(format!("industry {x}"));
+            profile.push(format!("- industry: {x}"));
         }
     }
     if let Some(mc) = fin.market_cap {
-        profile.push(format!("market capitalization {}", fmt_magnitude(mc)));
+        profile.push(format!("- market capitalization: {}", fmt_magnitude(mc)));
     }
     if let Some(sh) = fin.shares_outstanding {
-        profile.push(format!("shares outstanding {}", fmt_magnitude(sh)));
-    }
-    if !profile.is_empty() {
-        p.push_str(&format!("Profile: {}.\n", profile.join("; ")));
+        profile.push(format!("- shares outstanding: {}", fmt_magnitude(sh)));
     }
     if let Some(f) = &d.fund {
         let fd = &f.fund;
-        let mut lines = Vec::new();
         if let Some(c) = fd.asset_class.as_deref() {
-            lines.push(format!("asset class {c}"));
+            profile.push(format!("- asset class: {c}"));
         }
         if let Some(e) = fd.expense_ratio {
-            lines.push(format!("expense ratio {}", fmt_expense_ratio(Some(e))));
+            profile.push(format!("- expense ratio: {}", fmt_expense_ratio(Some(e))));
         }
         if let Some(a) = fd.aum {
-            lines.push(format!("assets under management {}", fmt_magnitude(a)));
+            profile.push(format!("- assets under management: {}", fmt_magnitude(a)));
         }
         if let Some(n) = fd.nav {
-            lines.push(format!("NAV {n:.2}"));
+            profile.push(format!("- NAV: {n:.2}"));
         }
-        if !lines.is_empty() {
-            p.push_str(&format!("Fund: {}.\n", lines.join("; ")));
-        }
-        let weights = |label: &str, rows: &[(String, f64)], shown: usize| -> String {
-            if rows.is_empty() {
-                return String::new();
-            }
-            let top: Vec<String> = rows
-                .iter()
+    }
+    group(&mut p, "PROFILE", profile);
+
+    if let Some(f) = &d.fund {
+        let fd = &f.fund;
+        let list = |rows: &[(String, f64)], shown: usize| -> String {
+            rows.iter()
                 .take(shown)
                 .map(|(l, w)| format!("{l} {:.1}%", w * 100.0))
-                .collect();
-            format!("{label}: {}.\n", top.join(", "))
+                .collect::<Vec<_>>()
+                .join(", ")
         };
-        p.push_str(&weights("Sector weights", &fd.sector_weights, usize::MAX));
+        let mut weights = Vec::new();
+        if !fd.sector_weights.is_empty() {
+            weights.push(format!("- sectors: {}", list(&fd.sector_weights, usize::MAX)));
+        }
         // The largest countries, whatever order the feed served them in.
         let mut countries = fd.country_weights.clone();
         countries.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        p.push_str(&weights(
-            "Country weights",
-            &countries,
-            FUND_COUNTRY_WEIGHTS_SHOWN,
-        ));
-    }
-    if !fin.quarterly_income.is_empty() {
-        p.push_str(
-            "Quarterly statements, newest first, as reported — period end: revenue; gross \
-             profit; operating income; net income; diluted EPS; diluted shares; operating \
-             cash flow; free cash flow; capital expenditure; total debt; total equity; cash \
-             and equivalents.\n",
-        );
-        for row in fin.quarterly_income.iter().take(8) {
-            let cf = fin
-                .quarterly_cash_flow
-                .iter()
-                .find(|c| c.period_end == row.period_end);
-            let bs = fin
-                .quarterly_balance_sheet
-                .iter()
-                .find(|b| b.period_end == row.period_end);
-            p.push_str(&format!(
-                "- {}: {}; {}; {}; {}; {}; {}; {}; {}; {}; {}; {}; {}\n",
-                row.period_end,
-                money(row.revenue),
-                money(row.gross_profit),
-                money(row.operating_income),
-                money(row.net_income),
-                num(row.eps_diluted),
-                money(row.diluted_shares),
-                money(cf.and_then(|c| c.operating_cash_flow)),
-                money(cf.and_then(|c| c.free_cash_flow)),
-                money(cf.and_then(|c| c.capex)),
-                money(bs.and_then(|b| b.total_debt)),
-                money(bs.and_then(|b| b.total_equity)),
-                money(bs.and_then(|b| b.cash_and_equivalents)),
+        if !countries.is_empty() {
+            weights.push(format!(
+                "- countries, largest first: {}",
+                list(&countries, FUND_COUNTRY_WEIGHTS_SHOWN)
             ));
         }
+        group(&mut p, "WEIGHTS", weights);
+    }
+
+    if !fin.quarterly_income.is_empty() {
+        let quarters: Vec<&engine::QuarterlyIncomeRow> = fin.quarterly_income.iter().take(8).collect();
+        let cash_flow = |q: &str| fin.quarterly_cash_flow.iter().find(|c| c.period_end == q);
+        let balance = |q: &str| fin.quarterly_balance_sheet.iter().find(|b| b.period_end == q);
+        let cells = |cell: &dyn Fn(&engine::QuarterlyIncomeRow) -> Option<f64>| -> Vec<Option<f64>> {
+            quarters.iter().map(|q| cell(q)).collect()
+        };
+        let series = |label: &str, cells: Vec<Option<f64>>, fmt: &dyn Fn(f64) -> String| {
+            let cells: Vec<String> = quarters
+                .iter()
+                .zip(cells)
+                .map(|(q, v)| match v {
+                    Some(x) => format!("{} {}", q.period_end, fmt(x)),
+                    None => format!("{} (gap)", q.period_end),
+                })
+                .collect();
+            format!("- {label}: {}", cells.join("; "))
+        };
+        // A money series keeps one unit, its largest cell's, at the fewest
+        // decimals that leave its smallest non-zero cell two significant
+        // digits, capped at four: no quarter switches unit mid-row, and a
+        // cell too small for the unit's fourth decimal (under 50,000 in a
+        // billions row) still reads as zero.
+        let money_series = |label: &str, cells: Vec<Option<f64>>| {
+            let largest = cells.iter().flatten().fold(0.0_f64, |m, v| m.max(v.abs()));
+            let (divisor, suffix) = if largest >= 1e9 {
+                (1e9, "B")
+            } else if largest >= 1e6 {
+                (1e6, "M")
+            } else {
+                return series(label, cells, &fmt_magnitude);
+            };
+            let smallest = cells
+                .iter()
+                .flatten()
+                .map(|v| v.abs())
+                .filter(|v| *v > 0.0)
+                .fold(f64::INFINITY, f64::min);
+            let decimals = if smallest.is_finite() {
+                (1 - ((smallest / divisor).log10().floor() as i32)).clamp(1, 4) as usize
+            } else {
+                1
+            };
+            series(label, cells, &|v| format!("{:.decimals$}{suffix}", v / divisor))
+        };
+        group(
+            &mut p,
+            "STATEMENTS",
+            vec![
+                "Quarterly statements as reported, newest first (period end, then the figure)"
+                    .to_string(),
+                money_series("revenue", cells(&|q| q.revenue)),
+                money_series("gross profit", cells(&|q| q.gross_profit)),
+                money_series("operating income", cells(&|q| q.operating_income)),
+                money_series("net income", cells(&|q| q.net_income)),
+                series("diluted EPS", cells(&|q| q.eps_diluted), &|x| format!("{x:.2}")),
+                money_series("diluted shares", cells(&|q| q.diluted_shares)),
+                money_series(
+                    "operating cash flow",
+                    cells(&|q| cash_flow(&q.period_end).and_then(|c| c.operating_cash_flow)),
+                ),
+                money_series(
+                    "free cash flow",
+                    cells(&|q| cash_flow(&q.period_end).and_then(|c| c.free_cash_flow)),
+                ),
+                money_series(
+                    "capital expenditure",
+                    cells(&|q| cash_flow(&q.period_end).and_then(|c| c.capex)),
+                ),
+                money_series(
+                    "total debt",
+                    cells(&|q| balance(&q.period_end).and_then(|b| b.total_debt)),
+                ),
+                money_series(
+                    "total equity",
+                    cells(&|q| balance(&q.period_end).and_then(|b| b.total_equity)),
+                ),
+                money_series(
+                    "cash and equivalents",
+                    cells(&|q| balance(&q.period_end).and_then(|b| b.cash_and_equivalents)),
+                ),
+            ],
+        );
     }
     if let Some(c) = &fin.consensus {
         let periods: Vec<String> = c
@@ -2176,10 +2239,14 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             .map(|r| format!("{} {}", r.period_end, num(r.eps_mid)))
             .collect();
         if !periods.is_empty() {
-            p.push_str(&format!(
-                "Consensus EPS by fiscal period end, as published: {}.\n",
-                periods.join("; ")
-            ));
+            group(
+                &mut p,
+                "CONSENSUS",
+                vec![format!(
+                    "- consensus EPS by fiscal period end, as published: {}",
+                    periods.join("; ")
+                )],
+            );
         }
     }
     if !fin.recent_dividends.is_empty() {
@@ -2191,32 +2258,36 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
                 None => format!("{} {}", r.date, fmt_per_share(r.amount)),
             })
             .collect();
-        p.push_str(&format!(
-            "Dividends, latest ex-dates first (ex-date, amount per share): {}.\n",
-            rows.join("; ")
-        ));
+        group(
+            &mut p,
+            "DIVIDENDS",
+            vec![format!(
+                "- dividends, latest ex-dates first (ex-date, amount per share): {}",
+                rows.join("; ")
+            )],
+        );
     }
+
+    let mut price = Vec::new();
     if let Some(spot) = fin.current_price.filter(|p| p.is_finite() && *p > 0.0) {
-        let mut line = format!("Quote: {spot:.2} per share (the live print, undated)");
+        price.push(format!("- quote: {spot:.2} per share (the live print, undated)"));
         if fin.year_high.is_some() || fin.year_low.is_some() {
-            line.push_str(&format!(
-                ", 52-week low {} and high {} as served",
+            price.push(format!(
+                "- 52-week range as served: low {}, high {}",
                 num(fin.year_low),
                 num(fin.year_high)
             ));
         }
-        line.push_str(".\n");
-        p.push_str(&line);
     }
     let closes = &fin.daily_closes;
     if let (Some(first), Some(last)) = (closes.first(), closes.last()) {
-        let run = chrono::NaiveDate::parse_from_str(&d.analysis_date, "%Y-%m-%d").ok();
-        let mut line = format!(
-            "Daily closes: {} sessions from {} to {}",
+        price.push(format!(
+            "- daily closes: {} {} from {} to {}",
             closes.len(),
+            if closes.len() == 1 { "session" } else { "sessions" },
             first.date,
             last.date
-        );
+        ));
         // The close on the prior analysis's date, off today's series (today's
         // basis, so no bridge is needed). The anchor bar is not this date: it
         // precedes the session and carries across an abstention.
@@ -2225,102 +2296,94 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
         });
         if let Some(prior_date) = prior_date {
             if let Some(c) = closes.iter().rev().find(|c| c.date <= prior_date) {
-                line.push_str(&format!(
-                    "; close on the prior analysis date {prior_date}: {:.2} ({})",
+                price.push(format!(
+                    "- close on the prior analysis date {prior_date}: {:.2} ({})",
                     c.value, c.date
                 ));
             }
         }
-        if let Some(run) = run {
-            let mut back = Vec::new();
+        if let Ok(run) = chrono::NaiveDate::parse_from_str(&d.analysis_date, "%Y-%m-%d") {
             for (label, months) in [("three months", 3u32), ("twelve months", 12), ("three years", 36)] {
                 let Some(target) = run.checked_sub_months(chrono::Months::new(months)) else {
                     continue;
                 };
                 let target = target.format("%Y-%m-%d").to_string();
                 if let Some(c) = closes.iter().rev().find(|c| c.date <= target) {
-                    back.push(format!("{label} back {:.2} ({})", c.value, c.date));
+                    price.push(format!(
+                        "- close {label} before the analysis date: {:.2} ({})",
+                        c.value, c.date
+                    ));
                 }
-            }
-            if !back.is_empty() {
-                line.push_str(&format!("; {}", back.join(", ")));
             }
         }
-        line.push_str(".\n");
-        p.push_str(&line);
     }
+    group(&mut p, "QUOTE AND CLOSES", price);
+
     if !d.filings_8k.is_empty() {
-        let rows: Vec<String> = d
-            .filings_8k
-            .iter()
-            .map(|f| {
-                let items = match &f.items {
-                    Some(items) if !items.is_empty() => items.join(", "),
-                    Some(_) => "(no items)".to_string(),
-                    None => "(items unreadable)".to_string(),
-                };
-                if f.form == "8-K/A" {
-                    format!("{} (8-K/A): {items}", f.filing_date)
-                } else {
-                    format!("{}: {items}", f.filing_date)
-                }
-            })
-            .collect();
-        p.push_str(&format!(
-            "8-K filings of the trailing twelve months, newest first (filing date: items): {}.\n",
-            rows.join("; ")
-        ));
+        let mut filings = vec![
+            "8-K filings of the trailing twelve months, newest first (filing date: items)".to_string(),
+        ];
+        filings.extend(d.filings_8k.iter().map(|f| {
+            let items = match &f.items {
+                Some(items) if !items.is_empty() => items.join(", "),
+                Some(_) => "(no items)".to_string(),
+                None => "(items unreadable)".to_string(),
+            };
+            if f.form == "8-K/A" {
+                format!("- {} (8-K/A): {items}", f.filing_date)
+            } else {
+                format!("- {}: {items}", f.filing_date)
+            }
+        }));
+        group(&mut p, "FILINGS", filings);
     }
+
     if let Some(si) = &d.short_interest {
-        let whole = |v: Option<f64>| v.map(|x| format!("{x:.0}")).unwrap_or_else(gap);
-        p.push_str(&format!(
-            "Short interest (FINRA, settlement {}): {:.0} shares; prior settlement {}; \
-             average daily volume {}; days to cover {}.\n",
-            si.settlement_date,
-            si.current_short_interest,
-            whole(si.previous_short_interest),
-            whole(si.average_daily_volume),
-            num(si.days_to_cover),
-        ));
+        group(
+            &mut p,
+            "SHORT INTEREST PRINT",
+            vec![
+                format!("- settlement: {} (FINRA)", si.settlement_date),
+                format!("- shares short: {:.0}", si.current_short_interest),
+                format!(
+                    "- shares short at the prior settlement: {}",
+                    whole(si.previous_short_interest)
+                ),
+                format!("- average daily volume: {}", whole(si.average_daily_volume)),
+                format!("- days to cover: {}", num(si.days_to_cover)),
+            ],
+        );
     }
+
     if let Some(e) = &d.evidence {
         let window = |label: &str, w: &PriceTargetWindow| {
-            format!(
-                "{label} {} targets averaging {}",
-                count(w.count),
-                num(w.average)
-            )
+            format!("{label} {} averaging {}", count(w.count), num(w.average))
         };
         let trend = |t: &crate::portfolio::evidence::PriceTargetTrend| {
             format!(
-                "published {}, {}, {}",
+                "- targets published: {}; {}; {}",
                 window("last month", &t.last_month),
                 window("last quarter", &t.last_quarter),
                 window("last year", &t.last_year)
             )
         };
-        match (&e.price_target, &e.price_target_trend) {
-            (Some(t), trend_row) => {
-                let mut line = format!(
-                    "Street price targets: consensus {}, median {}, low {}, high {}",
-                    num(t.consensus),
-                    num(t.median),
-                    num(t.low),
-                    num(t.high)
-                );
-                if let Some(tr) = trend_row {
-                    line.push_str(&format!("; {}", trend(tr)));
-                }
-                line.push_str(".\n");
-                p.push_str(&line);
-            }
-            (None, Some(tr)) => p.push_str(&format!("Street price targets: {}.\n", trend(tr))),
-            (None, None) => {}
+        let mut street = Vec::new();
+        if let Some(t) = &e.price_target {
+            street.push(format!(
+                "- price targets: consensus {}, median {}, low {}, high {}",
+                num(t.consensus),
+                num(t.median),
+                num(t.low),
+                num(t.high)
+            ));
+        }
+        if let Some(tr) = &e.price_target_trend {
+            street.push(trend(tr));
         }
         if let Some(g) = &e.grades_consensus {
-            p.push_str(&format!(
-                "Analyst ratings: strong buy {}, buy {}, hold {}, sell {}, strong sell {}; \
-                 consensus {}.\n",
+            street.push(format!(
+                "- analyst ratings: strong buy {}, buy {}, hold {}, sell {}, strong sell {}; \
+                 consensus {}",
                 count(g.strong_buy),
                 count(g.buy),
                 count(g.hold),
@@ -2330,31 +2393,25 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             ));
         }
         if !e.rating_actions.is_empty() {
-            let rows: Vec<String> = e
-                .rating_actions
-                .iter()
-                .map(|a| {
-                    format!(
-                        "{}: {}, {} to {}, {}",
-                        a.date,
-                        a.firm,
-                        text(a.previous_grade.as_deref()),
-                        text(a.new_grade.as_deref()),
-                        text(a.action.as_deref())
-                    )
-                })
-                .collect();
-            p.push_str(&format!(
-                "Rating actions, newest first (date: firm, previous grade to new grade, \
-                 action): {}.\n",
-                rows.join("; ")
-            ));
+            street.push(
+                "Rating actions, newest first (date: firm, previous grade to new grade, action)"
+                    .to_string(),
+            );
+            street.extend(e.rating_actions.iter().map(|a| {
+                format!(
+                    "- {}: {}, {} to {}, {}",
+                    a.date,
+                    a.firm,
+                    text(a.previous_grade.as_deref()),
+                    text(a.new_grade.as_deref()),
+                    text(a.action.as_deref())
+                )
+            }));
         }
         if let Some(r) = &e.ratings_snapshot {
-            p.push_str(&format!(
-                "FMP rating {} (overall {}; discounted cash flow {}, return on equity {}, \
-                 return on assets {}, debt to equity {}, price to earnings {}, price to \
-                 book {}).\n",
+            street.push(format!(
+                "- FMP rating {}: overall {}; discounted cash flow {}, return on equity {}, \
+                 return on assets {}, debt to equity {}, price to earnings {}, price to book {}",
                 text(r.rating.as_deref()),
                 score(r.overall),
                 score(r.discounted_cash_flow),
@@ -2365,80 +2422,74 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
                 score(r.price_to_book),
             ));
         }
+        group(&mut p, "STREET", street);
+
+        let mut insiders = Vec::new();
         if !e.insider_trades.is_empty() {
-            let rows: Vec<String> = e
-                .insider_trades
-                .iter()
-                .map(|t| {
-                    let mut row = format!(
-                        "{}: {}, {}, {}, {} shares at {}",
-                        t.transaction_date,
-                        t.name,
-                        text(t.owner_type.as_deref()),
-                        text(t.transaction_type.as_deref()),
-                        t.shares.map(|x| format!("{x:.0}")).unwrap_or_else(gap),
-                        num(t.price)
-                    );
-                    if let Some(filed) = &t.filing_date {
-                        row.push_str(&format!(", filed {filed}"));
-                    }
-                    row
-                })
-                .collect();
-            p.push_str(&format!(
+            insiders.push(
                 "Insider trades, newest first (transaction date: name, role, type, shares at \
-                 price, filing date): {}.\n",
-                rows.join("; ")
-            ));
+                 price, filing date)"
+                    .to_string(),
+            );
+            insiders.extend(e.insider_trades.iter().map(|t| {
+                let mut row = format!(
+                    "- {}: {}, {}, {}, {} shares at {}",
+                    t.transaction_date,
+                    t.name,
+                    text(t.owner_type.as_deref()),
+                    text(t.transaction_type.as_deref()),
+                    whole(t.shares),
+                    num(t.price)
+                );
+                if let Some(filed) = &t.filing_date {
+                    row.push_str(&format!(", filed {filed}"));
+                }
+                row
+            }));
         }
         if let Some(st) = &e.insider_statistics {
-            p.push_str(&format!(
-                "Insider statistics, {} Q{}: {} acquiring and {} disposing transactions; {} \
-                 shares acquired, {} disposed.\n",
+            insiders.push(format!(
+                "- insider statistics, {} Q{}: {} acquiring and {} disposing transactions; {} \
+                 shares acquired, {} disposed",
                 score(st.year),
                 score(st.quarter),
                 count(st.acquired_transactions),
                 count(st.disposed_transactions),
-                st.total_acquired
-                    .map(|x| format!("{x:.0}"))
-                    .unwrap_or_else(gap),
-                st.total_disposed
-                    .map(|x| format!("{x:.0}"))
-                    .unwrap_or_else(gap),
+                whole(st.total_acquired),
+                whole(st.total_disposed),
             ));
         }
         if !e.congressional_trades.is_empty() {
-            let rows: Vec<String> = e
-                .congressional_trades
-                .iter()
-                .map(|t| {
-                    let mut row = format!(
-                        "{}: {}, {}, {}, {}, {}",
-                        t.transaction_date,
-                        t.chamber.label(),
-                        t.name,
-                        text(t.owner.as_deref()),
-                        text(t.kind.as_deref()),
-                        text(t.amount.as_deref())
-                    );
-                    if let Some(disclosed) = &t.disclosure_date {
-                        row.push_str(&format!(", disclosed {disclosed}"));
-                    }
-                    row
-                })
-                .collect();
-            p.push_str(&format!(
+            insiders.push(
                 "Congressional trades, newest first (transaction date: chamber, member, owner, \
-                 type, amount, disclosure date): {}.\n",
-                rows.join("; ")
-            ));
+                 type, amount, disclosure date)"
+                    .to_string(),
+            );
+            insiders.extend(e.congressional_trades.iter().map(|t| {
+                let mut row = format!(
+                    "- {}: {}, {}, {}, {}, {}",
+                    t.transaction_date,
+                    t.chamber.label(),
+                    t.name,
+                    text(t.owner.as_deref()),
+                    text(t.kind.as_deref()),
+                    text(t.amount.as_deref())
+                );
+                if let Some(disclosed) = &t.disclosure_date {
+                    row.push_str(&format!(", disclosed {disclosed}"));
+                }
+                row
+            }));
         }
+        group(&mut p, "INSIDERS AND CONGRESS", insiders);
+
+        let mut earnings = Vec::new();
         let reported: Vec<String> = e
             .reported_earnings()
             .take(SURPRISE_QUARTERS)
             .map(|r| {
                 format!(
-                    "{}: EPS {} vs {} estimated, revenue {}",
+                    "- {}: EPS {} vs {} estimated, revenue {}",
                     r.date,
                     num(r.eps_actual),
                     num(r.eps_estimated),
@@ -2447,24 +2498,28 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             })
             .collect();
         if !reported.is_empty() {
-            p.push_str(&format!(
-                "Earnings surprises, newest first (announcement date: EPS actual vs estimate, \
-                 revenue actual): {}.\n",
-                reported.join("; ")
-            ));
+            earnings.push(
+                "Surprises, newest first (announcement date: EPS actual vs estimate, revenue \
+                 actual)"
+                    .to_string(),
+            );
+            earnings.extend(reported);
         }
         if let Some(next) = e.next_earnings(&d.analysis_date) {
-            p.push_str(&format!(
-                "Next earnings: {} (EPS estimate {}).\n",
+            earnings.push(format!(
+                "- next earnings: {} (EPS estimate {})",
                 next.date,
                 num(next.eps_estimated)
             ));
         }
+        group(&mut p, "EARNINGS", earnings);
+
+        let mut valuation = Vec::new();
         if !e.ratios.is_empty() {
             let r = &e.ratios;
-            p.push_str(&format!(
-                "Trailing-twelve-month ratios: P/E {}; EV/EBITDA {}; EV/sales {}; P/B {}; FCF \
-                 yield {}; ROIC {}; ROE {}; net debt/EBITDA {}.\n",
+            valuation.push(format!(
+                "- trailing-twelve-month ratios: P/E {}; EV/EBITDA {}; EV/sales {}; P/B {}; \
+                 FCF yield {}; ROIC {}; ROE {}; net debt/EBITDA {}",
                 num(r.pe),
                 num(r.ev_to_ebitda),
                 num(r.ev_to_sales),
@@ -2476,8 +2531,8 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             ));
         }
         if let Some(o) = &e.owner_earnings {
-            p.push_str(&format!(
-                "Owner earnings ({}, period end {}): {}; {} per share.\n",
+            valuation.push(format!(
+                "- owner earnings ({}, period end {}): {}; {} per share",
                 o.period.as_deref().unwrap_or("latest period"),
                 o.period_end,
                 money(o.owners_earnings),
@@ -2485,8 +2540,8 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
             ));
         }
         if let Some(ev) = &e.enterprise_value {
-            p.push_str(&format!(
-                "Enterprise value ({}): {}; market capitalization {}; total debt {}; cash {}.\n",
+            valuation.push(format!(
+                "- enterprise value ({}): {}; market capitalization {}; total debt {}; cash {}",
                 ev.date,
                 money(ev.enterprise_value),
                 money(ev.market_cap),
@@ -2500,8 +2555,8 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
                 .as_deref()
                 .map(|dt| format!(" ({dt})"))
                 .unwrap_or_default();
-            p.push_str(&format!(
-                "Float{dated}: float shares {}; shares outstanding {}; free float {}.\n",
+            valuation.push(format!(
+                "- float{dated}: float shares {}; shares outstanding {}; free float {}",
                 money(f.float_shares),
                 money(f.outstanding_shares),
                 f.free_float_percent
@@ -2509,63 +2564,67 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
                     .unwrap_or_else(gap)
             ));
         }
+        group(&mut p, "VALUATION", valuation);
     }
+
     if !d.ma_matches.is_empty() {
-        let rows: Vec<String> = d
-            .ma_matches
-            .iter()
-            .map(|m| {
-                let role = match m.role {
-                    MaRole::Acquirer => "acquirer of",
-                    MaRole::Target => "target of",
-                };
-                let mut row = format!("{role} {}, filed {}", m.counterparty, m.date);
-                if let Some(link) = &m.link {
-                    row.push_str(&format!(" ({link})"));
-                }
-                row
-            })
-            .collect();
-        p.push_str(&format!(
-            "M&A (SEC merger registration filings, trailing twelve months; a filing follows a \
-             deal's announcement, typically by several weeks, and covers deals paid at least \
-             partly in stock): {}.\n",
-            rows.join("; ")
-        ));
-    }
-    if let Some(e) = &d.evidence {
-        let segments = |label: &str, years: &[crate::portfolio::evidence::SegmentYear]| -> String {
-            if years.is_empty() {
-                return String::new();
+        let mut deals = vec![
+            "SEC merger registration filings, trailing twelve months; a filing follows a deal's \
+             announcement, typically by several weeks, and covers deals paid at least partly in \
+             stock"
+                .to_string(),
+        ];
+        deals.extend(d.ma_matches.iter().map(|m| {
+            let role = match m.role {
+                MaRole::Acquirer => "acquirer of",
+                MaRole::Target => "target of",
+            };
+            let mut row = format!("- {role} {}, filed {}", m.counterparty, m.date);
+            if let Some(link) = &m.link {
+                row.push_str(&format!(" ({link})"));
             }
-            let rows: Vec<String> = years
-                .iter()
-                .map(|y| {
-                    let parts: Vec<String> = y
-                        .segments
-                        .iter()
-                        .map(|(name, v)| format!("{name} {}", fmt_magnitude(*v)))
-                        .collect();
-                    let fy = y
-                        .fiscal_year
-                        .map(|fy| format!("FY{fy}"))
-                        .unwrap_or_else(|| "fiscal year (gap)".to_string());
-                    format!("{fy} (period end {}) {}", y.period_end, parts.join(", "))
-                })
-                .collect();
-            format!("{label}, newest fiscal year first: {}.\n", rows.join("; "))
-        };
-        p.push_str(&segments("Revenue by product", &e.product_segments));
-        p.push_str(&segments("Revenue by geography", &e.geographic_segments));
+            row
+        }));
+        group(&mut p, "M&A", deals);
     }
+
+    if let Some(e) = &d.evidence {
+        let mut segments = Vec::new();
+        let mut push_years = |label: &str, years: &[SegmentYear]| {
+            if years.is_empty() {
+                return;
+            }
+            segments.push(format!("{label}, newest fiscal year first"));
+            segments.extend(years.iter().map(|y| {
+                let parts: Vec<String> = y
+                    .segments
+                    .iter()
+                    .map(|(name, v)| format!("{name} {}", fmt_magnitude(*v)))
+                    .collect();
+                let fy = y
+                    .fiscal_year
+                    .map(|fy| format!("FY{fy}"))
+                    .unwrap_or_else(|| "fiscal year (gap)".to_string());
+                format!("- {fy} (period end {}): {}", y.period_end, parts.join(", "))
+            }));
+        };
+        push_years("Revenue by product", &e.product_segments);
+        push_years("Revenue by geography", &e.geographic_segments);
+        group(&mut p, "SEGMENTS", segments);
+    }
+
     let as_of = |d: Option<&String>| d.map(|s| format!(" (as of {s})")).unwrap_or_default();
-    p.push_str(&format!(
-        "Treasury yields (FRED): 10-year {:.2}%{}, 2-year {:.2}%{}.\n",
-        rates.dgs10 * 100.0,
-        as_of(rates.dgs10_date.as_ref()),
-        rates.dgs2 * 100.0,
-        as_of(rates.dgs2_date.as_ref()),
-    ));
+    group(
+        &mut p,
+        "RATES",
+        vec![format!(
+            "- Treasury yields (FRED): 10-year {:.2}%{}, 2-year {:.2}%{}",
+            rates.dgs10 * 100.0,
+            as_of(rates.dgs10_date.as_ref()),
+            rates.dgs2 * 100.0,
+            as_of(rates.dgs2_date.as_ref()),
+        )],
+    );
     p
 }
 
@@ -6185,53 +6244,58 @@ pub(crate) mod tests {
         }];
         let block = fetched_values_section(&d, rates_static());
         let expected = [
-            "Profile: name Apple Inc.; exchange NASDAQ; sector Technology; industry Consumer \
-             Electronics; market capitalization 3000.0B; shares outstanding 15.0B.",
-            "Quarterly statements, newest first",
-            "Consensus EPS by fiscal period end",
-            "Dividends, latest ex-dates first (ex-date, amount per share): 2026-08-11 0.26 \
-             (paid 2026-08-14); 2026-05-12 0.25.",
-            "Quote: 195.00 per share (the live print, undated), 52-week low 170.00 and high \
-             260.00 as served.",
-            "Daily closes:",
-            "8-K filings of the trailing twelve months, newest first (filing date: items): \
-             2026-07-31: 2.02, 9.01; 2026-05-02 (8-K/A): (no items).",
-            "Short interest (FINRA, settlement 2026-09-30): 5000000 shares; prior settlement \
-             4000000; average daily volume 2000000; days to cover 2.50.",
-            "Street price targets: consensus 323.82, median 325.00, low 253.00, high 400.00; \
-             published last month 3 targets averaging 380.00, last quarter 10 targets \
-             averaging 322.60, last year 58 targets averaging 293.43.",
-            "Analyst ratings: strong buy 1, buy 69, hold 33, sell 7, strong sell 0; consensus Buy.",
-            "Rating actions, newest first (date: firm, previous grade to new grade, action): \
-             2026-05-26: B of A Securities, Buy to Buy, maintain.",
-            "FMP rating B (overall 3; discounted cash flow 3, return on equity 5, return on \
-             assets 5, debt to equity 1, price to earnings 2, price to book 1).",
-            "Insider trades, newest first (transaction date: name, role, type, shares at \
-             price, filing date): 2026-06-05: BOLDUC JOHN, director, P-Purchase, 3570 shares \
-             at 6.77, filed 2026-06-06.",
-            "Insider statistics, 2026 Q2: 5 acquiring and 35 disposing transactions; 272855 \
-             shares acquired, 880558 disposed.",
-            "Congressional trades, newest first (transaction date: chamber, member, owner, \
-             type, amount, disclosure date): 2026-04-17: Senate, Shelley Moore Capito, \
-             Spouse, Sale, $1,001 - $15,000, disclosed 2026-05-07.",
-            "Earnings surprises, newest first (announcement date: EPS actual vs estimate, \
-             revenue actual): 2026-07-22: EPS 1.10 vs 1.00 estimated, revenue 90.0B.",
-            "Next earnings: 2026-10-29 (EPS estimate 1.20).",
-            "Trailing-twelve-month ratios: P/E 32.89; EV/EBITDA 23.42; EV/sales 8.13; P/B \
-             47.37; FCF yield 3.1%; ROIC 45.2%; ROE 145.3%; net debt/EBITDA 0.48.",
-            "Owner earnings (FY2025 Q1, period end 2024-12-28): 27.7B; 1.83 per share.",
-            "Enterprise value (2024-09-28): 3570.0B; market capitalization 3500.0B; total \
-             debt 106.6B; cash 29.9B.",
-            "Float (2026-06-05): float shares 14.7B; shares outstanding 14.7B; free float 99.8%.",
-            "M&A (SEC merger registration filings, trailing twelve months; a filing follows a \
-             deal's announcement, typically by several weeks, and covers deals paid at least \
-             partly in stock): target of Global Net Lease, Inc., filed 2026-06-01 \
-             (https://sec.gov/x).",
-            "Revenue by product, newest fiscal year first: FY2024 (period end 2024-09-28) \
-             iPhone 201.2B, Mac 30.0B.",
-            "Revenue by geography, newest fiscal year first: FY2024 (period end 2024-09-28) \
-             Americas 167.0B.",
-            "Treasury yields (FRED):",
+            "\nPROFILE\n- name: Apple Inc.\n- exchange: NASDAQ\n- sector: Technology\n\
+             - industry: Consumer Electronics\n- market capitalization: 3000.0B\n\
+             - shares outstanding: 15.0B\n",
+            "\nSTATEMENTS\nQuarterly statements as reported, newest first (period end, then \
+             the figure)\n- revenue: 2026-06-30 100.0B; 2026-03-31 99.0B; ",
+            "\n- diluted EPS: 2026-06-30 1.55; 2026-03-31 1.54; ",
+            "\n- cash and equivalents: 2026-06-30 60.0B; ",
+            "\nCONSENSUS\n- consensus EPS by fiscal period end, as published: 2027-06-30 6.50\n",
+            "\nDIVIDENDS\n- dividends, latest ex-dates first (ex-date, amount per share): \
+             2026-08-11 0.26 (paid 2026-08-14); 2026-05-12 0.25\n",
+            "\nQUOTE AND CLOSES\n- quote: 195.00 per share (the live print, undated)\n- 52-week range as \
+             served: low 170.00, high 260.00\n- daily closes: 17 sessions from 2022-09-30 to \
+             2026-07-15\n- close three months before the analysis date: 190.00 (2026-06-30)\n\
+             - close twelve months before the analysis date: 178.00 (2025-09-30)\n- close \
+             three years before the analysis date: 146.00 (2023-09-30)\n",
+            "\nFILINGS\n8-K filings of the trailing twelve months, newest first (filing date: \
+             items)\n- 2026-07-31: 2.02, 9.01\n- 2026-05-02 (8-K/A): (no items)\n",
+            "\nSHORT INTEREST PRINT\n- settlement: 2026-09-30 (FINRA)\n- shares short: 5000000\n\
+             - shares short at the prior settlement: 4000000\n- average daily volume: \
+             2000000\n- days to cover: 2.50\n",
+            "\nSTREET\n- price targets: consensus 323.82, median 325.00, low 253.00, high \
+             400.00\n- targets published: last month 3 averaging 380.00; last quarter 10 \
+             averaging 322.60; last year 58 averaging 293.43\n- analyst ratings: strong buy 1, \
+             buy 69, hold 33, sell 7, strong sell 0; consensus Buy\nRating actions, newest \
+             first (date: firm, previous grade to new grade, action)\n- 2026-05-26: B of A \
+             Securities, Buy to Buy, maintain\n- FMP rating B: overall 3; discounted cash flow \
+             3, return on equity 5, return on assets 5, debt to equity 1, price to earnings 2, \
+             price to book 1\n",
+            "\nINSIDERS AND CONGRESS\nInsider trades, newest first (transaction date: name, \
+             role, type, shares at price, filing date)\n- 2026-06-05: BOLDUC JOHN, director, \
+             P-Purchase, 3570 shares at 6.77, filed 2026-06-06\n- insider statistics, 2026 Q2: \
+             5 acquiring and 35 disposing transactions; 272855 shares acquired, 880558 \
+             disposed\nCongressional trades, newest first (transaction date: chamber, member, \
+             owner, type, amount, disclosure date)\n- 2026-04-17: Senate, Shelley Moore \
+             Capito, Spouse, Sale, $1,001 - $15,000, disclosed 2026-05-07\n",
+            "\nEARNINGS\nSurprises, newest first (announcement date: EPS actual vs estimate, \
+             revenue actual)\n- 2026-07-22: EPS 1.10 vs 1.00 estimated, revenue 90.0B\n- next \
+             earnings: 2026-10-29 (EPS estimate 1.20)\n",
+            "\nVALUATION\n- trailing-twelve-month ratios: P/E 32.89; EV/EBITDA 23.42; \
+             EV/sales 8.13; P/B 47.37; FCF yield 3.1%; ROIC 45.2%; ROE 145.3%; net \
+             debt/EBITDA 0.48\n- owner earnings (FY2025 Q1, period end 2024-12-28): 27.7B; \
+             1.83 per share\n- enterprise value (2024-09-28): 3570.0B; market capitalization \
+             3500.0B; total debt 106.6B; cash 29.9B\n- float (2026-06-05): float shares 14.7B; \
+             shares outstanding 14.7B; free float 99.8%\n",
+            "\nM&A\nSEC merger registration filings, trailing twelve months; a filing follows \
+             a deal's announcement, typically by several weeks, and covers deals paid at least \
+             partly in stock\n- target of Global Net Lease, Inc., filed 2026-06-01 \
+             (https://sec.gov/x)\n",
+            "\nSEGMENTS\nRevenue by product, newest fiscal year first\n- FY2024 (period end \
+             2024-09-28): iPhone 201.2B, Mac 30.0B\nRevenue by geography, newest fiscal year \
+             first\n- FY2024 (period end 2024-09-28): Americas 167.0B\n",
+            "\nRATES\n- Treasury yields (FRED): 10-year ",
         ];
         let mut cursor = 0;
         for line in expected {
@@ -6245,10 +6309,6 @@ pub(crate) mod tests {
             !block.contains("over the trailing twelve months"),
             "{block}"
         );
-        assert!(
-            !block.contains("52-week low 1") || block.contains("low 170.00 and high"),
-            "{block}"
-        );
         assert!(!block.contains("% vs the prior settlement"), "{block}");
         assert_eq!(
             research_brief(&d, rates_static(), None).fetched_values,
@@ -6257,28 +6317,56 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_statement_series_keeps_one_unit_and_its_smallest_cell() {
+        let mut fin = strong_financials();
+        fin.quarterly_income[1].net_income = Some(0.04e9);
+        fin.quarterly_income[2].net_income = Some(-0.04e9);
+        fin.quarterly_income[3].net_income = Some(0.01e9);
+        fin.quarterly_income[4].net_income = None;
+        fin.quarterly_income[1].gross_profit = Some(1.0e5);
+        fin.quarterly_income[2].gross_profit = Some(4.0e4);
+        for row in &mut fin.quarterly_income {
+            row.operating_income = Some(5.0e6);
+        }
+        let block = fetched_values_section(&dossier(AssetClass::Stock, fin), rates_static());
+        assert!(
+            block.contains("\n- net income: 2026-06-30 25.000B; 2026-03-31 0.040B; 2025-12-31 -0.040B; 2025-09-30 0.010B; 2025-06-30 (gap); 2025-03-31 25.000B; "),
+            "{block}"
+        );
+        // At the four-decimal cap 100,000 keeps a digit in a billions row and 40,000 does not.
+        assert!(
+            block.contains("\n- gross profit: 2026-06-30 45.0000B; 2026-03-31 0.0001B; 2025-12-31 0.0000B; "),
+            "{block}"
+        );
+        assert!(block.contains("\n- operating income: 2026-06-30 5.0M; 2026-03-31 5.0M; "), "{block}");
+        assert!(block.contains("\n- revenue: 2026-06-30 100.0B; 2026-03-31 99.0B; "), "{block}");
+    }
+
+    #[test]
     fn fetched_values_omits_absent_rows_and_cuts_a_funds_countries_at_ten() {
         let d = dossier(AssetClass::Stock, strong_financials());
         let block = fetched_values_section(&d, rates_static());
         for absent in [
-            "Dividends,",
+            "DIVIDENDS",
             "52-week",
-            "8-K filings",
-            "Short interest",
-            "Street price",
-            "Analyst ratings",
+            "FILINGS",
+            "SHORT INTEREST PRINT",
+            "STREET",
+            "price targets",
+            "analyst ratings",
             "Rating actions",
             "FMP rating",
-            "Insider",
+            "INSIDERS",
             "Congressional",
-            "Earnings surprises",
-            "Next earnings",
-            "Trailing-twelve-month ratios",
-            "Owner earnings",
-            "Enterprise value",
-            "Float",
+            "EARNINGS",
+            "next earnings",
+            "VALUATION",
+            "trailing-twelve-month ratios",
+            "owner earnings",
+            "enterprise value",
+            "float",
             "M&A",
-            "Revenue by",
+            "SEGMENTS",
         ] {
             assert!(
                 !block.contains(absent),
@@ -6288,8 +6376,8 @@ pub(crate) mod tests {
         let mut d = d;
         d.evidence = Some(crate::portfolio::evidence::CompanyEvidence::empty("AAPL"));
         let block = fetched_values_section(&d, rates_static());
-        assert!(!block.contains("Trailing-twelve-month ratios"), "{block}");
-        assert!(!block.contains("Street price"), "{block}");
+        assert!(!block.contains("trailing-twelve-month ratios"), "{block}");
+        assert!(!block.contains("price targets"), "{block}");
         // The countries are served smallest first, so the cut must sort.
         let mut fund = us_equity_fund();
         fund.sector_weights = (0..12).map(|i| (format!("Sector {i}"), 0.05)).collect();
@@ -6297,12 +6385,13 @@ pub(crate) mod tests {
             .map(|i| (format!("Country {i}"), 0.01 * (i + 1) as f64))
             .collect();
         let block = fetched_values_section(&fund_dossier(fund), rates_static());
-        assert!(block.contains("Sector 11 5.0%"), "{block}");
+        assert!(block.contains("\nWEIGHTS\n- sectors: Sector 0 5.0%, "), "{block}");
+        assert!(block.contains("Sector 11 5.0%\n"), "{block}");
         assert!(
-            block.contains("Country weights: Country 11 12.0%, Country 10 11.0%"),
+            block.contains("- countries, largest first: Country 11 12.0%, Country 10 11.0%"),
             "{block}"
         );
-        assert!(block.contains("Country 2 3.0%."), "{block}");
+        assert!(block.contains("Country 2 3.0%\n"), "{block}");
         assert!(
             !block.contains("Country 1 2.0%") && !block.contains("Country 0 1.0%"),
             "{block}"
@@ -6579,16 +6668,23 @@ pub(crate) mod tests {
         };
         let block = research_brief(&d, rates_static(), None).fetched_values;
         assert!(block.starts_with("\nFETCHED VALUES\n"), "{block}");
-        assert!(
-            block.contains(
-                "period end: revenue; gross profit; operating income; net income; diluted \
-                 EPS; diluted shares; operating cash flow; free cash flow; capital \
-                 expenditure; total debt; total equity; cash and equivalents.\n\
-                 - 2026-06-30: 100.0B; 45.0B; (gap); 25.0B; 1.55; 15.0B; 28.0B; 20.0B; \
-                 -8.0B; 100.0B; 70.0B; 60.0B\n"
-            ),
-            "{block}"
-        );
+        for line in [
+            "\nSTATEMENTS\nQuarterly statements as reported, newest first (period end, then \
+             the figure)\n- revenue: 2026-06-30 100.0B; 2026-03-31 99.0B; ",
+            "\n- gross profit: 2026-06-30 45.0B; ",
+            "\n- operating income: 2026-06-30 (gap); 2026-03-31 (gap); ",
+            "\n- net income: 2026-06-30 25.0B; ",
+            "\n- diluted EPS: 2026-06-30 1.55; ",
+            "\n- diluted shares: 2026-06-30 15.0B; ",
+            "\n- operating cash flow: 2026-06-30 28.0B; ",
+            "\n- free cash flow: 2026-06-30 20.0B; ",
+            "\n- capital expenditure: 2026-06-30 -8.0B; ",
+            "\n- total debt: 2026-06-30 100.0B; ",
+            "\n- total equity: 2026-06-30 70.0B; ",
+            "\n- cash and equivalents: 2026-06-30 60.0B; ",
+        ] {
+            assert!(block.contains(line), "{line}\n{block}");
+        }
         let interp = thesis_user_prompt(&ThesisInput {
             rates: rates_static(),
             soft_forensic: None,
@@ -7403,7 +7499,7 @@ pub(crate) mod tests {
         // Each stamp moves with every change to its prompts or persisted
         // shapes, so an interrupted pre-change run cannot resume into the new
         // contract; the pins here move with each bump.
-        assert_eq!(PROMPT_VERSION, "portfolio-v77");
+        assert_eq!(PROMPT_VERSION, "portfolio-v78");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v26"
@@ -8037,7 +8133,7 @@ pub(crate) mod tests {
             review: None,
         });
         assert!(
-            role.contains("\nFund: asset class Equity; expense ratio 0.0003 (0.03%/yr); "),
+            role.contains("\n- asset class: Equity\n- expense ratio: 0.0003 (0.03%/yr)\n"),
             "{role}"
         );
         assert_eq!(role.matches("0.0003 (0.03%/yr)").count(), 1, "renders once: {role}");
@@ -8062,7 +8158,7 @@ pub(crate) mod tests {
         });
         assert!(interp.contains("\nFUND\nUS share of holdings: 99%.\n"), "{interp}");
         assert!(
-            interp.contains("\nFund: asset class Equity; expense ratio 0.0003 (0.03%/yr); "),
+            interp.contains("\n- asset class: Equity\n- expense ratio: 0.0003 (0.03%/yr)\n"),
             "{interp}"
         );
         assert_eq!(interp.matches("0.0003 (0.03%/yr)").count(), 1, "renders once: {interp}");
@@ -9155,10 +9251,10 @@ pub(crate) mod tests {
         let user = &cont_req.messages[1].content;
         assert!(user.contains("\nPRIOR THESIS (written 2026-08-03)\nThesis: hold AAPL "), "{user}");
         assert!(user.contains(", and what changed since the prior analysis, drawing on PRIOR THESIS.\n"), "{user}");
-        assert!(user.contains("; close on the prior analysis date 2026-08-03: "), "{user}");
+        assert!(user.contains("\n- close on the prior analysis date 2026-08-03: "), "{user}");
         let (part1, _) = user.split_once("======== PART 2: TASK ========").unwrap();
         let fetched = part1.split("\nFETCHED VALUES\n").nth(1).unwrap().split("\nCOMPUTED\n").next().unwrap();
-        assert!(fetched.contains("Consensus EPS by fiscal period end, as published: "), "{fetched}");
+        assert!(fetched.contains("\nCONSENSUS\n- consensus EPS by fiscal period end, as published: "), "{fetched}");
         assert!(!fetched.contains("blended"), "{fetched}");
         let metrics = part1.split("\nMETRICS\n").nth(1).unwrap().split("\nSCORES\n").next().unwrap();
         assert!(metrics.contains("- forward consensus, next twelve months blended over "), "{metrics}");
@@ -9169,7 +9265,7 @@ pub(crate) mod tests {
         let user = &fund_req.messages[1].content;
         let metrics = user.split("\nMETRICS\n").nth(1).unwrap().split("\nSCORES\n").next().unwrap();
         assert!(metrics.contains("- daily realized return volatility: ") && !metrics.contains("price / earnings multiple") && !metrics.contains("fund expense ratio"), "{metrics}");
-        assert!(user.contains("; expense ratio 0.0003 (0.03%/yr); "), "{user}");
+        assert!(user.contains("\n- expense ratio: 0.0003 (0.03%/yr)\n"), "{user}");
 
         let prior_of = |disposition: VerdictDisposition| HoldingVerdict {
             symbol: "AAPL".into(),

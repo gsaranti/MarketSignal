@@ -16,11 +16,13 @@ Then the tools JSON or the response schema the grammar enforces, and any variant
 
 The holdings are the fixed evidence set of big-run attempt 6 (`src-tauri/src/portfolio/fixtures/attempt-6/README.md`): TSLA for the stock shapes, SPMO for the priced-fund shapes, and the synthetic BND bond fund for the role/risk shapes.
 Their financials, engine output, position and verdict are the reconstructed persisted values, with synthetic position economics.
-The FETCHED VALUES rows the fixed set does not carry on the stock shapes are synthetic values layered on for the examples alone, their names stubbed: the issuer line, the served 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the earnings surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the revenue segments.
+The FETCHED VALUES rows the fixed set does not carry on the stock shapes are synthetic values layered on for the examples alone, their names stubbed: the issuer line, the quarterly statements and the consensus, the served 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the earnings surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the revenue segments.
+The statements are sized to the engine's persisted metrics and the consensus to its band driver, so the block agrees with COMPUTED where the two overlap.
+The other synthetic rows that restate a statement figure — the surprises' EPS, the ratio lines, the enterprise-value row and the segments — agree with the statements.
 The factor lines under SCORES and the value-creation read they name are synthetic the same way.
 Every factor of the general class is observed on the Consumer Cyclical row, tied to the fixture's computed metrics where the two overlap, and scored through the live bands.
 The four scores are the factors' means, and the letter still rolls up to the persisted grade.
-SPMO's fund context is synthetic too, since the fixture carries none: its name, mandate, expense ratio, assets, NAV and weights, which the Profile and Fund rows and the FUND block render.
+SPMO's fund context is synthetic too, since the fixture carries none: its name, mandate, expense ratio, assets, NAV, weights and distributions, which the PROFILE, WEIGHTS and DIVIDENDS rows and the FUND block render.
 The stock self-review's accuracy record — its earlier forecasts, their checks and scores — is synthetic too, layered for that example alone.
 The verdict's model arm is re-shaped by hand into a thesis document and a typed appendix, since attempt 6 wrote the structured read the document replaced.
 Every parsed article or research field is a stub: a bracketed `[stub: …]` label that keeps the field's place and names what stood there.

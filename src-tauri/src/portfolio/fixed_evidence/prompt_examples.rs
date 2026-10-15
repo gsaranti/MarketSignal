@@ -4,10 +4,11 @@
 //! reader's guide). The data is the fixed evidence set's — TSLA for the stock
 //! shapes, SPMO for the fund shapes, the synthetic BND for role/risk — every
 //! research field a shape-preserving `[stub: …]` placeholder, the FETCHED
-//! VALUES rows, the factor composite and the fund context the set lacks
-//! layered on synthetically ([`layer_synthetic_evidence`],
-//! [`layer_synthetic_factors`], [`layer_synthetic_fund`]), and the continuity
-//! shapes over a hand-written prior.
+//! VALUES rows, the statements, the factor composite and the fund context the
+//! set lacks layered on synthetically ([`layer_synthetic_evidence`],
+//! [`layer_synthetic_statements`], [`layer_synthetic_factors`],
+//! [`layer_synthetic_fund`]), and the continuity shapes over a hand-written
+//! prior.
 //!
 //! Regenerate from `src-tauri/` with
 //! `MARKET_SIGNAL_PROMPT_EXAMPLES_DIR=../docs/prompts/portfolio cargo test
@@ -75,12 +76,13 @@ fn fixture(symbol: &str) -> Fixture {
 }
 
 /// A first-analysis dossier over the fixture, the report's sections stubbed
-/// and, on a stock, the synthetic evidence rows layered on.
+/// and, on a stock, the synthetic evidence rows and statements layered on.
 pub(super) fn debut_dossier(f: &Fixture) -> HoldingDossier {
     let mut d = dossier_of(f, true);
     stub_house_view(&mut d);
     if f.asset_class == crate::portfolio::AssetClass::Stock {
         layer_synthetic_evidence(&mut d, f.spot);
+        layer_synthetic_statements(&mut d);
     }
     if f.symbol == "SPMO" {
         layer_synthetic_fund(&mut d);
@@ -238,12 +240,25 @@ fn layer_synthetic_factors(f: &mut Fixture) {
 
 /// The fund context the fixed set never carried, layered onto SPMO's dossier
 /// for the examples alone: the fund's identity and mandate, an expense ratio
-/// and a NAV that agree with the fixture's persisted metrics, and round sector
-/// and country weights. The sector-P/E surface stays empty, since the engine
-/// output is the persisted one and nothing recomputes from it, and an equity
-/// index fund maps to no COT contract.
+/// and a NAV that agree with the fixture's persisted metrics, round sector
+/// and country weights, and the last four distributions, which sum to the
+/// persisted forward income per share. The sector-P/E surface stays empty,
+/// since the engine output is the persisted one and nothing recomputes from
+/// it, and an equity index fund maps to no COT contract.
 fn layer_synthetic_fund(d: &mut HoldingDossier) {
+    use crate::portfolio::evidence::DividendRow;
     use crate::portfolio::fund::{FundContext, FundData};
+    let distribution = |ex_date: &str, amount: f64, paid: &str| DividendRow {
+        date: ex_date.into(),
+        amount,
+        payment_date: Some(paid.into()),
+    };
+    d.financials.recent_dividends = vec![
+        distribution("2026-06-23", 0.2756, "2026-06-27"),
+        distribution("2026-03-24", 0.2611, "2026-03-28"),
+        distribution("2025-12-22", 0.2544, "2025-12-26"),
+        distribution("2025-09-22", 0.2578, "2025-09-26"),
+    ];
     let weights = |rows: &[(&str, f64)]| -> Vec<(String, f64)> {
         rows.iter().map(|(label, w)| (label.to_string(), *w)).collect()
     };
@@ -280,8 +295,12 @@ fn layer_synthetic_fund(d: &mut HoldingDossier) {
 
 /// The synthetic FETCHED VALUES rows for the stock shapes: round figures sized
 /// off the fixture's spot and dated against its 2026-09-16 session, every name
-/// a `[stub: …]`, no fabricated URL. The splits are the issuer's real ones,
-/// dated before the prior session, so no split-context line renders off them.
+/// a `[stub: …]`, no fabricated URL. The surprises' EPS, the ratio lines, the
+/// enterprise-value row, the float, owner earnings per share and the segments
+/// agree with the synthetic statements ([`layer_synthetic_statements`]); the
+/// segments' FY2024 is a year the two shown quarters fit. The splits are the issuer's
+/// real ones, dated before the prior session, so no split-context line renders
+/// off them.
 fn layer_synthetic_evidence(d: &mut HoldingDossier, spot: f64) {
     use crate::portfolio::evidence::*;
     let round = |x: f64| (x * 100.0).round() / 100.0;
@@ -331,26 +350,26 @@ fn layer_synthetic_evidence(d: &mut HoldingDossier, spot: f64) {
     d.evidence = Some(CompanyEvidence {
         symbol: d.position.symbol.clone(),
         ratios: RatioLines {
-            pe: Some(95.0),
-            pb: Some(12.5),
-            ev_to_ebitda: Some(55.0),
-            ev_to_sales: Some(8.0),
-            fcf_yield: Some(0.006),
-            roic: Some(0.07),
-            roe: Some(0.11),
-            net_debt_to_ebitda: Some(-1.2),
+            pe: Some(370.07),
+            pb: Some(16.22),
+            ev_to_ebitda: Some(124.79),
+            ev_to_sales: Some(13.33),
+            fcf_yield: Some(0.0025),
+            roic: Some(0.083),
+            roe: Some(0.044),
+            net_debt_to_ebitda: Some(-2.48),
         },
         owner_earnings: Some(OwnerEarningsRow {
             period_end: "2026-06-30".into(),
             period: Some("FY2026 Q2".into()),
             owners_earnings: Some(2.1e9),
-            per_share: Some(0.62),
+            per_share: Some(0.60),
         }),
         enterprise_value: Some(EnterpriseValueRow {
             date: "2026-06-30".into(),
-            enterprise_value: Some(7.9e11),
-            market_cap: Some(7.8e11),
-            total_debt: Some(1.3e10),
+            enterprise_value: Some(1.2354e12),
+            market_cap: Some(1.26e12),
+            total_debt: Some(8.4e9),
             cash: Some(3.3e10),
         }),
         price_target: Some(PriceTargetConsensus {
@@ -477,26 +496,26 @@ fn layer_synthetic_evidence(d: &mut HoldingDossier, spot: f64) {
         float: Some(SharesFloat {
             date: Some("2026-09-01".into()),
             free_float_percent: Some(86.9),
-            float_shares: Some(2.8e9),
-            outstanding_shares: Some(3.22e9),
+            float_shares: Some(3.05e9),
+            outstanding_shares: Some(3.51e9),
         }),
         product_segments: vec![
             segments(
                 2025,
                 "2025-12-31",
                 &[
-                    ("Automotive", 7.2e10),
-                    ("Services and other", 1.1e10),
-                    ("Energy generation and storage", 1.0e10),
+                    ("Automotive", 6.85e10),
+                    ("Services and other", 1.03e10),
+                    ("Energy generation and storage", 9.5e9),
                 ],
             ),
             segments(
                 2024,
                 "2024-12-31",
                 &[
-                    ("Automotive", 7.7e10),
-                    ("Services and other", 1.05e10),
-                    ("Energy generation and storage", 1.0e10),
+                    ("Automotive", 6.8e10),
+                    ("Services and other", 9.5e9),
+                    ("Energy generation and storage", 8.5e9),
                 ],
             ),
         ],
@@ -505,18 +524,18 @@ fn layer_synthetic_evidence(d: &mut HoldingDossier, spot: f64) {
                 2025,
                 "2025-12-31",
                 &[
-                    ("United States", 4.4e10),
-                    ("Other", 2.8e10),
-                    ("China", 2.1e10),
+                    ("United States", 4.15e10),
+                    ("Other", 2.7e10),
+                    ("China", 1.98e10),
                 ],
             ),
             segments(
                 2024,
                 "2024-12-31",
                 &[
-                    ("United States", 4.7e10),
-                    ("Other", 2.9e10),
-                    ("China", 2.15e10),
+                    ("United States", 4.2e10),
+                    ("Other", 2.55e10),
+                    ("China", 1.85e10),
                 ],
             ),
         ],
@@ -534,10 +553,10 @@ fn layer_synthetic_evidence(d: &mut HoldingDossier, spot: f64) {
         ],
         earnings: vec![
             earnings("2026-10-21", None, 0.55, None),
-            earnings("2026-07-22", Some(0.40), 0.43, Some(2.25e10)),
-            earnings("2026-04-22", Some(0.27), 0.42, Some(1.93e10)),
-            earnings("2026-01-29", Some(0.73), 0.77, Some(2.57e10)),
-            earnings("2025-10-22", Some(0.72), 0.60, Some(2.52e10)),
+            earnings("2026-07-22", Some(0.34), 0.37, Some(2.25e10)),
+            earnings("2026-04-22", Some(0.17), 0.25, Some(1.93e10)),
+            earnings("2026-01-29", Some(0.26), 0.29, Some(2.57e10)),
+            earnings("2025-10-22", Some(0.20), 0.16, Some(2.52e10)),
         ],
         gaps: vec![],
     });
@@ -547,6 +566,110 @@ fn layer_synthetic_evidence(d: &mut HoldingDossier, spot: f64) {
         date: "2026-05-20".into(),
         link: None,
     }];
+}
+
+/// The quarterly statements and the consensus the fixed set never carried,
+/// layered onto TSLA's financials for the examples alone. The eight quarters'
+/// trailing-year sums reproduce the fixture's persisted metrics — revenue
+/// growth, gross and net margin, debt / equity, and P/E, P/S and P/B at the
+/// spot over the diluted share count — and the factor lines' operating margin
+/// and cash conversion; the consensus rows and the blended EPS driver are the
+/// engine output's own, the revenue consensus round. No dividend is layered:
+/// the persisted hurdle read carries no forward income.
+fn layer_synthetic_statements(d: &mut HoldingDossier) {
+    use engine::{
+        ConsensusEpsPeriod, ConsensusEstimate, QuarterlyBalanceSheetRow, QuarterlyCashFlowRow,
+        QuarterlyIncomeRow,
+    };
+    const ENDS: [&str; 8] = [
+        "2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30", "2025-06-30", "2025-03-31",
+        "2024-12-31", "2024-09-30",
+    ];
+    // Billions, newest first; capex carries FMP's sign (an outflow).
+    const REVENUE: [f64; 8] = [22.5, 19.3, 25.7, 25.2, 20.1, 17.3, 23.0, 22.5];
+    const GROSS_PROFIT: [f64; 8] = [4.3, 3.5, 4.9, 4.8, 3.6, 2.9, 3.7, 4.0];
+    const OPERATING_INCOME: [f64; 8] = [1.5, 0.8, 1.3, 1.1, 1.3, 0.4, 1.6, 2.7];
+    const NET_INCOME: [f64; 8] = [1.2, 0.6, 0.9, 0.7, 1.4, 0.4, 2.3, 2.2];
+    const DILUTED_EPS: [f64; 8] = [0.34, 0.17, 0.26, 0.20, 0.40, 0.11, 0.66, 0.63];
+    const OPERATING_CASH_FLOW: [f64; 8] = [3.5, 2.6, 3.6, 3.3, 3.0, 2.2, 4.0, 4.5];
+    const FREE_CASH_FLOW: [f64; 8] = [1.0, 0.3, 1.0, 0.9, 0.9, 0.1, 2.0, 2.7];
+    const CAPEX: [f64; 8] = [-2.5, -2.3, -2.6, -2.4, -2.1, -2.1, -2.0, -1.8];
+    const TOTAL_DEBT: [f64; 8] = [8.4, 8.3, 8.1, 7.9, 7.8, 7.6, 7.5, 7.3];
+    const TOTAL_EQUITY: [f64; 8] = [77.7, 76.5, 75.9, 75.0, 74.3, 72.9, 72.5, 70.3];
+    const CASH: [f64; 8] = [33.0, 31.5, 30.8, 29.9, 28.7, 27.4, 26.1, 25.0];
+    // Not rendered; it gives the ratio lines' EBITDA a basis in the dossier.
+    const DEPRECIATION: f64 = 1.3;
+    const DILUTED_SHARES: f64 = 3.5;
+    const TOTAL_ASSETS: f64 = 138.5;
+    let billions = |x: f64| Some(x * 1e9);
+    let fin = &mut d.financials;
+    fin.market_cap = billions(1260.0);
+    fin.shares_outstanding = billions(3.51);
+    fin.quarterly_income = ENDS
+        .iter()
+        .enumerate()
+        .map(|(i, end)| QuarterlyIncomeRow {
+            period_end: (*end).into(),
+            revenue: billions(REVENUE[i]),
+            eps_diluted: Some(DILUTED_EPS[i]),
+            diluted_shares: billions(DILUTED_SHARES),
+            net_income: billions(NET_INCOME[i]),
+            gross_profit: billions(GROSS_PROFIT[i]),
+            cost_of_revenue: billions(REVENUE[i] - GROSS_PROFIT[i]),
+            operating_income: billions(OPERATING_INCOME[i]),
+            ..Default::default()
+        })
+        .collect();
+    fin.quarterly_cash_flow = ENDS
+        .iter()
+        .enumerate()
+        .map(|(i, end)| QuarterlyCashFlowRow {
+            period_end: (*end).into(),
+            free_cash_flow: billions(FREE_CASH_FLOW[i]),
+            operating_cash_flow: billions(OPERATING_CASH_FLOW[i]),
+            capex: billions(CAPEX[i]),
+            depreciation_and_amortization: billions(DEPRECIATION),
+            ..Default::default()
+        })
+        .collect();
+    fin.quarterly_balance_sheet = ENDS
+        .iter()
+        .enumerate()
+        .map(|(i, end)| QuarterlyBalanceSheetRow {
+            period_end: (*end).into(),
+            total_debt: billions(TOTAL_DEBT[i]),
+            total_equity: billions(TOTAL_EQUITY[i]),
+            cash_and_equivalents: billions(CASH[i]),
+            total_assets: billions(TOTAL_ASSETS),
+            ..Default::default()
+        })
+        .collect();
+    fin.consensus = Some(ConsensusEstimate {
+        period_end: "2026-12-31".into(),
+        eps_low: Some(1.3808912602739725),
+        eps_mid: Some(2.103475123287671),
+        eps_high: Some(3.0700617260273972),
+        revenue_low: billions(98.0),
+        revenue_mid: billions(104.0),
+        revenue_high: billions(110.0),
+        periods_used: 2,
+        near_weight: 0.29315068493150687,
+        eps_mid_rows: 2,
+        revenue_mid_rows: 2,
+        eps_periods: vec![
+            ConsensusEpsPeriod {
+                period_end: "2026-12-31".into(),
+                eps_mid: Some(1.70542),
+                ntm_weight: 0.29315068493150687,
+            },
+            ConsensusEpsPeriod {
+                period_end: "2027-12-31".into(),
+                eps_mid: Some(2.26856),
+                ntm_weight: 0.7068493150684931,
+            },
+        ],
+        ..Default::default()
+    });
 }
 
 fn graded_of(f: &Fixture) -> &crate::portfolio::GradedVerdict {
@@ -1638,15 +1761,16 @@ fn render(ex: &Example) -> String {
         .request
         .messages
         .iter()
-        .any(|m| m.content.contains("Street price targets:"))
+        .any(|m| m.content.contains("\n- price targets: "))
     {
-        out.push_str("Under FETCHED VALUES, the issuer line, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments are synthetic values layered onto the fixture for these examples alone, their names stubbed; the statements, the quote and the closes are the fixed set's.\n");
+        out.push_str("Under FETCHED VALUES, the issuer line, the quarterly statements and the consensus, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments are synthetic values layered onto the fixture for these examples alone, their names stubbed; the quote and the closes are the fixed set's.\n");
+        out.push_str("The statements are sized to the engine's persisted metrics and the consensus to its band driver, and the surprises' EPS, the ratio lines, the enterprise-value row and the segments agree with the statements.\n");
     }
     if ex.request.messages.iter().any(|m| m.content.contains("\nSCORES\n") && m.content.contains("\nquality\n- ")) {
         out.push_str("Under SCORES, the factor lines and the return and cost of capital they name are synthetic values layered onto the fixture for these examples alone, scored through the live bands; the four scores are their means.\n");
     }
     if ex.request.messages.iter().any(|m| m.content.contains("SPMO (Invesco S&P 500 Momentum ETF)")) {
-        out.push_str("The fund's name, mandate, expense ratio, assets, NAV and weights — the Profile and Fund rows and the FUND block — are synthetic values layered onto the fixture for these examples alone.\n");
+        out.push_str("The fund's name, mandate, expense ratio, assets, NAV, weights and distributions — the PROFILE, WEIGHTS and DIVIDENDS rows and the FUND block — are synthetic values layered onto the fixture for these examples alone.\n");
     }
     out.push('\n');
     out.push_str("## Request\n\n");
@@ -1685,8 +1809,8 @@ fn render_contents(examples: &[Example]) -> String {
     ));
     out.push_str("One file per call shape, in pipeline order: the research loop (Step 6c), consolidation — the distillation shapes and the analysis call (Step 6d) — the self-review on a continuity run (Step 6e), then the thesis document, its appendix and the action call (Step 6f).\n");
     out.push_str("Each file carries the request envelope, every message as sent, and the tools or the response schema.\n");
-    out.push_str("On the stock shapes, the FETCHED VALUES rows the fixed set does not carry — the issuer line, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments — are synthetic values layered on for the examples alone, their names stubbed (`docs/prompts/README.md`).\n");
-    out.push_str("The factor lines under SCORES and the value-creation read they name are synthetic the same way, and on the fund shapes so is SPMO's fund context: its name, mandate, expense ratio, assets, NAV and weights.\n\n");
+    out.push_str("On the stock shapes, the FETCHED VALUES rows the fixed set does not carry — the issuer line, the quarterly statements and the consensus, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments — are synthetic values layered on for the examples alone, their names stubbed (`docs/prompts/README.md`).\n");
+    out.push_str("The factor lines under SCORES and the value-creation read they name are synthetic the same way, and on the fund shapes so is SPMO's fund context: its name, mandate, expense ratio, assets, NAV, weights and distributions.\n\n");
     out.push_str("| File | Call | Step |\n| --- | --- | --- |\n");
     for ex in examples {
         out.push_str(&format!("| [{0}]({0}.md) | {1} | {2} |\n", ex.file, ex.title, ex.step));

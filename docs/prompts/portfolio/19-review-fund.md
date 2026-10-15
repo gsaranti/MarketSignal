@@ -1,12 +1,12 @@
 # Self-review — priced fund, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v77`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v78`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: SPMO, on a continuity run over the prior position of 2026-09-02, its fund context synthetic.
 The review is a thinking call with no grammar, on a continuity run only: Part 1 the holding header and FETCHED VALUES, PRIOR POSITION, PRIOR THESIS, this run's ANALYSIS and REALIZED; Part 2 what the review covers, in order, and its length band. The review reaches this run's thesis document alone.
 A priced fund takes the same call; with no check landed since the prior analysis, the fixed sentence says the scores shown are the ones it read. The prior's read-through mark here is hand-written.
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
-The fund's name, mandate, expense ratio, assets, NAV and weights — the Profile and Fund rows and the FUND block — are synthetic values layered onto the fixture for these examples alone.
+The fund's name, mandate, expense ratio, assets, NAV, weights and distributions — the PROFILE, WEIGHTS and DIVIDENDS rows and the FUND block — are synthetic values layered onto the fixture for these examples alone.
 
 ## Request
 
@@ -19,7 +19,7 @@ The fund's name, mandate, expense ratio, assets, NAV and weights — the Profile
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 7675 chars — the messages and tools as serialized |
+| Prompt material | 7906 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,7 +28,7 @@ You are an investment analyst reviewing the prior position on one holding for a 
 Part 1 of the message gives the inputs. Part 2 says what the review covers and how to return it.
 ~~~~
 
-## User message (7318 chars)
+## User message (7534 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -38,20 +38,33 @@ Price: $144.19 per share.
 Date: 2026-09-16.
 
 FETCHED VALUES
-The holding's data as its providers return it, each figure as reported (USD; B is billions, M is
-millions; a yield or a return as a percentage); none is computed, and a cell the provider left empty
-reads (gap).
-Profile: name Invesco S&P 500 Momentum ETF.
-Fund: asset class Equity; expense ratio 0.0013 (0.13%/yr); assets under management 16.0B; NAV
-144.69.
-Sector weights: Technology 31.0%, Financial Services 19.0%, Industrials 14.0%, Communication
-Services 12.0%, Consumer Cyclical 9.0%, Healthcare 7.0%, Utilities 4.0%, Energy 2.0%, Basic
-Materials 2.0%.
-Country weights: United States 100.0%.
-Quote: 144.19 per share (the live print, undated).
-Daily closes: 3 sessions from 2026-09-01 to 2026-09-14; close on the prior analysis date 2026-09-02:
-139.86 (2026-09-02).
-Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%.
+The holding's data (USD; B is billions, M is millions; a yield or a return as a percentage); a
+missing figure reads (gap). The rows follow under their labels.
+
+PROFILE
+- name: Invesco S&P 500 Momentum ETF
+- asset class: Equity
+- expense ratio: 0.0013 (0.13%/yr)
+- assets under management: 16.0B
+- NAV: 144.69
+
+WEIGHTS
+- sectors: Technology 31.0%, Financial Services 19.0%, Industrials 14.0%, Communication Services
+12.0%, Consumer Cyclical 9.0%, Healthcare 7.0%, Utilities 4.0%, Energy 2.0%, Basic Materials 2.0%
+- countries, largest first: United States 100.0%
+
+DIVIDENDS
+- dividends, latest ex-dates first (ex-date, amount per share): 2026-06-23 0.2756 (paid 2026-06-27);
+2026-03-24 0.2611 (paid 2026-03-28); 2025-12-22 0.2544 (paid 2025-12-26); 2025-09-22 0.2578 (paid
+2025-09-26)
+
+QUOTE AND CLOSES
+- quote: 144.19 per share (the live print, undated)
+- daily closes: 3 sessions from 2026-09-01 to 2026-09-14
+- close on the prior analysis date 2026-09-02: 139.86 (2026-09-02)
+
+RATES
+- Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%
 
 PRIOR POSITION
 The position stated at the prior analysis: its date, the price then, the action with its rationale,
