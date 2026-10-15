@@ -1,11 +1,12 @@
 # Thesis document — priced fund, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v74`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v77`; regenerate rather than edit (`docs/prompts/README.md`).*
 
-Holding: SPMO, an ETF of the fixed evidence set (attempt 6, reconstructed), on its first analysis; the fixture carries no fund context, so the FUND block does not render.
+Holding: SPMO, an ETF of the fixed evidence set (attempt 6, reconstructed), on its first analysis, its fund context synthetic.
 The thesis document is a thinking call with no grammar: Part 1 the fetched values, the computed reads under one heading, the market analysis and this run's analysis; Part 2 what the document covers, in order, and its length band.
 A priced fund takes the same call with the fund's metric labels and an investment analyst's role line.
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
+The fund's name, mandate, expense ratio, assets, NAV and weights — the Profile and Fund rows and the FUND block — are synthetic values layered onto the fixture for these examples alone.
 
 ## Request
 
@@ -18,7 +19,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 4765 chars — the messages and tools as serialized |
+| Prompt material | 5576 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,12 +29,12 @@ Part 1 of the message gives the inputs. Part 2 says what the document covers, in
 return it.
 ~~~~
 
-## User message (4414 chars)
+## User message (5215 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
 HOLDING
-SPMO (name unavailable).
+SPMO (Invesco S&P 500 Momentum ETF).
 Price: $144.19 per share.
 Date: 2026-09-16.
 
@@ -41,6 +42,13 @@ FETCHED VALUES
 The holding's data as its providers return it, each figure as reported (USD; B is billions, M is
 millions; a yield or a return as a percentage); none is computed, and a cell the provider left empty
 reads (gap).
+Profile: name Invesco S&P 500 Momentum ETF.
+Fund: asset class Equity; expense ratio 0.0013 (0.13%/yr); assets under management 16.0B; NAV
+144.69.
+Sector weights: Technology 31.0%, Financial Services 19.0%, Industrials 14.0%, Communication
+Services 12.0%, Consumer Cyclical 9.0%, Healthcare 7.0%, Utilities 4.0%, Energy 2.0%, Basic
+Materials 2.0%.
+Country weights: United States 100.0%.
 Quote: 144.19 per share (the live print, undated).
 Daily closes: 1 sessions from 2026-09-14 to 2026-09-14.
 Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%.
@@ -48,6 +56,15 @@ Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%.
 COMPUTED
 The computed reads follow under their labels, up to MARKET ANALYSIS; each is derived from the
 fetched data by fixed formulas.
+
+FUND
+Class: US equity fund. Reported asset class: Equity.
+US share of holdings: 100%.
+Exposure tilt (the largest weights, by sector where reported and otherwise by country): Technology
+31.0%, Financial Services 19.0%, Industrials 14.0%, Communication Services 12.0%, Consumer Cyclical
+9.0%.
+Composite P/E coverage: 100% of fund weight; the uncovered 0% is outside the valuation score, not
+averaged in.
 
 METRICS
 The market metrics are daily; the expense ratio is the fund's published figure.

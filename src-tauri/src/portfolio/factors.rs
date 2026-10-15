@@ -464,7 +464,7 @@ impl Factor {
     /// row (the market-wide row when the sector is unmapped), the rest one
     /// market-wide band. `None` for a sector-banded factor the row carries no
     /// anchor for — never one its class's factor set reads.
-    fn band(self, row: AnchorRow) -> Option<Band> {
+    pub(crate) fn band(self, row: AnchorRow) -> Option<Band> {
         let market = |(anchor, half_width): (f64, f64)| Band {
             anchor,
             half_width,

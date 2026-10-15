@@ -1,6 +1,6 @@
 # Thesis appendix — the conversation's second message
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v76`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v77`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The appendix is the thesis conversation's second message: the same system and user messages, the document the model returned as the assistant turn, then the transcription ask under the nullable grammar with thinking off.
@@ -8,6 +8,7 @@ The grammar admits a null in every field; an object off its declared domain — 
 The assistant turn shown is the offline stub's document on the TSLA debut packet; a run's is the model's own.
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
 Under FETCHED VALUES, the issuer line, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments are synthetic values layered onto the fixture for these examples alone, their names stubbed; the statements, the quote and the closes are the fixed set's.
+Under SCORES, the factor lines and the return and cost of capital they name are synthetic values layered onto the fixture for these examples alone, scored through the live bands; the four scores are their means.
 
 ## Request
 
@@ -20,7 +21,7 @@ Under FETCHED VALUES, the issuer line, the 52-week range, the 8-K list, the shor
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":1024,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 10750 chars — the messages and tools as serialized |
+| Prompt material | 12882 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +31,7 @@ of the message gives the inputs. Part 2 says what the document covers, in order,
 it.
 ~~~~
 
-## User message (8879 chars)
+## User message (10995 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -113,8 +114,39 @@ day)
 SCORES
 Four scores from 0 to 100, higher is better on every axis: quality; valuation, where higher means
 more attractive; momentum; risk, where higher means more resilient. The grade is a letter derived
-from the quality, valuation and risk scores.
-quality 10, valuation 33, momentum 45, risk 64. Grade F. Risk tier: high.
+from the quality, valuation and risk scores. Each score is the mean of the factors listed under it,
+each read over the trailing twelve months where it reads the statements. A factor scores 50 at its
+band's anchor and 0 or 100 at the band's edges, a value past an edge held at it. Where the company
+has 8 or more earlier trailing-year readings of a factor, that score is averaged with the factor's
+rank among them, on the same scale. A factor that could not be computed scores 50.
+quality 27, valuation 12, momentum 58, risk 39. Grade F. Risk tier: high.
+quality
+- gross profit over total assets: 0.1263; band 0.3500 ± 0.3500 (Consumer Cyclical): 18; rank among
+12 earlier readings: 8; score 13
+- operating income over revenue: 0.0505; band 0.1010 ± 0.1010 (Consumer Cyclical): 25; rank among 12
+earlier readings: 8; score 17
+- return on invested capital less its cost of capital: -0.0460 (return 0.0827 less cost of capital
+0.1287); band 0.0000 ± 0.1500 (market-wide): 35; rank among 12 earlier readings: 8; score 22
+- free cash flow over net income: 0.9253; band 0.9000 ± 0.6000 (market-wide): 52; rank among 12
+earlier readings: 58; score 55
+valuation
+- net income over market value: 0.0027; band 0.0335 ± 0.0335 (Consumer Cyclical): 4; rank among 12
+earlier readings: 25; score 15
+- free cash flow over market value: 0.0025; band 0.0302 ± 0.0302 (Consumer Cyclical): 4; rank among
+12 earlier readings: 17; score 10
+- operating income over enterprise value: 0.0038; band 0.0380 ± 0.0380 (Consumer Cyclical): 5; rank
+among 12 earlier readings: 17; score 11
+momentum
+- price return from a year ago to a month ago: 0.4200; band 0.0800 ± 0.4000 (market-wide): 92; rank
+among 8 earlier readings: 62; score 78
+- last close over its 200-session average, less one: -0.0450; band 0.0000 ± 0.2000 (market-wide):
+39; score 39
+risk
+- beta (lower is better): 2.3000; band 1.0000 ± 0.6000 (market-wide): 0, past its edge; score 0
+- annualized volatility of daily returns over the trailing year (lower is better): 0.5080; band
+0.3500 ± 0.1750 (Consumer Cyclical): 5; rank among 8 earlier readings: 50; score 27
+- debt over equity (lower is better): 0.1076; band 0.8000 ± 0.8000 (Consumer Cyclical): 93; rank
+among 12 earlier readings: 83; score 88
 
 PRICE BANDS (USD)
 - three-month: bear 229.41 / base 310.01 / bull 390.61. Method: base = the twelve-month base price
@@ -193,8 +225,8 @@ The document runs 900 to 1,800 words.
 ## Assistant message (the model's reply, echoed back; 886 chars)
 
 ~~~~text
-Thesis: hold TSLA for its established role; the computed read grades it F on quality 10, valuation
-33, momentum 45 and risk 64, and the evidence supports the standing position.
+Thesis: hold TSLA for its established role; the computed read grades it F on quality 27, valuation
+12, momentum 58 and risk 39, and the evidence supports the standing position.
 
 Key drivers: the margin trajectory, the revenue growth and the balance sheet.
 

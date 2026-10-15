@@ -1,6 +1,6 @@
 # Action — priced holding, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v74`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v77`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The action call is the investor profile's one entry point: the finished verdict, the holding's own evidence, the engine's supported set and the profile decide the rung and one rationale — never a comparison with other holdings.
@@ -181,8 +181,7 @@ RETURN SHAPE (every value is a placeholder)
 The lines that differ from the user message above when the profile is not tax-sensitive.
 
 ~~~~text
-- TSLA (Tesla, Inc.).
-+ TSLA (name unavailable).
+(no line differs)
 ~~~~
 
 ## Variant — cost basis tripled

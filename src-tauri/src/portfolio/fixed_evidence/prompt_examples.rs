@@ -4,9 +4,10 @@
 //! reader's guide). The data is the fixed evidence set's — TSLA for the stock
 //! shapes, SPMO for the fund shapes, the synthetic BND for role/risk — every
 //! research field a shape-preserving `[stub: …]` placeholder, the FETCHED
-//! VALUES rows the set lacks layered on synthetically
-//! ([`layer_synthetic_evidence`]), and the continuity shapes over a
-//! hand-written prior.
+//! VALUES rows, the factor composite and the fund context the set lacks
+//! layered on synthetically ([`layer_synthetic_evidence`],
+//! [`layer_synthetic_factors`], [`layer_synthetic_fund`]), and the continuity
+//! shapes over a hand-written prior.
 //!
 //! Regenerate from `src-tauri/` with
 //! `MARKET_SIGNAL_PROMPT_EXAMPLES_DIR=../docs/prompts/portfolio cargo test
@@ -81,7 +82,200 @@ pub(super) fn debut_dossier(f: &Fixture) -> HoldingDossier {
     if f.asset_class == crate::portfolio::AssetClass::Stock {
         layer_synthetic_evidence(&mut d, f.spot);
     }
+    if f.symbol == "SPMO" {
+        layer_synthetic_fund(&mut d);
+    }
     d
+}
+
+/// The factor composite the fixed set never carried, layered onto TSLA's
+/// engine output for the examples alone: every factor of the general class on
+/// the Consumer Cyclical row, each raw value tied to the fixture's computed
+/// metrics where the two overlap (the earnings yield is the P/E inverted,
+/// debt / equity and revenue growth the metrics' own, the volatility the daily
+/// figure annualized) and scored through the live bands and the own-history
+/// blend, so each line reads as a run's would. The four sub-scores become the
+/// axes' means, as the SCORES gloss states, on the engine output and on the
+/// verdict alike so every packet of the run agrees; the letter must still roll
+/// up to the persisted grade, or the observations need retuning.
+fn layer_synthetic_factors(f: &mut Fixture) {
+    use crate::portfolio::factors::{
+        self, AnchorRow, Axis, AxisScore, Factor, FactorComposite, FactorScore, MetricClass,
+        OwnHistory, NEUTRAL_SCORE, OWN_HISTORY_WEIGHT,
+    };
+    use crate::portfolio::value_creation::{
+        CostOfCapital, MoatProxies, RndCapitalization, TaxRateBasis, ValueCreationRead,
+    };
+    let sector = "Consumer Cyclical";
+    let row = AnchorRow::for_class(MetricClass::General, Some(sector));
+    // Today's value, and the own-history leg as (prior points, points below
+    // today's value); `None` leaves the factor on its band alone, a `None`
+    // value imputes it.
+    let observations = [
+        (Factor::EarningsYield, Some(0.002711), Some((12, 3))),
+        (Factor::FcfYield, Some(0.002509), Some((12, 2))),
+        (Factor::EbitToEv, Some(0.003815), Some((12, 2))),
+        (Factor::Momentum, Some(0.42), Some((8, 5))),
+        (Factor::Trend, Some(-0.045), None),
+        (Factor::GrossProfitability, Some(0.1263), Some((12, 1))),
+        (Factor::OperatingMargin, Some(0.0505), Some((12, 1))),
+        (Factor::RoicSpread, Some(-0.0460), Some((12, 1))),
+        (Factor::FcfConversion, Some(0.9253), Some((12, 7))),
+        (Factor::RevenueGrowth, Some(0.1175), Some((12, 2))),
+        (Factor::Beta, Some(2.3), None),
+        (Factor::Volatility, Some(0.5080), Some((8, 4))),
+        (Factor::DebtToEquity, Some(0.1076), Some((12, 2))),
+        (Factor::AssetGrowth, Some(0.092), Some((12, 4))),
+        (Factor::Revision, None, None),
+    ];
+    let factors: Vec<FactorScore> = factors::factor_set(None, MetricClass::General)
+        .into_iter()
+        .map(|factor| {
+            let (_, raw, history) = observations
+                .iter()
+                .find(|(f, _, _)| *f == factor)
+                .unwrap_or_else(|| panic!("no synthetic observation for {factor:?}"));
+            let band = factor.band(row).expect("a general-class factor is banded on the sector row");
+            let Some(raw) = *raw else {
+                return FactorScore {
+                    factor,
+                    raw: None,
+                    floored: false,
+                    band,
+                    winsorized: false,
+                    band_score: None,
+                    own_history: None,
+                    score: NEUTRAL_SCORE,
+                    imputed: true,
+                };
+            };
+            let own_history = history.map(|(points, below)| {
+                let percentile = 100.0 * below as f64 / points as f64;
+                let score = if factor.higher_is_better() { percentile } else { 100.0 - percentile };
+                OwnHistory { points, score }
+            });
+            let edges = (band.anchor - band.half_width)..=(band.anchor + band.half_width);
+            let mut scored = FactorScore {
+                factor,
+                raw: Some(raw),
+                floored: false,
+                band,
+                winsorized: !edges.contains(&raw),
+                band_score: None,
+                own_history,
+                score: 0.0,
+                imputed: false,
+            };
+            scored.band_score = Some(factors::rescore(&scored, band, 0.0));
+            scored.score = factors::rescore(&scored, band, OWN_HISTORY_WEIGHT);
+            scored
+        })
+        .collect();
+    let axis_score = |axis: Axis| {
+        let scores: Vec<f64> =
+            factors.iter().filter(|s| s.factor.axis() == axis).map(|s| s.score).collect();
+        scores.iter().sum::<f64>() / scores.len() as f64
+    };
+    let axes: Vec<AxisScore> =
+        Axis::ALL.iter().map(|&axis| AxisScore { axis, score: axis_score(axis), weight: 1.0 }).collect();
+    let composite = axes.iter().map(|a| a.score).sum::<f64>() / axes.len() as f64;
+    let resolved = factors.iter().filter(|s| !s.imputed).count();
+    let band_only = factors.iter().filter(|s| !s.imputed && s.own_history.is_none()).count();
+    let sub_scores = crate::portfolio::SubScores {
+        quality: axis_score(Axis::Quality),
+        valuation: axis_score(Axis::Value),
+        momentum: axis_score(Axis::Momentum),
+        risk: axis_score(Axis::LowRisk),
+    };
+    assert_eq!(
+        engine::grade_from_subscores(&sub_scores),
+        f.engine_output.grade,
+        "the synthetic factor observations must roll up to the fixture's persisted letter"
+    );
+    f.engine_output.factors = Some(FactorComposite {
+        archetype: None,
+        class: MetricClass::General,
+        sector_anchor: sector.to_string(),
+        factors,
+        axes,
+        composite,
+        thin_own_history: resolved == 0 || 2 * band_only > resolved,
+    });
+    // The spread's return and hurdle the ROIC line names; the rest of the read
+    // is kept arithmetically consistent with them.
+    f.engine_output.value_creation = Some(ValueCreationRead {
+        tax_rate: Some((0.197, TaxRateBasis::Effective)),
+        rnd: RndCapitalization::Capitalized { ttm_rnd: 4.6e9, research_asset: 4.4e9, amortization: 4.17e9 },
+        nopat: Some(3.88e9),
+        invested_capital: Some(46.9e9),
+        roic: Some(0.0827),
+        cost_of_equity: Some(0.1292),
+        cost_of_capital: Some(CostOfCapital {
+            rate: 0.1287,
+            cost_of_equity: 0.1292,
+            after_tax_cost_of_debt: 0.0519,
+            equity_weight: 0.9934,
+            adjusted_beta: 1.871,
+        }),
+        roic_spread: Some(-0.0460),
+        owner_earnings: Some(3.33e9),
+        reinvestment_rate: Some(1.04),
+        growth: Some(0.086),
+        moat: MoatProxies {
+            gross_margin: Some(0.1885),
+            gross_margin_vs_sector: Some(0.1885 - 0.336),
+            gross_margin_stability: Some(0.031),
+            roic_persistence: Some(0.25),
+            rnd_intensity: Some(0.054),
+        },
+        gaps: vec![],
+    });
+    f.engine_output.sub_scores = sub_scores;
+    if let VerdictDisposition::Priced(graded) = &mut f.disposition {
+        graded.sub_scores = sub_scores;
+    }
+}
+
+/// The fund context the fixed set never carried, layered onto SPMO's dossier
+/// for the examples alone: the fund's identity and mandate, an expense ratio
+/// and a NAV that agree with the fixture's persisted metrics, and round sector
+/// and country weights. The sector-P/E surface stays empty, since the engine
+/// output is the persisted one and nothing recomputes from it, and an equity
+/// index fund maps to no COT contract.
+fn layer_synthetic_fund(d: &mut HoldingDossier) {
+    use crate::portfolio::fund::{FundContext, FundData};
+    let weights = |rows: &[(&str, f64)]| -> Vec<(String, f64)> {
+        rows.iter().map(|(label, w)| (label.to_string(), *w)).collect()
+    };
+    d.fund = Some(FundContext {
+        fund: FundData {
+            symbol: d.position.symbol.clone(),
+            name: Some("Invesco S&P 500 Momentum ETF".into()),
+            asset_class: Some("Equity".into()),
+            expense_ratio: Some(0.0013),
+            aum: Some(1.6e10),
+            nav: Some(144.69),
+            sector_weights: weights(&[
+                ("Technology", 0.31),
+                ("Financial Services", 0.19),
+                ("Industrials", 0.14),
+                ("Communication Services", 0.12),
+                ("Consumer Cyclical", 0.09),
+                ("Healthcare", 0.07),
+                ("Utilities", 0.04),
+                ("Energy", 0.02),
+                ("Basic Materials", 0.02),
+            ]),
+            country_weights: weights(&[("United States", 1.0)]),
+            profile_is_fund: Some(false),
+            profile_description: None,
+            gaps: vec![],
+        },
+        sector_pe: vec![],
+        sector_pe_history: std::collections::HashMap::new(),
+        as_of: chrono::NaiveDate::from_ymd_opt(2026, 9, 16).expect("a date"),
+        positioning: None,
+    });
 }
 
 /// The synthetic FETCHED VALUES rows for the stock shapes: round figures sized
@@ -598,7 +792,8 @@ fn diff_lines(base: &str, variant: &str) -> String {
 
 /// The whole set, in pipeline order.
 fn examples() -> Vec<Example> {
-    let tsla = fixture("TSLA");
+    let mut tsla = fixture("TSLA");
+    layer_synthetic_factors(&mut tsla);
     let spmo = fixture("SPMO");
     let mut fx = synthetic_role_risk_fixture();
     stub_house_view(&mut fx.dossier);
@@ -965,6 +1160,7 @@ fn examples() -> Vec<Example> {
                 "REALIZED carries the price now with its move and the path since, each prior expected price at its horizon date, the accuracy scores with whether the prior analysis read each, the checks written since the prior analysis, and the computed reads then and now.",
                 "The accuracy record here is synthetic, layered for this example alone: four earlier forecasts, two checks the prior analysis read and two this run wrote after it — one scored, one with no forecast at its horizon — so the three-month scores read both ways and the lines show both outcomes.",
                 "The prior here is attempt 6's persisted verdict, re-dated to 2026-09-02, with a hand-written prior spot 3% under today's; its twelve-month price has not reached its date.",
+                "Under COMPUTED READS the four scores, then and now alike, are the synthetic factor composite's means of the thesis-document files, not attempt 6's persisted scores; the prior shares the verdict they were written onto.",
             ]),
             stage: "review TSLA".into(),
             request: pipeline::review_request(REASONER, &review_input(&tsla, &d, &analysis)),
@@ -980,7 +1176,7 @@ fn examples() -> Vec<Example> {
             file: "19-review-fund",
             title: "Self-review — priced fund, continuity run",
             step: "6e",
-            holding: "SPMO, on a continuity run over the prior position of 2026-09-02; the fixture carries no fund context",
+            holding: "SPMO, on a continuity run over the prior position of 2026-09-02, its fund context synthetic",
             sentences: lines(&[
                 review_common,
                 "A priced fund takes the same call; with no check landed since the prior analysis, the fixed sentence says the scores shown are the ones it read. The prior's read-through mark here is hand-written.",
@@ -1022,7 +1218,7 @@ fn examples() -> Vec<Example> {
             &spmo,
             "23-thesis-document-fund-first-analysis",
             "Thesis document — priced fund, first analysis",
-            "SPMO, an ETF of the fixed evidence set (attempt 6, reconstructed), on its first analysis; the fixture carries no fund context, so the FUND block does not render",
+            "SPMO, an ETF of the fixed evidence set (attempt 6, reconstructed), on its first analysis, its fund context synthetic",
             "A priced fund takes the same call with the fund's metric labels and an investment analyst's role line.",
         ),
     ] {
@@ -1051,7 +1247,7 @@ fn examples() -> Vec<Example> {
             &spmo,
             "24-thesis-document-fund-continuity",
             "Thesis document — priced fund, continuity run",
-            "SPMO, on a continuity run over the prior document of 2026-09-02; the fixture carries no fund context, so the FUND block does not render",
+            "SPMO, on a continuity run over the prior document of 2026-09-02, its fund context synthetic",
             "The fund's continuity shape carries the same REVIEW and PRIOR THESIS sections and continuity clause as the stock's.",
         ),
     ] {
@@ -1153,8 +1349,8 @@ fn examples() -> Vec<Example> {
             },
         );
         let base_user = base.messages[1].content.clone();
-        let mut exempt = dossier_of(&tsla, false);
-        stub_house_view(&mut exempt);
+        let mut exempt = debut_dossier(&tsla);
+        exempt.profile.tax_sensitive = false;
         let mut costly = debut_dossier(&tsla);
         costly.position.cost_basis *= 3.0;
         out.push(Example {
@@ -1446,6 +1642,12 @@ fn render(ex: &Example) -> String {
     {
         out.push_str("Under FETCHED VALUES, the issuer line, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments are synthetic values layered onto the fixture for these examples alone, their names stubbed; the statements, the quote and the closes are the fixed set's.\n");
     }
+    if ex.request.messages.iter().any(|m| m.content.contains("\nSCORES\n") && m.content.contains("\nquality\n- ")) {
+        out.push_str("Under SCORES, the factor lines and the return and cost of capital they name are synthetic values layered onto the fixture for these examples alone, scored through the live bands; the four scores are their means.\n");
+    }
+    if ex.request.messages.iter().any(|m| m.content.contains("SPMO (Invesco S&P 500 Momentum ETF)")) {
+        out.push_str("The fund's name, mandate, expense ratio, assets, NAV and weights — the Profile and Fund rows and the FUND block — are synthetic values layered onto the fixture for these examples alone.\n");
+    }
     out.push('\n');
     out.push_str("## Request\n\n");
     out.push_str(&request_table(ex));
@@ -1483,7 +1685,8 @@ fn render_contents(examples: &[Example]) -> String {
     ));
     out.push_str("One file per call shape, in pipeline order: the research loop (Step 6c), consolidation — the distillation shapes and the analysis call (Step 6d) — the self-review on a continuity run (Step 6e), then the thesis document, its appendix and the action call (Step 6f).\n");
     out.push_str("Each file carries the request envelope, every message as sent, and the tools or the response schema.\n");
-    out.push_str("On the stock shapes, the FETCHED VALUES rows the fixed set does not carry — the issuer line, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments — are synthetic values layered on for the examples alone, their names stubbed (`docs/prompts/README.md`).\n\n");
+    out.push_str("On the stock shapes, the FETCHED VALUES rows the fixed set does not carry — the issuer line, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments — are synthetic values layered on for the examples alone, their names stubbed (`docs/prompts/README.md`).\n");
+    out.push_str("The factor lines under SCORES and the value-creation read they name are synthetic the same way, and on the fund shapes so is SPMO's fund context: its name, mandate, expense ratio, assets, NAV and weights.\n\n");
     out.push_str("| File | Call | Step |\n| --- | --- | --- |\n");
     for ex in examples {
         out.push_str(&format!("| [{0}]({0}.md) | {1} | {2} |\n", ex.file, ex.title, ex.step));
