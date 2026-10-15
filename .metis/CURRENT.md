@@ -6,16 +6,15 @@ Trade Opportunities: the job spine, engine arm and gate — next in the backlog 
 
 ## What happened
 
-The prompt review restarted by checking the rendered examples under `docs/prompts/portfolio`.
-Regenerated at `portfolio-v77` they were byte-identical to the committed set, but three shapes understated a live run: the attempt-6 fixtures predate the factor machinery, so the stock SCORES block carried no factor lines (files 21, 22, 25); the SPMO fixture carries no fund context, so the fund shapes read "(name unavailable)" with no FUND block (19, 23, 24); and the action packet's tax-exempt variant showed a spurious name change (28).
-All three were fixed by synthetic layering in the examples writer (`c4b3db8`, pushed; Codex approved, its P3 taken): a factor composite on TSLA scored through the live bands, the four sub-scores its means on the engine output and the verdict alike so the review's then-and-now line reads flat; a fund context on SPMO; the variant built from the debut dossier.
-`Factor::band` became crate-visible so the harness reads the live bands rather than copies.
-Both calls were put to the user and ruled to stand: the prior's scores stay the synthetic means, and the band lookup stays crate-visible rather than a test-only accessor or copied bands.
-The fixture JSON is unchanged, so the live harness and the offline pins still run without factors.
+The prompt review's first slice landed (`08821a5`, pushed; Codex approved after three rounds).
+File 01's FETCHED VALUES block renders under group labels in the docs' order, one figure or record per line, the quarterly statements as one dated series per metric in one unit at the decimals its smallest cell needs; the gloss lost every provenance word; the gathering Part 2 gained "Use FETCHED VALUES as background to shape how the questions are researched", the system message ends "write no findings in this conversation", and the search tool's description names all six tier rungs.
+The examples carry synthetic statements, a consensus and SPMO's distributions, reconciled with every other synthetic row.
+An outside review of file 01 contributed three of these points and had five declined as ruled design (topic-specific packets, a RULES system message, structured findings, completeness criteria, topic decomposition).
+Ruled: a gloss states what the model needs to read the figures, never where they came from or what the app did.
 
 ## Current state
 
-The prompt review is in flight and starts at file 01 next session, file by file over many sessions; the stamp is `portfolio-v77`, the next `portfolio-v78`.
+The prompt review continues on file 01; the stamp is `portfolio-v78`, the next `portfolio-v79`.
 The TO spine stays next in the backlog and unplanned; the plan-task decides its task breakdown.
 The dev-run batch (every Portfolio item's dev run) and the big run are the user's call; the next big run starts testing afresh, every earlier attempt's findings retired.
 
@@ -31,23 +30,25 @@ Residue, grouped by what triggers it:
 **After the dev-run batch (your call)**
 6. Shadow-tune the drafted cutoffs, anchors and cap bands through `sweep_grade_bands`.
 7. Two task-2 findings: the Real Estate anchor row averages REITs with real-estate operators, and the thin-history flag counts the growth and investment factors.
-8. Rebuild the fixed-evidence set so the live harness and the offline pins carry factors and a fund context; the examples no longer wait on it.
+8. Rebuild the fixed-evidence set so the live harness and the offline pins carry factors, a fund context, statements, a consensus and distributions; the examples no longer wait on it.
 
 **For the prompt review**
-9. METRICS still renders P/E, P/S and P/B beside the factor lines that restate them (files 21–22, now visible in the examples).
+9. METRICS still renders P/E, P/S and P/B beside the factor lines that restate them, and the VALUATION ratio line restates P/E and P/B a third time (files 21–22).
+10. `§Step 6c` lists no dividends row for a fund, but the fund fetch pulls dividends and the renderer shows them; the docs or the code must move.
+11. The role of PRIOR ANALYSIS and PRIOR THESIS in the gathering Part 2 is unstated, and a test keeps Part 2 from naming them; decide at file 03.
 
 **Needs a live run**
-10. A denied client-secret read still errors `schwab_status`, so Settings hides its Schwab section; a live denied prompt has only been checked against fixtures.
-11. The Step-3 latency of the calendar join, the history reads and the froth group is untimed.
-12. The baseline history's prompt size is unmeasured.
-13. The report's research-branch thresholds (the 0.5 / 2.5 clamps and the 7-day anchor) await calibration against real snapshots.
+12. A denied client-secret read still errors `schwab_status`, so Settings hides its Schwab section; a live denied prompt has only been checked against fixtures.
+13. The Step-3 latency of the calendar join, the history reads and the froth group is untimed.
+14. The baseline history's prompt size is unmeasured.
+15. The report's research-branch thresholds (the 0.5 / 2.5 clamps and the 7-day anchor) await calibration against real snapshots.
 
 **Unruled observations (each may become work; none is decided)**
-14. A failed analyst waits out a sibling's retry before the run fails.
-15. The `sectors` snapshot carries FMP's default board, unlabelled.
-16. FMP's rate-decision estimate and actual go unused while Fed events stay date-only.
-17. The deal trend is mostly noise at a weekly cadence.
-18. The retry's send timeout is tested at unit level only.
+16. A failed analyst waits out a sibling's retry before the run fails.
+17. The `sectors` snapshot carries FMP's default board, unlabelled.
+18. FMP's rate-decision estimate and actual go unused while Fed events stay date-only.
+19. The deal trend is mostly noise at a weekly cadence.
+20. The retry's send timeout is tested at unit level only.
 
 Standing reminders (not work): every stamp bump touches the pins in `prompt_version_is_stamped_for_the_model_arm_domain_gate`, and the offscreen card-render recipe lives in session memory.
 
@@ -57,5 +58,5 @@ None.
 
 ## Where to start
 
-`/metis-session-start`, then the prompt review from `docs/prompts/portfolio/01-research-gathering-root-pass-first-analysis.md`, one file at a time: read the rendered request against `local-models.md §Prompt posture` and the call's contract in `portfolio-workflow.md`, put each finding through the selector, land accepted changes in the code, bump the stamp to `portfolio-v78` on the first, regenerate the set and read the diff; Codex reviews each slice.
+`/metis-session-start`, then the prompt review on file 01: put residue 10 through the selector, then the remaining Part 2 items against `local-models.md §Prompt posture` and the call's contract in `portfolio-workflow.md`, then file 02, one file at a time; land accepted changes in the code, bump the stamp to `portfolio-v79` on the first, regenerate the set and read the diff; Codex reviews each slice.
 Never propose the run.
