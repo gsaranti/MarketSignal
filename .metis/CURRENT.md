@@ -6,16 +6,15 @@ Trade Opportunities: the job spine, engine arm and gate — next in the backlog 
 
 ## What happened
 
-The prompt review's gathering files (01–07) are reviewed and closed: slices 2 and 3 landed (`30128a8`, `895e51e`, both Metis- and Codex-approved) with two docs commits beside them (`e89fe7d`, `e2df51e`); the stamp is `portfolio-v80`.
-File 02 renders the follow-up pass as a run issues it; FETCHED VALUES lost the FMP rating row (and its fetch leg — ruled: a vendor composite of ratios already shown is a restatement, never re-propose it for Portfolio, the report or TO) and the quote row, and renders every group of the holding's branch with a `(gap)` row where nothing was served; share counts print in B/M and the expense ratio as its published percent everywhere.
-A follow-up pass reuses its own topic's pages alone (a page belongs to every topic whose pass fetched or re-read it; root passes stay holding-wide).
-On a continuity run Part 2 states the prior documents' role with the falsifier clause; the follow-up opening names WRITE-UP SO FAR; the holding brief carries the prior documents as two fields; the synthesis conversation carries none by design.
-Ruled as a sweep: no "run" or "pass" as an app term in any model-facing text ("this conversation", "the research on this holding", "the contrary-evidence write-up", "beside today's"); scanning the regenerated examples alone misses fail-soft strings — grep the prompt builders' string literals.
-Step 6c's stock and fund FETCHED VALUES sentences now list the rendered groups in order (a fund has no profile lookup; the quote's market cap and shares outstanding are both branches').
+The prompt review's synthesis files (08–11) are reviewed and closed: slice 4 landed (`29190ec`, Metis approve-with-nits applied, Codex approved); the stamp is `portfolio-v81`.
+The synthesis EVIDENCE header dropped its page id — the write-up cites by address, nothing read the id back, and the id was the retired claims layer's residue (never reintroduce one).
+A synthesis page now renders exactly as the gathering shows it, through one shared header and quoted-text frame (`page_header` + `frame_page_text` in `research.rs`) that the tool result and the reuse block render through too, byte-identical; the EVIDENCE gloss names the url and title and lost its quoted-material sentence, each page's BEGIN line carrying it.
+Ruled with it: the synthesis shows an address whole and sizes it against the budget, never the tool result's placeholder, so a shown page is always citable by its address.
+Observed and accepted: a change to a description sentence shared across the examples re-stamps every file that carries it (23 files moved by two lines).
 
 ## Current state
 
-The prompt review continues at file 08, the first synthesis prompt; files 08–11 are unread end to end; the next stamp is `portfolio-v81`.
+The prompt review continues at file 12, the first distillation prompt; files 12–14 are unread end to end; the next stamp is `portfolio-v82`.
 The TO spine stays next in the backlog and unplanned; the plan-task decides its task breakdown.
 The dev-run batch (every Portfolio item's dev run) and the big run are the user's call; the next big run starts testing afresh, every earlier attempt's findings retired.
 
@@ -58,5 +57,5 @@ None.
 
 ## Where to start
 
-`/metis-session-start`, then the prompt review on file 08: read it against `local-models.md §Prompt posture`, the synthesis contract in `portfolio-workflow.md §Step 6c` and `web-research.md §The research loop`, under the lexicon rule; put findings through the selector; land accepted changes, bump the stamp to `portfolio-v81` on the first, regenerate the set and read the diff; `/metis-review-task` then Codex review each slice; commit on the user's word. Then files 09–11 one at a time.
+`/metis-session-start`, then the prompt review on file 12: read it against `local-models.md §Prompt posture`, the consolidation contract in `portfolio-workflow.md §Step 6d`, the distillation paragraph of `web-research.md §The research loop` and the thresholds in `configuration.md §Research Context Management`, under the lexicon rule; put findings through the selector; land accepted changes, bump the stamp to `portfolio-v82` on the first, regenerate the set and read the diff; `/metis-review-task` then Codex review each slice; commit on the user's word. Then files 13–14 one at a time.
 Never propose the run.
