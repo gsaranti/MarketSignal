@@ -1,11 +1,11 @@
 # Thesis document — priced fund, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v79`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v81`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: SPMO, an ETF of the fixed evidence set (attempt 6, reconstructed), on its first analysis, its fund context synthetic.
 The thesis document is a thinking call with no grammar: Part 1 the fetched values, the computed reads under one heading, the market analysis and this run's analysis; Part 2 what the document covers, in order, and its length band.
 A priced fund takes the same call with the fund's metric labels and an investment analyst's role line.
-Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
+Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the dates, URLs and headers around it are as rendered.
 The fund's name, mandate, expense ratio, assets, NAV, weights and distributions — the PROFILE, WEIGHTS and DIVIDENDS rows and the FUND block — are synthetic values layered onto the fixture for these examples alone.
 
 ## Request

@@ -1746,7 +1746,7 @@ fn render(ex: &Example) -> String {
         out.push('\n');
     }
     if ex.request.messages.iter().any(|m| m.content.contains("[stub: ")) {
-        out.push_str("Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.\n");
+        out.push_str("Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the dates, URLs and headers around it are as rendered.\n");
     } else {
         out.push_str("This packet renders no article or research text, so it carries no stub.\n");
     }

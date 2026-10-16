@@ -1,11 +1,11 @@
 # Role/risk thesis document — continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v80`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v81`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, on a continuity run over a stub first run of 2026-09-03.
 The role/risk call on a continuity run, as the pipeline itself renders it on a second run: the review under REVIEW, the prior document verbatim as PRIOR THESIS under its date, and the summary item's continuity clause.
 The analysis is the one no-write-up sentence: the stub run issues no research call and writes nothing, so consolidation spends no analysis call.
-Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
+Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the dates, URLs and headers around it are as rendered.
 
 ## Request
 

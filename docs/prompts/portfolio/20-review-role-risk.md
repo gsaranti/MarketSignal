@@ -1,11 +1,11 @@
 # Self-review — role/risk, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v80`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v81`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, on a continuity run over a stub first run of 2026-09-03.
 The review is a thinking call with no grammar, on a continuity run only: Part 1 the holding header and FETCHED VALUES, PRIOR POSITION, PRIOR THESIS, this run's ANALYSIS and REALIZED; Part 2 what the review covers, in order, and its length band. The review reaches this run's thesis document alone.
 A role read states no price, so PRIOR POSITION carries the prior action and its rationale alone, and REALIZED the price, the NAV and the fund's reads then and now with no accuracy record; the stub first run's row supplies the then side.
-Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
+Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the dates, URLs and headers around it are as rendered.
 
 ## Request
 

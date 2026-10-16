@@ -1137,7 +1137,7 @@ pub struct HoldingAudit {
 /// (`job::resume_eligibility`). The pin in
 /// `prompt_version_is_stamped_for_the_model_arm_domain_gate`
 /// (`portfolio/pipeline.rs`) moves with every bump.
-pub const PROMPT_VERSION: &str = "portfolio-v80";
+pub const PROMPT_VERSION: &str = "portfolio-v81";
 
 /// One complete Portfolio Analysis run, persisted whole (`docs/storage.md §Local
 /// Analysis Suite Storage`).

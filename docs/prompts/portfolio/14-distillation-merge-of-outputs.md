@@ -1,11 +1,11 @@
 # Distillation — the merge of the per-write-up outputs
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v80`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v81`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 A distillation is a non-thinking call with no grammar on the resident reasoner (the fast tier where the roster has one), issued only where the analysis prompt is over budget; the shape is the orchestrator's choice from size, never the model's, and the write-ups persist on the audit as written.
 The per-write-up shape's last call, over the shortened write-ups under their topics; it runs whenever that shape is taken, so the shape spends the write-ups plus one call.
-Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
+Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the dates, URLs and headers around it are as rendered.
 
 ## Request
 

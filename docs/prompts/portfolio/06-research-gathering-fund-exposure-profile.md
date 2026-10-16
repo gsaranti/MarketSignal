@@ -1,11 +1,11 @@
 # Research gathering — a fund's exposure-profile topic
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v79`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v81`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, the synthetic total bond market ETF the fixed evidence set carries for the role/risk branch.
 The root-pass shape on a fund: the agenda's fund topics replace the stock topics, and the header and FETCHED VALUES name the fund's reported lines.
 Everything else — the leads, the countdown, the tools, the stopping rule — is the stock shape.
-Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
+Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the dates, URLs and headers around it are as rendered.
 
 ## Request
 

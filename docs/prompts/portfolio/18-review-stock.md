@@ -1,6 +1,6 @@
 # Self-review — stock, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v80`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v81`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over the prior position of 2026-09-02.
 The review is a thinking call with no grammar, on a continuity run only: Part 1 the holding header and FETCHED VALUES, PRIOR POSITION, PRIOR THESIS, this run's ANALYSIS and REALIZED; Part 2 what the review covers, in order, and its length band. The review reaches this run's thesis document alone.
@@ -8,7 +8,7 @@ REALIZED carries the price now with its move and the path since, each prior expe
 The accuracy record here is synthetic, layered for this example alone: four earlier forecasts, two checks the prior analysis read and two this run wrote after it — one scored, one with no forecast at its horizon — so the three-month scores read both ways and the lines show both outcomes.
 The prior here is attempt 6's persisted verdict, re-dated to 2026-09-02, with a hand-written prior spot 3% under today's; its twelve-month price has not reached its date.
 Under COMPUTED READS the four scores, then and now alike, are the synthetic factor composite's means of the thesis-document files, not attempt 6's persisted scores; the prior shares the verdict they were written onto.
-Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
+Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the dates, URLs and headers around it are as rendered.
 Under FETCHED VALUES, the issuer line, the quarterly statements and the consensus, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments are synthetic values layered onto the fixture for these examples alone, their names stubbed; the closes are the fixed set's, as is the price under HOLDING.
 The statements are sized to the engine's persisted metrics and the consensus to its band driver, and the surprises' EPS, the ratio lines, the enterprise-value row and the segments agree with the statements.
 

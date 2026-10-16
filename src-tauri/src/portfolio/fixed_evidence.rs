@@ -1447,7 +1447,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             assert!(part1.contains("source tier (0 to 5: 0 a primary source — a filing, the issuer, a regulator; 1 a licensed data provider; 2 high-trust factual reporting; 3 a specialist source, trusted within its vertical; 4 opinion-heavy commentary; 5 sentiment only)"), "{}: the tier scale's rungs are unstated\n{part1}", s.label);
             let questions = if s.label.contains("disconfirming") { "the question" } else { "the questions" };
             assert!(
-                part1.contains(&format!("\nEVIDENCE\nThe pages retrieved for {questions} under TOPIC, each under a header of: its id; its address; the published date, where the search reported one; when it was retrieved; its source tier (0 to 5:")),
+                part1.contains(&format!("\nEVIDENCE\nThe pages retrieved for {questions} under TOPIC, each under a header of: the url and title; the published date, where the search reported one; when it was retrieved; its source tier (0 to 5:")),
                 "{}: {part1}",
                 s.label
             );
@@ -1460,7 +1460,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 "{}: {part2}",
                 s.label
             );
-            assert!(part1.contains("=== S1: "), "{}: {part1}", s.label);
+            assert!(part1.contains("\nPAGE: https://") && part1.contains("BEGIN PAGE TEXT"), "{}: {part1}", s.label);
             assert!(!part1.contains("\nNEWS LEADS\n"), "{}: a synthesis carries no leads", s.label);
             assert!(part2.contains("as plain text — no code fence, no JSON, no heading before the first line"), "{}: {part2}", s.label);
             assert!(part2.contains("The write-up runs 400 to 900 words."), "{}: {part2}", s.label);
