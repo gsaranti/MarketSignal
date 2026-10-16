@@ -25,7 +25,7 @@ use crate::group_history::{self, DatedPoint, NotDerivable};
 use crate::portfolio::evidence::{
     Chamber, CompanyEvidence, CongressionalTrade, DividendRow, EnterpriseValueRow, GradesConsensus,
     InsiderStatistics, InsiderTrade, MaDeal, MaWalk, MaWalkEnd, OwnerEarningsRow,
-    PriceTargetConsensus, PriceTargetTrend, PriceTargetWindow, RatingAction, RatingsSnapshot,
+    PriceTargetConsensus, PriceTargetTrend, PriceTargetWindow, RatingAction,
     RatioLines, SegmentYear, SharesFloat, SplitRow, CONGRESSIONAL_TRADES_COUNT, DIVIDENDS_SHOWN,
     INSIDER_TRADES_COUNT, MA_PAGE_CAP, RATING_ACTIONS_COUNT, SEGMENT_FISCAL_YEARS,
 };
@@ -5729,7 +5729,7 @@ const FMP_HISTORICAL_SECTOR_PE_PATH: &str = "/historical-sector-pe";
 // endpoint surface; `crate::portfolio::evidence`): rows rendered as served and never
 // read by the engine. Only the paths the block renders are pulled: the TTM pair, not
 // the period key-metrics / ratios rows; `grades` and `grades-consensus`, not
-// `grades-historical`; `ratings-snapshot`, not `ratings-historical`.
+// `grades-historical`, and neither ratings path.
 const FMP_RATIOS_TTM_PATH: &str = "/ratios-ttm";
 const FMP_KEY_METRICS_TTM_PATH: &str = "/key-metrics-ttm";
 const FMP_OWNER_EARNINGS_PATH: &str = "/owner-earnings";
@@ -5738,7 +5738,6 @@ const FMP_PRICE_TARGET_CONSENSUS_PATH: &str = "/price-target-consensus";
 const FMP_PRICE_TARGET_SUMMARY_PATH: &str = "/price-target-summary";
 const FMP_GRADES_PATH: &str = "/grades";
 const FMP_GRADES_CONSENSUS_PATH: &str = "/grades-consensus";
-const FMP_RATINGS_SNAPSHOT_PATH: &str = "/ratings-snapshot";
 const FMP_INSIDER_SEARCH_PATH: &str = "/insider-trading/search";
 const FMP_INSIDER_STATISTICS_PATH: &str = "/insider-trading/statistics";
 const FMP_SENATE_TRADES_PATH: &str = "/senate-trades";
@@ -7656,21 +7655,6 @@ fn rating_actions_from_value(value: &Value, since: &str) -> Result<Vec<RatingAct
     Ok(rows)
 }
 
-fn ratings_snapshot_from_value(value: &Value) -> Result<Option<RatingsSnapshot>> {
-    Ok(
-        evidence_object(value, "ratings-snapshot")?.map(|o| RatingsSnapshot {
-            rating: served_str(o, "rating"),
-            overall: served_i64(o, "overallScore"),
-            discounted_cash_flow: served_i64(o, "discountedCashFlowScore"),
-            return_on_equity: served_i64(o, "returnOnEquityScore"),
-            return_on_assets: served_i64(o, "returnOnAssetsScore"),
-            debt_to_equity: served_i64(o, "debtToEquityScore"),
-            price_to_earnings: served_i64(o, "priceToEarningsScore"),
-            price_to_book: served_i64(o, "priceToBookScore"),
-        }),
-    )
-}
-
 /// `insider-trading/search` → the trades transacted on or after `since`,
 /// newest first, at most [`INSIDER_TRADES_COUNT`]. A row needs a transaction
 /// date and a reporting name to be read.
@@ -8026,18 +8010,6 @@ impl FmpDataSource {
             &by_symbol,
             &mut e.gaps,
             grades_consensus_from_value,
-        );
-        e.ratings_snapshot = self.evidence_leg(
-            EvidenceLeg {
-                kind: "company-ratings-snapshot",
-                label: "Ratings snapshot",
-                path: FMP_RATINGS_SNAPSHOT_PATH,
-                name: "ratings-snapshot",
-            },
-            symbol,
-            &by_symbol,
-            &mut e.gaps,
-            ratings_snapshot_from_value,
         );
         let insider_since = window_start(session, INSIDER_TRADES_WINDOW_MONTHS);
         e.insider_trades = self
@@ -10006,14 +9978,6 @@ mod suite_tests {
         assert_eq!(g.buy, Some(69));
         assert_eq!(g.strong_sell, Some(0));
         assert_eq!(g.consensus.as_deref(), Some("Buy"));
-        let r = ratings_snapshot_from_value(&body(
-            r#"[{"rating":"B","overallScore":3,"discountedCashFlowScore":3,"returnOnEquityScore":5,"returnOnAssetsScore":5,
-                "debtToEquityScore":1,"priceToEarningsScore":2,"priceToBookScore":1}]"#,
-        ))
-        .unwrap()
-        .unwrap();
-        assert_eq!(r.rating.as_deref(), Some("B"));
-        assert_eq!(r.price_to_book, Some(1));
         let f = shares_float_from_value(&body(
             r#"[{"date":"2026-06-05 08:13:10","freeFloat":99.83,"floatShares":14662534368,"outstandingShares":14687356000}]"#,
         ))
@@ -10208,7 +10172,6 @@ mod suite_tests {
                 r#"[{"date":"2026-05-26","gradingCompany":"B of A Securities","previousGrade":"Buy","newGrade":"Buy","action":"maintain"}]"#,
             ),
             ok(r#"[{"strongBuy":1,"buy":69,"hold":33,"sell":7,"strongSell":0,"consensus":"Buy"}]"#),
-            ok(r#"[{"rating":"B","overallScore":3}]"#),
             ok(
                 r#"[{"transactionDate":"2026-06-05","filingDate":"2026-06-05","reportingName":"BOLDUC JOHN","typeOfOwner":"director","transactionType":"P-Purchase","securitiesTransacted":3570,"price":6.77}]"#,
             ),
@@ -10251,12 +10214,6 @@ mod suite_tests {
         );
         assert_eq!(e.rating_actions.len(), 1);
         assert_eq!(e.grades_consensus.as_ref().and_then(|g| g.buy), Some(69));
-        assert_eq!(
-            e.ratings_snapshot
-                .as_ref()
-                .and_then(|r| r.rating.as_deref()),
-            Some("B")
-        );
         assert_eq!(e.insider_trades.len(), 1);
         assert_eq!(
             e.insider_statistics.as_ref().and_then(|s| s.quarter),
@@ -10294,7 +10251,6 @@ mod suite_tests {
                 "/price-target-summary",
                 "/grades",
                 "/grades-consensus",
-                "/ratings-snapshot",
                 "/insider-trading/search",
                 "/insider-trading/statistics",
                 "/senate-trades",

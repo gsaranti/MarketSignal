@@ -679,10 +679,12 @@ fn then_now(then: Option<f64>, now: Option<f64>, unit: Unit, decimals: usize) ->
     format!("{} → {}", side(then), side(now))
 }
 
-/// The metric's rendering: a fraction as a percentage, a multiple as is.
+/// The metric's rendering: a fraction as a percentage, a multiple as is, the
+/// expense ratio at the basis-point precision every prompt states it at.
 fn metric_unit(name: &str) -> (Unit, usize) {
     match name {
         "debt/equity" | "P/E" | "P/S" | "P/B" => (Unit::Plain, 2),
+        "expense ratio" => (Unit::Percent, 2),
         _ => (Unit::Percent, 1),
     }
 }

@@ -426,16 +426,6 @@ fn layer_synthetic_evidence(d: &mut HoldingDossier, spot: f64) {
                 action: Some("initiate".into()),
             },
         ],
-        ratings_snapshot: Some(RatingsSnapshot {
-            rating: Some("C".into()),
-            overall: Some(3),
-            discounted_cash_flow: Some(2),
-            return_on_equity: Some(3),
-            return_on_assets: Some(3),
-            debt_to_equity: Some(4),
-            price_to_earnings: Some(1),
-            price_to_book: Some(1),
-        }),
         insider_trades: vec![
             InsiderTrade {
                 transaction_date: "2026-09-05".into(),
@@ -972,7 +962,10 @@ fn examples() -> Vec<Example> {
         holding: tsla_holding,
         sentences: lines(&[
             "The follow-up pass on the same topic, taken when the root pass's synthesis answered the follow-up ask with a question.",
-            "The question and the topic's write-up so far ride in Part 1 after the holding-constant block, so the search starts from what the root pass established and the pass rewrites the write-up whole.",
+            "The page the root pass fetched rides under PAGES ALREADY RETRIEVED, so the pass reads it before searching.",
+            "A follow-up pass reuses its own topic's pages alone, never another topic's.",
+            "Where the root pass fetched nothing of its own and wrote over reused pages alone, the follow-up carries no block and searches first.",
+            "The question and the topic's write-up so far follow it, so the search starts from what the root pass established and the pass rewrites the write-up whole.",
             gathering_common[0],
         ]),
         stage: g(1).stage.clone(),
@@ -1015,7 +1008,7 @@ fn examples() -> Vec<Example> {
         step: "6c",
         holding: tsla_holding,
         sentences: lines(&[
-            "A later topic's root pass on the same holding: pages fetched under an earlier topic render first, in first-retrieval order, so the model reads what the run already holds before searching again (portfolio-v49).",
+            "A later topic's root pass on the same holding: pages fetched under an earlier topic render first, in first-retrieval order, so the model reads what the run already holds before searching again.",
             "A reused page counts against no fetch; an explicit re-fetch of the same URL is answered from the run's store.",
             gathering_common[0],
         ]),
@@ -1076,7 +1069,7 @@ fn examples() -> Vec<Example> {
         holding: tsla_holding,
         sentences: lines(&[
             synthesis_common,
-            "The packet lists the reused page first and this pass's fetch after it (portfolio-v49); what gathering lost is a persisted data-health gap and reaches no model (portfolio-v59).",
+            "The packet lists the reused page first and this pass's fetch after it; what gathering lost is a persisted data-health gap and reaches no model.",
             "On a root pass the conversation continues with the follow-up ask (file 11).",
         ]),
         stage: s(0).stage.clone(),
@@ -1092,7 +1085,7 @@ fn examples() -> Vec<Example> {
         sentences: lines(&[
             synthesis_common,
             "On a follow-up pass the question joins the packet under FOLLOW-UP with the topic's write-up so far under WRITE-UP SO FAR, and the task is to rewrite that write-up whole with the new evidence folded in, so a topic has one write-up at any time.",
-            "The conversation asks for a follow-up afterwards unless the pass is the topic's last under the depth cap, whose question no pass could take up (portfolio-v60).",
+            "The conversation asks for a follow-up afterwards unless the pass is the topic's last under the depth cap, whose question no pass could take up.",
         ]),
         stage: s(1).stage.clone(),
         request: research_request(s(1)),
@@ -1763,7 +1756,7 @@ fn render(ex: &Example) -> String {
         .iter()
         .any(|m| m.content.contains("\n- price targets: "))
     {
-        out.push_str("Under FETCHED VALUES, the issuer line, the quarterly statements and the consensus, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments are synthetic values layered onto the fixture for these examples alone, their names stubbed; the quote and the closes are the fixed set's.\n");
+        out.push_str("Under FETCHED VALUES, the issuer line, the quarterly statements and the consensus, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments are synthetic values layered onto the fixture for these examples alone, their names stubbed; the closes are the fixed set's, as is the price under HOLDING.\n");
         out.push_str("The statements are sized to the engine's persisted metrics and the consensus to its band driver, and the surprises' EPS, the ratio lines, the enterprise-value row and the segments agree with the statements.\n");
     }
     if ex.request.messages.iter().any(|m| m.content.contains("\nSCORES\n") && m.content.contains("\nquality\n- ")) {

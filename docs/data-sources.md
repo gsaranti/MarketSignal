@@ -719,7 +719,7 @@ The **per-symbol** signals here — fundamentals, the revision signal, `financia
 **SEC EDGAR is retained as the authoritative primary-source cross-check** for the numbers that drive grades / targets; the ticker→CIK resolver **splits by job** — a **named prerequisite of the full Portfolio slice**, a **non-blocking enhancement for Trade Opportunities' cross-check** (the FMP feeds are symbol-keyed) — per [§SEC EDGAR](#sec-edgar).
 DRAM/NAND ASPs and supply-discipline signals have no structured feed and ride the research loop ([web-research.md](web-research.md)).
 
-**Portfolio Analysis** reads a per-holding / per-fund subset of that FMP surface (it grades a known holdings list, so it never touches the discovery layer) plus run-level macro inputs; analyst opinions it pulls — price targets, grade distributions, FMP's ratings snapshot — ride in as *evidence the model weighs, never as inputs to the engine's computed grade*.
+**Portfolio Analysis** reads a per-holding / per-fund subset of that FMP surface (it grades a known holdings list, so it never touches the discovery layer) plus run-level macro inputs; analyst opinions it pulls — price targets, grade distributions — ride in as *evidence the model weighs, never as inputs to the engine's computed grade*.
 Its full endpoint surface, by source, is tabulated under [§Portfolio Analysis — endpoint surface](#portfolio-analysis--endpoint-surface) below.
 
 ### Portfolio Analysis — endpoint surface
@@ -745,8 +745,7 @@ Equity grading is fully covered; the fund path degrades, since constituent look-
 | `enterprise-values` | per-holding | enterprise value for EV multiples |
 | `analyst-estimates` | per-holding | forward revenue / EPS consensus → the quick check's **revision preflight**, the **v2 target ladder's driver source**, and the **narrative-vs-reality revision-pace leg** (raw EPS rows matched to the prior run by fiscal-period end under the prior weights — [portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)) (the valuation read remains NTM — the two nearest forward annual rows time-weighted by twelve-month overlap, mid / low / high per leg, EPS else forward revenue per share) |
 | `price-target-consensus`, `price-target-summary` | per-holding | street price-target level + trend — *evidence, not an engine input* |
-| `grades`, `grades-consensus` | per-holding | the rating actions and the current buy / hold / sell consensus ride as *evidence* in FETCHED VALUES; `grades-historical` has no consumer and is not pulled |
-| `ratings-snapshot` | per-holding | FMP's own composite rating and its component scores — opinion cross-check only, in FETCHED VALUES; `ratings-historical` has no consumer and is not pulled |
+| `grades`, `grades-consensus` | per-holding | the rating actions and the current buy / hold / sell consensus ride as *evidence* in FETCHED VALUES; `grades-historical`, `ratings-snapshot` and `ratings-historical` have no consumer and are not pulled |
 | `splits` | per-holding | the split's date and ratio for the split bridge and the split-context line above a prior document ([portfolio-workflow.md §Step 6b](portfolio-workflow.md#step-6b-deterministic-financial-analysis)) |
 | `dividends` | per-holding | yield, frequency, schedule — income / total-return grading (the hurdle's payout leg); re-pulled by the quick check on a fresh filing |
 | `earnings` | per-holding (full run + quick check) | next earnings date + EPS / revenue estimate (catalyst) and the actual-vs-estimate surprise history — read into the dossier by the full-run pass as evidence, re-pulled by the quick check for the new-earnings-actual leg |

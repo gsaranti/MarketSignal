@@ -127,19 +127,6 @@ pub struct RatingAction {
     pub action: Option<String>,
 }
 
-/// `ratings-snapshot` — FMP's own composite rating and its component scores.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct RatingsSnapshot {
-    pub rating: Option<String>,
-    pub overall: Option<i64>,
-    pub discounted_cash_flow: Option<i64>,
-    pub return_on_equity: Option<i64>,
-    pub return_on_assets: Option<i64>,
-    pub debt_to_equity: Option<i64>,
-    pub price_to_earnings: Option<i64>,
-    pub price_to_book: Option<i64>,
-}
-
 /// One `insider-trading/search` row.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct InsiderTrade {
@@ -312,7 +299,6 @@ pub struct CompanyEvidence {
     pub grades_consensus: Option<GradesConsensus>,
     /// Newest first, inside the window, at most [`RATING_ACTIONS_COUNT`].
     pub rating_actions: Vec<RatingAction>,
-    pub ratings_snapshot: Option<RatingsSnapshot>,
     /// Newest first, inside the window, at most [`INSIDER_TRADES_COUNT`].
     pub insider_trades: Vec<InsiderTrade>,
     pub insider_statistics: Option<InsiderStatistics>,

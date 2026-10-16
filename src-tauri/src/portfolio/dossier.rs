@@ -921,7 +921,7 @@ pub fn assemble(
     if legs.evidence.is_some() {
         sources.push(
             "FMP company evidence (ratios, owner earnings, enterprise value, street targets \
-             and grades, ratings snapshot, insider and congressional trades, float, \
+             and grades, insider and congressional trades, float, \
              segments, splits, earnings surprises)"
                 .to_string(),
         );

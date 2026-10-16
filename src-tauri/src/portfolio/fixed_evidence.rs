@@ -925,7 +925,8 @@ fn attempt_6_thesis_messages_are_two_parts_with_no_app_concept() {
         assert!(part1.contains("- three-month: bear ") && part1.contains("prorated to three months"), "{}", f.symbol);
         assert!(part1.contains("- three-year: bear ") && part1.contains("extrapolation"), "{}", f.symbol);
         assert!(part1.contains("; hurdle ") && part1.contains("; read: "), "{}: {part1}", f.symbol);
-        assert!(part1.contains(&format!("\nQUOTE AND CLOSES\n- quote: {:.2} per share (the live print, undated)\n", f.spot)), "{}: {part1}", f.symbol);
+        assert!(part1.contains(&format!("\nPrice: ${:.2} per share.\n", f.spot)), "{}: {part1}", f.symbol);
+        assert!(part1.contains("\nQUOTE AND CLOSES\n") && !part1.contains("the live print"), "{}: {part1}", f.symbol);
         assert!(part1.contains("\nRATES\n- Treasury yields (FRED): 10-year "), "{}: {part1}", f.symbol);
         assert!(f.is_fund || !part1.contains("\nFUND\n"), "{}", f.symbol);
         assert!(!part1.contains("Return "), "{}: Part 1 instructs\n{part1}", f.symbol);
@@ -1122,7 +1123,7 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
         assert!(part1.contains("\nEVIDENCE GAPS\nno duration, credit or yield-curve data for this fund\n"), "{label}: {part1}");
         assert!(part1.contains("\nRISK PROFILE\nAnnualized realized volatility: "), "{label}: {part1}");
         assert!(part1.contains("\nANALYSIS\nThe Vanguard Total Bond Market ETF tracks") || !debut, "{label}: {part1}");
-        assert!(part1.contains("\nPROFILE\n- name: Vanguard Total Bond Market ETF\n- asset class: Fixed Income\n- expense ratio: 0.0003 (0.03%/yr)\n- assets under management: 340.0B\n- NAV: 72.41\n"), "{label}: {part1}");
+        assert!(part1.contains("\nPROFILE\n- name: Vanguard Total Bond Market ETF\n- asset class: Fixed Income\n- expense ratio: 0.03%\n- assets under management: 340.0B\n- NAV: 72.41\n"), "{label}: {part1}");
         assert!(part1.contains("\nWEIGHTS\n- countries, largest first: United States 94.0%, Supranational 2.0%, Canada 1.0%\n"), "{label}: {part1}");
         assert_eq!(part1.matches("daily realized return volatility: ").count(), 1, "{label}: the daily volatility renders once\n{part1}");
         assert!(!part1.contains("Return "), "{label}: Part 1 instructs\n{part1}");
@@ -1516,8 +1517,9 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                     s.label
                 );
             } else if s.label.contains("follow-up pass") {
+                assert!(part1.contains("\nPAGES ALREADY RETRIEVED\n") && part1.contains("BEGIN PAGE TEXT"), "{}: {part1}", s.label);
                 assert!(
-                    part2.contains("1. Search for what the question under FOLLOW-UP asks") && !part2.contains("Read the pages"),
+                    part2.contains("1. Read the pages under PAGES ALREADY RETRIEVED against the question under FOLLOW-UP. Search for what remains unanswered"),
                     "{}: {part2}",
                     s.label
                 );

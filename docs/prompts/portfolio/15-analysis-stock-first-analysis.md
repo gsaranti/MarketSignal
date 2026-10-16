@@ -1,12 +1,12 @@
 # Analysis — stock, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v78`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v79`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The analysis call is a thinking call with no grammar: Part 1 the holding header and FETCHED VALUES as the brief carries them, on a continuity run PRIOR ANALYSIS, then WRITE-UPS; Part 2 what the analysis consolidates and its length band. The analysis is the only research artifact the next run reads.
 On a first analysis there is no PRIOR ANALYSIS and no continuity clause; the write-ups go in as written, since the prompt fit its budget.
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the ids, dates, URLs and headers around it are as rendered.
-Under FETCHED VALUES, the issuer line, the quarterly statements and the consensus, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments are synthetic values layered onto the fixture for these examples alone, their names stubbed; the quote and the closes are the fixed set's.
+Under FETCHED VALUES, the issuer line, the quarterly statements and the consensus, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments are synthetic values layered onto the fixture for these examples alone, their names stubbed; the closes are the fixed set's, as is the price under HOLDING.
 The statements are sized to the engine's persisted metrics and the consensus to its band driver, and the surprises' EPS, the ratio lines, the enterprise-value row and the segments agree with the statements.
 
 ## Request
@@ -20,7 +20,7 @@ The statements are sized to the engine's persisted metrics and the consensus to 
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 7414 chars — the messages and tools as serialized |
+| Prompt material | 7227 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ You are an investment analyst consolidating one holding's research for a portfol
 the message gives the inputs. Part 2 says what the analysis covers and how to return it.
 ~~~~
 
-## User message (7032 chars)
+## User message (6844 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -80,8 +80,10 @@ Quarterly statements as reported, newest first (period end, then the figure)
 CONSENSUS
 - consensus EPS by fiscal period end, as published: 2026-12-31 1.71; 2027-12-31 2.27
 
+DIVIDENDS
+- (gap)
+
 QUOTE AND CLOSES
-- quote: 358.97 per share (the live print, undated)
 - 52-week range as served: low 215.38, high 430.76
 - daily closes: 1 session from 2026-09-14 to 2026-09-14
 
@@ -93,9 +95,9 @@ FILINGS
 
 SHORT INTEREST PRINT
 - settlement: 2026-08-31 (FINRA)
-- shares short: 80000000
-- shares short at the prior settlement: 76000000
-- average daily volume: 95000000
+- shares short: 80.0M
+- shares short at the prior settlement: 76.0M
+- average daily volume: 95.0M
 - days to cover: 0.84
 
 STREET
@@ -107,8 +109,6 @@ Rating actions, newest first (date: firm, previous grade to new grade, action)
 - 2026-09-10: [stub: grading firm], Hold to Buy, upgrade
 - 2026-07-24: [stub: grading firm], Buy to Buy, maintain
 - 2026-04-23: [stub: grading firm], (gap) to Hold, initiate
-- FMP rating C: overall 3; discounted cash flow 2, return on equity 3, return on assets 3, debt to
-equity 4, price to earnings 1, price to book 1
 
 INSIDERS AND CONGRESS
 Insider trades, newest first (transaction date: name, role, type, shares at price, filing date)

@@ -1,6 +1,6 @@
 # Action — role/risk branch
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v71`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v79`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, the synthetic total bond market ETF the fixed evidence set carries for the role/risk branch.
 The action call is the investor profile's one entry point: the finished verdict, the holding's own evidence, the engine's supported set and the profile decide the rung and one rationale — never a comparison with other holdings.
@@ -20,7 +20,7 @@ This packet renders no article or research text, so it carries no stub.
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 3175 chars — the messages and tools as serialized |
+| Prompt material | 3163 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +30,7 @@ will return action and rationale, as one JSON object. Part 1 of the message give
 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (2780 chars)
+## User message (2768 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -55,8 +55,8 @@ EXPOSURE TILT
 United States 94%, Supranational 2%, Canada 1%
 
 RISK PROFILE
-Expense drag: 0.0003 (0.03%/yr) of assets per year. Observable risk: 0.022 (annualized realized
-volatility). Structural flag (leveraged / inverse or option-overlay path dependency): no.
+Expense drag: 0.03% of assets per year. Observable risk: 0.022 (annualized realized volatility).
+Structural flag (leveraged / inverse or option-overlay path dependency): no.
 
 EVIDENCE GAPS
 no duration, credit or yield-curve data for this fund

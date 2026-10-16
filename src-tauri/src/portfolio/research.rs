@@ -1266,6 +1266,9 @@ struct ReusablePage {
     published: Option<String>,
     annotation: Option<SourceAnnotation>,
     truncated: bool,
+    /// The keys of every topic whose pass fetched or re-read the page; a
+    /// follow-up pass reuses its own topic's pages alone.
+    topics: Vec<String>,
 }
 
 impl ReusablePage {
@@ -1311,15 +1314,44 @@ impl ReusablePage {
     }
 }
 
+/// An explicit re-read replaces the page's body and provenance in place,
+/// keeping its requested aliases, its first-retrieval position and every topic
+/// that has read it.
+fn remember(inventory: &mut Vec<ReusablePage>, mut source: ReusablePage) {
+    let key = source.key();
+    if let Some(old) = inventory.iter_mut().find(|old| old.key() == key) {
+        for alias in &old.requested_urls {
+            if !source.requested_urls.contains(alias) {
+                source.requested_urls.push(alias.clone());
+            }
+        }
+        for topic in &old.topics {
+            if !source.topics.contains(topic) {
+                source.topics.push(topic.clone());
+            }
+        }
+        *old = source;
+    } else {
+        inventory.push(source);
+    }
+}
+
 /// Select quoted bodies under the existing initial-message allowance. The
-/// questions, task and countdown are reserved first. No relevance judgment is
-/// inferred from a URL, title, or another topic's findings.
+/// questions, task and countdown are reserved first. A root pass selects from
+/// the holding's pages, a follow-up pass from its own topic's alone. No
+/// relevance judgment is inferred from a URL, title, or another topic's
+/// findings.
 fn reuse_pages(
     ctx: &PassContext<'_>,
     inventory: &[ReusablePage],
     gaps: &mut Vec<String>,
 ) -> (String, Vec<ReusablePage>) {
-    if ctx.disconfirming || inventory.is_empty() {
+    let own_topic = ctx.followup.is_some();
+    let scoped: Vec<&ReusablePage> = inventory
+        .iter()
+        .filter(|source| !own_topic || source.topics.contains(&ctx.topic.key))
+        .collect();
+    if ctx.disconfirming || scoped.is_empty() {
         return (String::new(), Vec::new());
     }
     let prefix_cap = crate::portfolio::distill::input_budget_chars(
@@ -1338,7 +1370,7 @@ fn reuse_pages(
     let mut selected = Vec::new();
     let mut omitted = 0;
     let mut truncated = 0;
-    for source in inventory {
+    for source in scoped {
         if source.page.text.trim().is_empty() || !source.permitted() {
             omitted += 1;
             continue;
@@ -2295,23 +2327,17 @@ impl ResearchRunner<'_> {
                 );
                 let mut snapshot = page.clone();
                 snapshot.text = page_texts[&normalized].clone();
-                let mut source = ReusablePage {
-                    page: snapshot,
-                    requested_urls: vec![url.to_string()],
-                    published: published.clone(),
-                    annotation: annotation.clone(),
-                    truncated: page_text_chars > PAGE_TEXT_CAP_CHARS,
-                };
-                if let Some(old) = inventory.iter_mut().find(|old| old.key() == normalized) {
-                    for alias in &old.requested_urls {
-                        if !source.requested_urls.contains(alias) {
-                            source.requested_urls.push(alias.clone());
-                        }
-                    }
-                    *old = source;
-                } else {
-                    inventory.push(source);
-                }
+                remember(
+                    inventory,
+                    ReusablePage {
+                        page: snapshot,
+                        requested_urls: vec![url.to_string()],
+                        published: published.clone(),
+                        annotation: annotation.clone(),
+                        truncated: page_text_chars > PAGE_TEXT_CAP_CHARS,
+                        topics: vec![ctx.topic.key.clone()],
+                    },
+                );
                 // A repeated explicit read replaces body and provenance as one
                 // snapshot; first-source dedup must not retain an older date.
                 if let Some(old) = fetched.iter_mut().find(|(key, _, _)| *key == normalized) {
@@ -5107,6 +5133,7 @@ mod tests {
             published: None,
             annotation: None,
             truncated: false,
+            topics: vec![agenda[0].key.clone()],
         };
         let mut inventory = vec![page];
         // The page reuses (its address is elided in the gathering result) but
@@ -5239,6 +5266,7 @@ mod tests {
             published: Some("date ".repeat(1000)),
             annotation: None,
             truncated: true,
+            topics: vec![agenda[0].key.clone()],
         };
         let mut inventory = vec![source.clone(); 100];
         for (i, page) in inventory.iter_mut().enumerate() {
@@ -5287,6 +5315,85 @@ mod tests {
         assert!(entry.title.chars().count() <= TITLE_CAP_CHARS);
         assert!(entry.published.as_deref().unwrap().chars().count() <= PUBLISHED_CAP_CHARS);
         assert_eq!(entry.source_tier, None);
+    }
+
+    fn tagged(url: &str, topics: &[&str]) -> ReusablePage {
+        ReusablePage {
+            page: FetchedPage {
+                final_url: url.into(),
+                host: "reuters.com".into(),
+                title: "Page".into(),
+                text: format!("Body of {url}."),
+                extraction_quality: 0.9,
+                thin_stub: false,
+                retrieved_at: "2026-08-22T10:00:00+00:00".into(),
+            },
+            requested_urls: vec![url.into()],
+            published: None,
+            annotation: None,
+            truncated: false,
+            topics: topics.iter().map(|t| t.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_follow_up_pass_reuses_its_own_topics_pages_alone() {
+        let agenda = [
+            topic("a", "Topic A", &["q1"]),
+            topic("b", "Topic B", &["q2"]),
+            topic("c", "Topic C", &["q3"]),
+        ];
+        let brief = brief_of(WID_HEADER);
+        let inventory = vec![
+            tagged("https://reuters.com/a", &["a"]),
+            tagged("https://reuters.com/b", &["b"]),
+            tagged("https://reuters.com/ab", &["a", "b"]),
+        ];
+        let mut gaps = Vec::new();
+        // A root pass reads the holding's pages, whichever topic fetched them.
+        let root = pass_ctx(&brief, &agenda[2]);
+        let (block, selected) = reuse_pages(&root, &inventory, &mut gaps);
+        assert_eq!(selected.len(), 3, "{block}");
+        // A follow-up pass reads its own topic's pages, a re-read page among
+        // them, in first-retrieval order; another topic's page is neither
+        // shown nor counted as omitted.
+        let question = "q2 follow-up".to_string();
+        let so_far = "So far.".to_string();
+        let followup = PassContext {
+            followup: Some(&question),
+            write_up_so_far: Some(&so_far),
+            ..pass_ctx(&brief, &agenda[1])
+        };
+        let (block, selected) = reuse_pages(&followup, &inventory, &mut gaps);
+        let urls: Vec<&str> = selected.iter().map(|s| s.page.final_url.as_str()).collect();
+        assert_eq!(urls, ["https://reuters.com/b", "https://reuters.com/ab"], "{block}");
+        assert!(!block.contains("Body of https://reuters.com/a.") && !block.contains("not shown"), "{block}");
+        // A follow-up whose topic read no page gets no block, so its brief
+        // asks to search first.
+        let followup = PassContext {
+            followup: Some(&question),
+            write_up_so_far: Some(&so_far),
+            ..pass_ctx(&brief, &agenda[2])
+        };
+        let (block, selected) = reuse_pages(&followup, &inventory, &mut gaps);
+        assert!(block.is_empty() && selected.is_empty());
+        let brief_text = pass_brief_with_reuse(&followup, &block, false);
+        assert!(!brief_text.contains("PAGES ALREADY RETRIEVED") && brief_text.contains("1. Search for what"), "{brief_text}");
+        assert!(gaps.is_empty(), "{gaps:?}");
+    }
+
+    #[test]
+    fn a_re_read_page_belongs_to_every_topic_that_read_it() {
+        let mut inventory = vec![tagged("https://reuters.com/a", &["a"])];
+        let mut re_read = tagged("https://reuters.com/a", &["b"]);
+        re_read.requested_urls = vec!["https://reuters.com/alias".into()];
+        re_read.page.text = "Fresh body.".into();
+        remember(&mut inventory, re_read);
+        remember(&mut inventory, tagged("https://reuters.com/c", &["b"]));
+        assert_eq!(inventory.len(), 2);
+        assert_eq!(inventory[0].page.text, "Fresh body.");
+        assert_eq!(inventory[0].topics, ["b", "a"]);
+        assert_eq!(inventory[0].requested_urls, ["https://reuters.com/alias", "https://reuters.com/a"]);
     }
 
     /// The bound the runtime's saved checkpoint needs: llama.cpp's server saves
@@ -5518,6 +5625,7 @@ mod tests {
             published: None,
             annotation: None,
             truncated: false,
+            topics: vec!["earlier-topic".into()],
         }];
         let mut gaps = Vec::new();
         let (block, selected) = reuse_pages(&ctx, &inventory, &mut gaps);
@@ -8098,9 +8206,9 @@ pub(crate) mod samples {
         research_retry_stage(&crate::portfolio::holding_step_key(symbol), topic_key, leg)
     }
 
-    /// Gathering samples: the root pass, the follow-up pass, the root pass on
-    /// a continuity run (over `continuity`), the disconfirming pass, and a
-    /// later topic with already retrieved text.
+    /// Gathering samples: the root pass, the follow-up pass over its root
+    /// pass's page, the root pass on a continuity run (over `continuity`), the
+    /// disconfirming pass, and a later topic with already retrieved text.
     pub(crate) fn gathering_messages(
         symbol: &str,
         brief: &HoldingBrief,
@@ -8128,11 +8236,17 @@ pub(crate) mod samples {
             requested_urls: vec![IR_URL.into()], published: Some("2026-07-22".into()),
             annotation: Some(annotation(0, &["filings", "financials"], 0.92, false)),
             truncated: false,
+            topics: vec![topic.key.clone()],
         };
-        let (reuse, reused) = reuse_pages(&reuse_ctx, &[source], &mut Vec::new());
+        let (reuse, reused) = reuse_pages(&reuse_ctx, std::slice::from_ref(&source), &mut Vec::new());
+        // The root pass fetched the page itself, so its follow-up holds it and
+        // the brief is the reuse form.
+        let followup_ctx = ctx(brief, topic, Some(&question), Some(&so_far), &[], false);
+        let (followup_reuse, followup_reused) =
+            reuse_pages(&followup_ctx, std::slice::from_ref(&source), &mut Vec::new());
         vec![
             sample("root pass, first analysis, two news leads", &topic.key, pass_brief(&ctx(brief, topic, None, None, &[], false))),
-            sample("follow-up pass, the question and the topic's write-up so far", &topic.key, pass_brief(&ctx(brief, topic, Some(&question), Some(&so_far), &[], false))),
+            sample("follow-up pass, the question and the topic's write-up so far", &topic.key, pass_brief_with_reuse(&followup_ctx, &followup_reuse, !followup_reused.is_empty())),
             sample("root pass on a continuity run, the prior thesis document", &topic.key, pass_brief(&ctx(continuity, topic, None, None, &[], false))),
             sample("the disconfirming pass, the run's write-ups so far", &disc.key, pass_brief(&ctx(brief, &disc, None, None, &write_ups, true))),
             sample("later topic, previously retrieved pages", &topic.key, pass_brief_with_reuse(&reuse_ctx, &reuse, !reused.is_empty())),

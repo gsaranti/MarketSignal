@@ -16,7 +16,7 @@ A pass is itself a bounded multi-turn tool loop — the model emits `web_search`
 **The gathering brief.**
 Portfolio's gathering brief is one message in two parts on the frame every Portfolio prompt shares: the data with its glosses, then the task.
 Part 1 leads with the text that is constant across the holding's topics and ends with the topic's own.
-The constant text is the holding header with the analysis date; the fetched values the holding's dossier carries, as [portfolio-workflow.md §Step 6c](portfolio-workflow.md#step-6c-bounded-web-research) lists them; the news leads; on a continuity run the prior analysis and the prior thesis document; and, on a topic or follow-up pass, the pages already retrieved while researching this holding.
+The constant text is the holding header with the analysis date; the fetched values the holding's dossier carries, as [portfolio-workflow.md §Step 6c](portfolio-workflow.md#step-6c-bounded-web-research) lists them; the news leads; on a continuity run the prior analysis and the prior thesis document; and, on a topic or follow-up pass, the pages already retrieved.
 The topic's text follows: the topic's questions; on a follow-up pass the question it pursues and the topic's write-up so far; on the disconfirming pass the run's write-ups so far.
 The order serves the runtime's prompt cache: consecutive topic conversations on one holding share their leading text byte for byte, and the topic text after it stays short enough to sit past the previous conversation's saved checkpoint ([local-model-operations.md §Serving & memory](local-model-operations.md#serving--memory-apple-silicon-128-gb)).
 A truncated or re-read page shortens that shared prefix, and the saving is an expectation of the runtime until a run's serve log confirms it.
@@ -50,11 +50,13 @@ A bounded transport retry repeats the identical packet and count without appendi
 
 **Pages already retrieved on the holding are reused before another search is requested.**
 Ordinary topic and follow-up gathering begins with a bounded selection of raw pages already retrieved while researching this holding.
+A root pass selects from every page the holding's research has retrieved; a follow-up pass selects from the pages its own topic's passes retrieved, never another topic's.
 The transient holding-scoped inventory retains capped page text together with the title, publication date, original retrieval timestamp, source annotation, requested/final URL lineage and truncation status; a successful document-cache read can populate it, but failed reads and empty bodies cannot supply reused evidence.
 Selection follows first-retrieval order, rechecks current URL policy on the requested and final addresses, and fits complete page framing plus usable body text into the initial-message allowance after reserving the questions, task and first countdown message.
 Unselected pages are counted in a plain omission note and persisted gap; shortened bodies carry the continuation marker and a gap, and the complete serialized gathering packet still passes the input guard before issue.
 No network attempt or extraction-telemetry sample is charged for this in-memory reuse.
 The inventory is discarded between holdings and is never persisted; an explicit successful re-fetch replaces a source's content and provenance together while preserving its requested aliases and first-retrieval position.
+A page belongs to every topic whose pass fetched or re-read it.
 Other topics' write-ups and transcripts are never supplied to a topic pass; the disconfirming pass alone carries the run's write-ups, and it keeps its dedicated contrary-search behavior without automatic page injection.
 
 **The synthesis conversation writes the pass's write-up.**
@@ -81,7 +83,7 @@ That cap counts passes (branches), *not* raw LLM turns: the turns and fetches in
 A follow-up is the model's *question*; the orchestrator reads it and decides whether to spend it, and the model never recurses on its own.
 Portfolio schedules passes by root-before-follow-up priority, then agenda order, then depth: every eligible root precedes pending follow-ups, and each topic's follow-ups retain its priority through the depth cap.
 Technology-topic eligibility is settled when the agenda is assembled, from the engine's event pre-flag; a follow-up question cannot add a topic mid-loop.
-Each pass begins a clean conversation with the holding-constant text, its own topic's text and write-up so far, and the bounded holding-scoped page reuse.
+Each pass begins a clean conversation with the holding-constant text, its own topic's text and write-up so far, and the bounded page reuse.
 Budget exhaustion records skipped roots separately from unspent follow-ups; roots themselves may exhaust the budget, so the ordering does not guarantee complete coverage.
 The disconfirming pass runs last, after the topic work, under the same budget: one gathering conversation that searches for evidence against the run's write-ups so far, then its own synthesis conversation, which writes its write-up and asks no follow-up ([portfolio-workflow.md §Step 6c](portfolio-workflow.md#step-6c-bounded-web-research)).
 **Terminology:** a topic is worked in **isolation** from other topics — its own pass loop over a clean conversation, with Portfolio's bounded raw-page reuse but no other topic's write-up or transcript, plus each pass's separate synthesis conversation; where a workflow doc says *one call per topic*, it means this per-topic isolation — within which each **turn** is one model request and the orchestrator owns every tool execution — never a single-request contract.
@@ -211,7 +213,7 @@ Failed live discovery attempts retain normal source-failure telemetry.
 Submissions metadata and completed resolution outcomes are reused only within the holding, and issuer/release deduplication prevents repeated denied URLs from launching the same resolution again.
 The original IR denial and its cooldown are retained; recovery diagnostics distinguish that failed address from the actual SEC source.
 
-A recovered exhibit passes through ordinary quoted-page rendering, page/body limits, holding-scoped reuse and shown-source rendering in the same pass.
+A recovered exhibit passes through ordinary quoted-page rendering, page/body limits, page reuse and shown-source rendering in the same pass.
 Its document cache key and shown source are the SEC address, never the denied IR URL or a fabricated redirect alias.
 Publication provenance comes only from a recognizable dateline in the release's own text and otherwise remains unknown; filing/event dates and the failed URL's search metadata are not copied into that field.
 The retrieval timestamp is the exhibit's original retrieval time, including document-cache service.

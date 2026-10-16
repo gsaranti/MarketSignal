@@ -1,6 +1,6 @@
 # Self-review — priced fund, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v78`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v79`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: SPMO, on a continuity run over the prior position of 2026-09-02, its fund context synthetic.
 The review is a thinking call with no grammar, on a continuity run only: Part 1 the holding header and FETCHED VALUES, PRIOR POSITION, PRIOR THESIS, this run's ANALYSIS and REALIZED; Part 2 what the review covers, in order, and its length band. The review reaches this run's thesis document alone.
@@ -19,7 +19,7 @@ The fund's name, mandate, expense ratio, assets, NAV, weights and distributions 
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 7906 chars — the messages and tools as serialized |
+| Prompt material | 7830 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,7 +28,7 @@ You are an investment analyst reviewing the prior position on one holding for a 
 Part 1 of the message gives the inputs. Part 2 says what the review covers and how to return it.
 ~~~~
 
-## User message (7534 chars)
+## User message (7459 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -44,7 +44,7 @@ missing figure reads (gap). The rows follow under their labels.
 PROFILE
 - name: Invesco S&P 500 Momentum ETF
 - asset class: Equity
-- expense ratio: 0.0013 (0.13%/yr)
+- expense ratio: 0.13%
 - assets under management: 16.0B
 - NAV: 144.69
 
@@ -59,9 +59,8 @@ DIVIDENDS
 2025-09-26)
 
 QUOTE AND CLOSES
-- quote: 144.19 per share (the live print, undated)
 - daily closes: 3 sessions from 2026-09-01 to 2026-09-14
-- close on the prior analysis date 2026-09-02: 139.86 (2026-09-02)
+- close on the prior analysis date 2026-09-02: 139.86
 
 RATES
 - Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%
@@ -160,8 +159,8 @@ resilient): quality 50 → 50; valuation 83 → 83; momentum 94 → 94; risk 67 
 - price bands (USD, bear / base / bull): three-month 105.63 / 142.74 / 179.85 → 105.63 / 142.74 /
 179.85; twelve-month 124.03 / 138.38 / 152.74 → 124.03 / 138.38 / 152.74; three-year 124.03 / 138.38
 / 152.74 → 124.03 / 138.38 / 152.74.
-- metrics: return volatility 2.0% → 2.0%; trailing return 26.3% → 26.3%; expense ratio 0.1% → 0.1%;
-NAV premium -0.3% → -0.3%; composite coverage 100.0% → 100.0%.
+- metrics: return volatility 2.0% → 2.0%; trailing return 26.3% → 26.3%; expense ratio 0.13% →
+0.13%; NAV premium -0.3% → -0.3%; composite coverage 100.0% → 100.0%.
 
 ======== PART 2: TASK ========
 

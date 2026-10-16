@@ -1,6 +1,6 @@
 # Analysis — fund, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v78`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v79`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, the synthetic total bond market ETF the fixed evidence set carries for the role/risk branch.
 The analysis call is a thinking call with no grammar: Part 1 the holding header and FETCHED VALUES as the brief carries them, on a continuity run PRIOR ANALYSIS, then WRITE-UPS; Part 2 what the analysis consolidates and its length band. The analysis is the only research artifact the next run reads.
@@ -18,7 +18,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 1733 chars — the messages and tools as serialized |
+| Prompt material | 1691 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -27,7 +27,7 @@ You are an investment analyst consolidating one holding's research for a portfol
 the message gives the inputs. Part 2 says what the analysis covers and how to return it.
 ~~~~
 
-## User message (1433 chars)
+## User message (1389 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -43,15 +43,17 @@ missing figure reads (gap). The rows follow under their labels.
 PROFILE
 - name: Vanguard Total Bond Market ETF
 - asset class: Fixed Income
-- expense ratio: 0.0003 (0.03%/yr)
+- expense ratio: 0.03%
 - assets under management: 340.0B
 - NAV: 72.41
 
 WEIGHTS
 - countries, largest first: United States 94.0%, Supranational 2.0%, Canada 1.0%
 
+DIVIDENDS
+- (gap)
+
 QUOTE AND CLOSES
-- quote: 72.38 per share (the live print, undated)
 - daily closes: 21 sessions from 2026-08-14 to 2026-09-14
 
 RATES

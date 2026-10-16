@@ -1,6 +1,6 @@
 # Thesis document — priced fund, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v78`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v79`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: SPMO, an ETF of the fixed evidence set (attempt 6, reconstructed), on its first analysis, its fund context synthetic.
 The thesis document is a thinking call with no grammar: Part 1 the fetched values, the computed reads under one heading, the market analysis and this run's analysis; Part 2 what the document covers, in order, and its length band.
@@ -19,7 +19,7 @@ The fund's name, mandate, expense ratio, assets, NAV, weights and distributions 
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 5804 chars — the messages and tools as serialized |
+| Prompt material | 5739 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ Part 1 of the message gives the inputs. Part 2 says what the document covers, in
 return it.
 ~~~~
 
-## User message (5429 chars)
+## User message (5365 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -45,7 +45,7 @@ missing figure reads (gap). The rows follow under their labels.
 PROFILE
 - name: Invesco S&P 500 Momentum ETF
 - asset class: Equity
-- expense ratio: 0.0013 (0.13%/yr)
+- expense ratio: 0.13%
 - assets under management: 16.0B
 - NAV: 144.69
 
@@ -60,7 +60,6 @@ DIVIDENDS
 2025-09-26)
 
 QUOTE AND CLOSES
-- quote: 144.19 per share (the live print, undated)
 - daily closes: 1 session from 2026-09-14 to 2026-09-14
 
 RATES
