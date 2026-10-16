@@ -155,8 +155,7 @@ fn basis_gloss(bridge: Option<f64>) -> &'static str {
     match bridge {
         None => {
             " A price shown as withheld could not be put on today's price basis: whether a share \
-             split re-based the price series since the prior analysis could not be verified this \
-             run."
+             split re-based the price series since the prior analysis could not be verified."
         }
         Some(f) if f != 1.0 => {
             " A price marked bridged was converted onto today's price basis across a share split \
@@ -487,7 +486,7 @@ fn expected_prices_block(input: &ReviewInput, g: &GradedVerdict) -> String {
 /// (`docs/portfolio-analysis.md` §Outcome learning).
 fn accuracy_block(d: &HoldingDossier) -> String {
     let Some(acc) = &d.accuracy else {
-        return "\nACCURACY SCORES\nThe accuracy record could not be read this run.\n".to_string();
+        return "\nACCURACY SCORES\nThe accuracy record could not be read.\n".to_string();
     };
     let mark = d.prior_accuracy_read_through;
     let mut p = String::from(
@@ -689,7 +688,7 @@ fn metric_unit(name: &str) -> (Unit, usize) {
     }
 }
 
-/// COMPUTED READS: the engine's reads at the prior analysis beside this run's,
+/// COMPUTED READS: the engine's reads at the prior analysis beside today's,
 /// the prior bands on today's basis through the bridge, and any method change
 /// named for what it changed on the prior's own branch.
 fn computed_then_now_block(input: &ReviewInput, g: &GradedVerdict, now: &EngineOutput) -> String {
@@ -713,7 +712,7 @@ fn computed_then_now_block(input: &ReviewInput, g: &GradedVerdict, now: &EngineO
         input.price_bridge,
     );
     let mut p = String::from(
-        "\nCOMPUTED READS\nThe computed reads at the prior analysis beside this run's, then → now; \
+        "\nCOMPUTED READS\nThe computed reads at the prior analysis beside today's, then → now; \
          the prior price bands on today's price basis.\n",
     );
     p.push_str(&format!("- grade: {} → {}.\n", realized.grade.then.as_str(), realized.grade.now.as_str()));
@@ -1103,7 +1102,7 @@ mod tests {
         // An unresolvable bridge withholds every prior price and says why.
         let withheld = render(&d, &now, None);
         assert!(withheld.contains("Price then: withheld.\n"), "{withheld}");
-        assert!(withheld.contains("could not be verified this run"), "{withheld}");
+        assert!(withheld.contains("could not be verified"), "{withheld}");
         assert!(withheld.contains("passed; withheld."), "{withheld}");
     }
 
@@ -1172,7 +1171,7 @@ mod tests {
         assert!(user.contains("The 12 lines with the newest horizon dates of 14.\n"), "{user}");
         d.accuracy = None;
         let user = render(&d, &now, Some(1.0));
-        assert!(user.contains("ACCURACY SCORES\nThe accuracy record could not be read this run.\n"), "{user}");
+        assert!(user.contains("ACCURACY SCORES\nThe accuracy record could not be read.\n"), "{user}");
         assert!(!user.contains("CHECKS SINCE"), "{user}");
     }
 

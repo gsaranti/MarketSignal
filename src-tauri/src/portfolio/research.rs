@@ -473,9 +473,11 @@ pub struct HoldingBrief {
     /// where the brief carries none.
     pub fetched_values: String,
     pub leads: Vec<NewsLead>,
-    /// The prior documents on a continuity run (PRIOR ANALYSIS, then PRIOR
-    /// THESIS, each under its date); empty on a debut.
-    pub prior_documents: String,
+    /// PRIOR ANALYSIS under its date on a continuity run; empty where the
+    /// prior run left none.
+    pub prior_analysis: String,
+    /// PRIOR THESIS under its date on a continuity run; empty on a debut.
+    pub prior_thesis: String,
 }
 
 impl HoldingBrief {
@@ -2442,7 +2444,7 @@ fn topic_section(topic: &AgendaTopic) -> String {
 
 /// Capped, since the question is unbounded model output.
 fn followup_section(question: &str) -> String {
-    let mut out = String::from("\nFOLLOW-UP\nThe question this pass pursues.\n");
+    let mut out = String::from("\nFOLLOW-UP\nThe question this conversation pursues.\n");
     let (question, cut) = crate::data_sources::cap_chars(question, FOLLOWUP_CAP_CHARS);
     out.push_str(&question);
     if cut {
@@ -2465,14 +2467,14 @@ fn capped_write_up(write_up: &str) -> String {
 
 fn write_up_so_far_section(write_up: &str) -> String {
     format!(
-        "\nWRITE-UP SO FAR\nThe topic's write-up from its earlier passes.\n{}",
+        "\nWRITE-UP SO FAR\nWhat the research on this topic has established so far.\n{}",
         capped_write_up(write_up)
     )
 }
 
 fn write_ups_so_far_section(write_ups: &[(String, String)]) -> String {
     let mut out =
-        String::from("\nWRITE-UPS SO FAR\nThis run's write-ups on the holding, each under its topic.\n");
+        String::from("\nWRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\n");
     if write_ups.is_empty() {
         out.push_str("None.\n");
     }
@@ -2501,13 +2503,13 @@ fn synthesis_task(ctx: &PassContext<'_>) -> String {
     let plain = "as plain text — no code fence, no JSON, no heading before the first line";
     if ctx.disconfirming {
         out.push_str(&format!(
-            "Write the pass's write-up {plain}. It states how EVIDENCE bears on the write-ups \
+            "Write the contrary-evidence write-up {plain}. It states how EVIDENCE bears on the write-ups \
 under WRITE-UPS SO FAR: which it contradicts or weakens and how, which it leaves standing, and \
 any contrary evidence that stands on its own."
         ));
     } else if ctx.followup.is_some() {
         out.push_str(&format!(
-            "Rewrite the write-up under WRITE-UP SO FAR whole {plain}, folding in what EVIDENCE \
+            "Rewrite the content under WRITE-UP SO FAR whole {plain}, folding in what EVIDENCE \
 shows on the question under FOLLOW-UP, so the topic has one write-up: what the research \
 establishes on each question under TOPIC, where pages disagree, and what the evidence leaves \
 unanswered."
@@ -3018,7 +3020,8 @@ fn gathering_constant_block(ctx: &PassContext<'_>) -> String {
             ));
         }
     }
-    out.push_str(&ctx.brief.prior_documents);
+    out.push_str(&ctx.brief.prior_analysis);
+    out.push_str(&ctx.brief.prior_thesis);
     out
 }
 
@@ -3097,8 +3100,10 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
             .to_string()
     } else if ctx.followup.is_some() {
         "Find what the web shows on the question under FOLLOW-UP for this holding, as of the \
-         date under HOLDING. The questions under TOPIC are what that question serves; this pass \
-         does not search them."
+         date under HOLDING. The questions under TOPIC are what that question serves; this conversation \
+         does not search them. The content under WRITE-UP SO FAR is what the research on this \
+         topic has established; search for what it leaves open on the question, not for what it \
+         already states."
             .to_string()
     } else {
         "Find what the web shows on each question under TOPIC for this holding, as of the date \
@@ -3150,6 +3155,17 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
     } else {
         format!("Use FETCHED VALUES as background to shape how {researched}.\n")
     };
+    // The prior documents reach no other research message, so their role is
+    // stated here alone (`docs/web-research.md` §The research loop).
+    let prior = match (ctx.brief.prior_analysis.is_empty(), ctx.brief.prior_thesis.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => format!("Use PRIOR ANALYSIS as background to shape how {researched}.\n"),
+        (analysis_absent, false) => format!(
+            "Use {} as background to shape how {researched}; the falsifiers and triggers under \
+             PRIOR THESIS name what to look for evidence of since its date.\n",
+            if analysis_absent { "PRIOR THESIS" } else { "PRIOR ANALYSIS and PRIOR THESIS" }
+        ),
+    };
     let mut item1 = if pages_shown {
         format!("1. Read the pages under PAGES ALREADY RETRIEVED against {questions}. Search for what remains unanswered, then fetch and read {candidates} most likely to answer it.")
     } else {
@@ -3165,7 +3181,7 @@ fn gathering_task(ctx: &PassContext<'_>, pages_shown: bool) -> String {
          that cannot be right is a defect of the source."
     ));
     format!(
-        "\n======== PART 2: TASK ========\n{opening}\n{fetched}\n{item1}\n2. At most \
+        "\n======== PART 2: TASK ========\n{opening}\n{fetched}{prior}\n{item1}\n2. At most \
          {MAX_TOOL_CALLS_PER_TURN} tool calls in one reply.\n3. Stop when {answered}, or when \
          what remains cannot be found: reply with one sentence saying which, and no tool call.\n"
     )
@@ -5468,7 +5484,8 @@ mod tests {
             header: WID_HEADER.into(),
             fetched_values: "\nFETCHED VALUES\nQuote: 10.00 per share (the live print, undated).\n".into(),
             leads: leads(),
-            prior_documents: String::new(),
+            prior_analysis: String::new(),
+            prior_thesis: String::new(),
         };
         let out = r.run_holding(&brief, &agenda).unwrap();
         assert_eq!(out.fetches_spent, 3);
@@ -5802,13 +5819,13 @@ mod tests {
         };
         let orientation = synthesis_orientation(&ctx);
         assert!(
-            orientation.contains("\nWRITE-UPS SO FAR\nThis run's write-ups on the holding, each under its topic.\n\nCompetitive position\nPrior write-up to test.\n\nResults\nResults write-up.\n"),
+            orientation.contains("\nWRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\n\nCompetitive position\nPrior write-up to test.\n\nResults\nResults write-up.\n"),
             "{orientation}"
         );
         // No news lead, no URL roster, no search instruction on the synthesis.
         assert!(!orientation.contains("Widget beats"), "{orientation}");
         assert!(!orientation.contains("https://"));
-        assert!(!orientation.contains("search"));
+        assert!(!orientation.contains(" search") && !orientation.contains("Search"), "{orientation}");
         let fetched = vec![("a".into(), "now".into(), None), ("empty".into(), "now".into(), None),
             ("a".into(), "later".into(), None), ("b".into(), "now".into(), None)];
         let pages = [("a".into(), "first".into()), ("empty".into(), String::new()),
@@ -5834,13 +5851,13 @@ mod tests {
             depth: 1,
         };
         let orientation = synthesis_orientation(&fu);
-        assert!(orientation.contains(&format!("\nFOLLOW-UP\nThe question this pass pursues.\n{}…\n", "é".repeat(FOLLOWUP_CAP_CHARS))), "{orientation}");
-        assert!(orientation.contains(&format!("\nWRITE-UP SO FAR\nThe topic's write-up from its earlier passes.\n{}{}", "w".repeat(WRITE_UP_CAP_CHARS), INPUTS_CONTINUE_MARKER)), "{orientation}");
+        assert!(orientation.contains(&format!("\nFOLLOW-UP\nThe question this conversation pursues.\n{}…\n", "é".repeat(FOLLOWUP_CAP_CHARS))), "{orientation}");
+        assert!(orientation.contains(&format!("\nWRITE-UP SO FAR\nWhat the research on this topic has established so far.\n{}{}", "w".repeat(WRITE_UP_CAP_CHARS), INPUTS_CONTINUE_MARKER)), "{orientation}");
         let task = synthesis_task(&fu);
-        assert!(task.contains("Rewrite the write-up under WRITE-UP SO FAR whole as plain text — no code fence, no JSON, no heading before the first line, folding in what EVIDENCE shows on the question under FOLLOW-UP, so the topic has one write-up:"), "{task}");
+        assert!(task.contains("Rewrite the content under WRITE-UP SO FAR whole as plain text — no code fence, no JSON, no heading before the first line, folding in what EVIDENCE shows on the question under FOLLOW-UP, so the topic has one write-up:"), "{task}");
         // An empty disconfirming subject renders its heading with None.
         let none = PassContext { write_ups_so_far: &[], ..ctx };
-        assert!(synthesis_orientation(&none).contains("\nWRITE-UPS SO FAR\nThis run's write-ups on the holding, each under its topic.\nNone.\n"));
+        assert!(synthesis_orientation(&none).contains("\nWRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\nNone.\n"));
     }
 
     #[test]
@@ -7778,7 +7795,8 @@ mod tests {
             header: WID_HEADER.into(),
             fetched_values: "\nFETCHED VALUES\nQuote: 10.00 per share (the live print, undated).\n".into(),
             leads: leads(),
-            prior_documents: "\nPRIOR THESIS (written 2026-08-01)\nThesis: hold for the share gain.\n".into(),
+            prior_analysis: String::new(),
+            prior_thesis: "\nPRIOR THESIS (written 2026-08-01)\nThesis: hold for the share gain.\n".into(),
         };
         let ctx = pass_ctx(&brief, &agenda[0]);
         let user = pass_brief(&ctx);
@@ -7818,7 +7836,7 @@ mod tests {
         );
         assert!(part2.starts_with("Find what the web shows on each question under TOPIC"), "{part2}");
         for item in [
-            "under HOLDING.\nUse FETCHED VALUES as background to shape how the questions are researched.\n\n1. Search for what the questions ask",
+            "under HOLDING.\nUse FETCHED VALUES as background to shape how the questions are researched.\nUse PRIOR THESIS as background to shape how the questions are researched; the falsifiers and triggers under PRIOR THESIS name what to look for evidence of since its date.\n\n1. Search for what the questions ask",
             "1. Search for what the questions ask, then fetch and read the results and the leads under NEWS LEADS most likely to answer them.",
             "a weak source lowers confidence in what it says, it does not exclude it, and a figure that cannot be right is a defect of the source.",
             "2. At most 8 tool calls in one reply.",
@@ -7826,7 +7844,30 @@ mod tests {
         ] {
             assert!(part2.contains(item), "Part 2 lacks {item}: {part2}");
         }
-        assert!(!part2.contains("PRIOR"), "Part 2 points at no prior block: {part2}");
+        let debut = HoldingBrief { prior_thesis: String::new(), ..brief.clone() };
+        let debut_user = pass_brief(&pass_ctx(&debut, &agenda[0]));
+        let (_, debut_part2) = debut_user.split_once("\n======== PART 2: TASK ========\n").expect("two parts");
+        assert!(!debut_part2.contains("PRIOR"), "Part 2 points at no prior block: {debut_part2}");
+        let both = HoldingBrief {
+            prior_analysis: "\nPRIOR ANALYSIS (written 2026-08-01)\nShare held.\n".into(),
+            ..brief.clone()
+        };
+        let both_user = pass_brief(&pass_ctx(&both, &agenda[0]));
+        assert!(
+            both_user.contains("\nUse PRIOR ANALYSIS and PRIOR THESIS as background to shape how the questions are researched; the falsifiers and triggers under PRIOR THESIS name what to look for evidence of since its date.\n\n1. "),
+            "{both_user}"
+        );
+        let analysis_only = HoldingBrief {
+            prior_analysis: "\nPRIOR ANALYSIS (written 2026-08-01)\nShare held.\n".into(),
+            prior_thesis: String::new(),
+            ..brief.clone()
+        };
+        let analysis_user = pass_brief(&pass_ctx(&analysis_only, &agenda[0]));
+        assert!(
+            analysis_user.contains("\nUse PRIOR ANALYSIS as background to shape how the questions are researched.\n\n1. ")
+                && !analysis_user.contains("falsifiers"),
+            "{analysis_user}"
+        );
         for word in [
             "orchestrator", "ledger", "cached", "bounded", "citable", "budget", "GATHER",
             "FALSIFIER", "STRUCTURED SEEDS", "PRIOR RESEARCH SEED", "EVIDENCE LEDGER",
@@ -7854,15 +7895,15 @@ mod tests {
             depth: 1,
         });
         assert!(
-            fu.contains("\nFOLLOW-UP\nThe question this pass pursues.\nDid share hold in Q3?\n"),
+            fu.contains("\nFOLLOW-UP\nThe question this conversation pursues.\nDid share hold in Q3?\n"),
             "{fu}"
         );
         assert!(
-            fu.contains("\nWRITE-UP SO FAR\nThe topic's write-up from its earlier passes.\nWidget Co held 40% share (https://example.com/share).\n"),
+            fu.contains("\nWRITE-UP SO FAR\nWhat the research on this topic has established so far.\nWidget Co held 40% share (https://example.com/share).\n"),
             "{fu}"
         );
         assert!(
-            fu.contains("Find what the web shows on the question under FOLLOW-UP for this holding, as of the date under HOLDING. The questions under TOPIC are what that question serves; this pass does not search them.\n\n1. "),
+            fu.contains("Find what the web shows on the question under FOLLOW-UP for this holding, as of the date under HOLDING. The questions under TOPIC are what that question serves; this conversation does not search them. The content under WRITE-UP SO FAR is what the research on this topic has established; search for what it leaves open on the question, not for what it already states.\n\n1. "),
             "{fu}"
         );
         // This brief carries no FETCHED VALUES block, so Part 2 points at none.
@@ -7889,7 +7930,7 @@ mod tests {
             depth: 0,
         });
         assert!(
-            dc.contains("\nWRITE-UPS SO FAR\nThis run's write-ups on the holding, each under its topic.\n\nCompetitive position\nWidget Co held 40% share (https://example.com/share).\n"),
+            dc.contains("\nWRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\n\nCompetitive position\nWidget Co held 40% share (https://example.com/share).\n"),
             "{dc}"
         );
         assert!(

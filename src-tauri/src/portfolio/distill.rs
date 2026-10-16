@@ -29,7 +29,7 @@ pub fn input_budget_chars(num_ctx: u32) -> usize {
 
 /// Stands as a debut holding's analysis when its loop produced no write-up, so
 /// no call is spent over nothing.
-pub const NO_WRITE_UP_SENTENCE: &str = "No research write-up this run.";
+pub const NO_WRITE_UP_SENTENCE: &str = "No research write-up.";
 
 /// The disconfirming pass's heading wherever the write-ups render together.
 pub const CONTRARY_TITLE: &str = "Contrary evidence";
@@ -194,21 +194,21 @@ and how to return it."
     let (subject_word, plural) = match input.subject {
         DistillSubject::Merged(write_ups) => {
             user.push_str(
-                "\nWRITE-UPS\nThis run's write-ups on the holding, each under its topic, the \
-                 contrary-evidence pass last.\n",
+                "\nWRITE-UPS\nThe write-ups on this holding, each under its topic, the \
+                 contrary-evidence write-up last.\n",
             );
             user.push_str(&write_ups_block(write_ups));
             ("the write-ups under WRITE-UPS", true)
         }
         DistillSubject::Single(write_up) => {
-            user.push_str("\nWRITE-UP\nOne of this run's write-ups on the holding, under its topic.\n");
+            user.push_str("\nWRITE-UP\nOne write-up on this holding, under its topic.\n");
             user.push_str(&write_ups_block(std::slice::from_ref(write_up)));
             ("the write-up under WRITE-UP", false)
         }
         DistillSubject::MergedDistillates(outputs) => {
             user.push_str(
-                "\nWRITE-UPS\nThis run's write-ups on the holding, each already shortened, each \
-                 under its topic, the contrary-evidence pass last.\n",
+                "\nWRITE-UPS\nThe write-ups on this holding, each already shortened, each \
+                 under its topic, the contrary-evidence write-up last.\n",
             );
             user.push_str(&write_ups_block(outputs));
             ("the write-ups under WRITE-UPS", true)
@@ -243,14 +243,14 @@ and how to return it."
     match input.write_ups {
         WriteUps::AsWritten(write_ups) => {
             user.push_str(
-                "\nWRITE-UPS\nThis run's research on the holding, one write-up per topic, the \
-                 contrary-evidence pass last.\n",
+                "\nWRITE-UPS\nThe research on this holding, one write-up per topic, the \
+                 contrary-evidence write-up last.\n",
             );
             user.push_str(&write_ups_block(write_ups));
         }
         WriteUps::Distilled(distillate) => {
             user.push_str(
-                "\nWRITE-UPS\nThis run's research on the holding, the topics' write-ups \
+                "\nWRITE-UPS\nThe research on this holding, the topics' write-ups \
                  shortened into one document.\n",
             );
             user.push_str(&format!("\n{}\n", distillate.trim()));
@@ -263,15 +263,15 @@ and how to return it."
     };
     user.push_str(PART_2);
     user.push_str(&format!(
-        "Write the holding's analysis {PLAIN}. It consolidates what this run's research \
-         established on the holding: what the write-ups under WRITE-UPS establish, where their \
+        "Write the holding's analysis {PLAIN}. It consolidates what the research on this \
+         holding established: what the write-ups under WRITE-UPS establish, where their \
          sources disagree, and what stays unanswered. Each figure is quoted with the date or \
          period its source gives for it, and its source is named: {source_clause}."
     ));
     if !input.prior_analysis.is_empty() {
         user.push_str(
-            " It also states what the analysis under PRIOR ANALYSIS said that this run's research \
-             confirms, revises or leaves untouched; a topic the write-ups do not cover this run \
+            " It also states what the analysis under PRIOR ANALYSIS said that the write-ups under \
+             WRITE-UPS confirm, revise or leave untouched; a topic the write-ups do not cover \
              keeps what PRIOR ANALYSIS says about it.",
         );
     }
@@ -516,7 +516,8 @@ mod tests {
             header: "HOLDING\nWID (Widget Co).\nPrice: $10.00 per share.\nDate: 2026-08-22.\n".into(),
             fetched_values: "\nFETCHED VALUES\nQuote: 10.00 per share (the live print, undated).\n".into(),
             leads: vec![],
-            prior_documents: String::new(),
+            prior_analysis: String::new(),
+            prior_thesis: String::new(),
         }
     }
 
@@ -607,10 +608,10 @@ mod tests {
         let at = |s: &str| part1.find(s).unwrap_or_else(|| panic!("{s}\n{part1}"));
         assert!(at("\nFETCHED VALUES\n") < at("\nPRIOR ANALYSIS (written 2026-08-01)\n"));
         assert!(at("\nPRIOR ANALYSIS (written 2026-08-01)\n") < at("\nWRITE-UPS\n"));
-        assert!(part1.contains("\nWRITE-UPS\nThis run's research on the holding, one write-up per topic, the contrary-evidence pass last.\n\nCompetitive / business position\nShare held.\n\nCatalysts and risks\nA ruling is due in Q4.\n\nContrary evidence\nNothing contradicts the share read.\n"), "{part1}");
-        assert!(part2.starts_with("Write the holding's analysis as plain text — no code fence, no JSON, no heading before the first line. It consolidates what this run's research established on the holding"), "{part2}");
+        assert!(part1.contains("\nWRITE-UPS\nThe research on this holding, one write-up per topic, the contrary-evidence write-up last.\n\nCompetitive / business position\nShare held.\n\nCatalysts and risks\nA ruling is due in Q4.\n\nContrary evidence\nNothing contradicts the share read.\n"), "{part1}");
+        assert!(part2.starts_with("Write the holding's analysis as plain text — no code fence, no JSON, no heading before the first line. It consolidates what the research on this holding established"), "{part2}");
         assert!(part2.contains("or FETCHED VALUES where the figure comes from there."), "{part2}");
-        assert!(part2.contains(" It also states what the analysis under PRIOR ANALYSIS said that this run's research confirms, revises or leaves untouched; a topic the write-ups do not cover this run keeps what PRIOR ANALYSIS says about it."), "{part2}");
+        assert!(part2.contains(" It also states what the analysis under PRIOR ANALYSIS said that the write-ups under WRITE-UPS confirm, revise or leave untouched; a topic the write-ups do not cover keeps what PRIOR ANALYSIS says about it."), "{part2}");
         assert!(part2.ends_with("\n\nThe analysis runs 900 to 1,800 words.\n"), "{part2}");
         assert_eq!(p.chars(), p.system.chars().count() + p.user.chars().count());
 
@@ -622,7 +623,7 @@ mod tests {
             write_ups: WriteUps::Distilled("  The shortened document.  "),
         });
         assert!(!d.user.contains("PRIOR ANALYSIS"), "{}", d.user);
-        assert!(d.user.contains("\nWRITE-UPS\nThis run's research on the holding, the topics' write-ups shortened into one document.\n\nThe shortened document.\n"), "{}", d.user);
+        assert!(d.user.contains("\nWRITE-UPS\nThe research on this holding, the topics' write-ups shortened into one document.\n\nThe shortened document.\n"), "{}", d.user);
         // No FETCHED VALUES on the brief: the source clause names the page alone.
         let bare = HoldingBrief { fetched_values: String::new(), ..b.clone() };
         let bare_prompt = analysis_prompt(&AnalysisInput {
@@ -644,7 +645,7 @@ mod tests {
             stage: "distill WID".into(),
         });
         assert!(merged.system.starts_with("You are an investment analyst shortening research write-ups"), "{}", merged.system);
-        assert!(merged.user.starts_with(&format!("{PART_1}{header}\nWRITE-UPS\nThis run's write-ups on the holding, each under its topic, the contrary-evidence pass last.\n\nCompetitive / business position\nShare held.\n")), "{}", merged.user);
+        assert!(merged.user.starts_with(&format!("{PART_1}{header}\nWRITE-UPS\nThe write-ups on this holding, each under its topic, the contrary-evidence write-up last.\n\nCompetitive / business position\nShare held.\n")), "{}", merged.user);
         assert!(merged.user.contains("\nContrary evidence\nNothing contradicts the share read.\n"), "{}", merged.user);
         let (_, task) = merged.user.split_once(PART_2).unwrap();
         assert_eq!(
@@ -661,7 +662,7 @@ mod tests {
             subject: DistillSubject::Single(&ws[1]),
             stage: "distill WID catalysts-risks".into(),
         });
-        assert!(single.user.contains("\nWRITE-UP\nOne of this run's write-ups on the holding, under its topic.\n\nCatalysts and risks\nA ruling is due in Q4.\n"), "{}", single.user);
+        assert!(single.user.contains("\nWRITE-UP\nOne write-up on this holding, under its topic.\n\nCatalysts and risks\nA ruling is due in Q4.\n"), "{}", single.user);
         assert!(!single.user.contains("Share held."), "{}", single.user);
         assert!(
             single.user.contains(
@@ -680,7 +681,7 @@ mod tests {
             subject: DistillSubject::MergedDistillates(&outputs),
             stage: "distill WID merge".into(),
         });
-        assert!(merge.user.contains("\nWRITE-UPS\nThis run's write-ups on the holding, each already shortened, each under its topic, the contrary-evidence pass last.\n\nCompetitive / business position\nshort competitive-position\n"), "{}", merge.user);
+        assert!(merge.user.contains("\nWRITE-UPS\nThe write-ups on this holding, each already shortened, each under its topic, the contrary-evidence write-up last.\n\nCompetitive / business position\nshort competitive-position\n"), "{}", merge.user);
     }
 
     #[test]
@@ -815,8 +816,8 @@ mod tests {
         assert_eq!(out.distillation, DistillationRecord { shape: DistillationShape::Merged, calls: 1 });
         let calls = model.calls.take();
         assert_eq!(calls.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), vec!["distill WID", "analysis WID"]);
-        assert!(calls[0].1.contains("\nWRITE-UPS\nThis run's write-ups on the holding, each under its topic, the contrary-evidence pass last.\n\nCompetitive / business position\nShare held.\n\nCatalysts and risks\n"), "{}", calls[0].1);
-        assert!(calls[1].1.contains("\nWRITE-UPS\nThis run's research on the holding, the topics' write-ups shortened into one document.\n\ndistillate of distill WID\n"), "{}", calls[1].1);
+        assert!(calls[0].1.contains("\nWRITE-UPS\nThe write-ups on this holding, each under its topic, the contrary-evidence write-up last.\n\nCompetitive / business position\nShare held.\n\nCatalysts and risks\n"), "{}", calls[0].1);
+        assert!(calls[1].1.contains("\nWRITE-UPS\nThe research on this holding, the topics' write-ups shortened into one document.\n\ndistillate of distill WID\n"), "{}", calls[1].1);
         assert!(!calls[1].1.contains("Share held."), "the analysis reads the distillate, not the write-ups: {}", calls[1].1);
 
         // The merged prompt over the widest budget: the per-write-up shape,
@@ -859,8 +860,8 @@ mod tests {
                 "analysis WID",
             ]
         );
-        assert!(calls[0].1.contains("\nWRITE-UP\nOne of this run's write-ups on the holding, under its topic.\n\nCompetitive / business position\nShare held.\n"), "{}", calls[0].1);
-        assert!(calls[3].1.contains("each already shortened, each under its topic, the contrary-evidence pass last.\n\nCompetitive / business position\ndistillate of distill WID competitive-position\n"), "{}", calls[3].1);
+        assert!(calls[0].1.contains("\nWRITE-UP\nOne write-up on this holding, under its topic.\n\nCompetitive / business position\nShare held.\n"), "{}", calls[0].1);
+        assert!(calls[3].1.contains("each already shortened, each under its topic, the contrary-evidence write-up last.\n\nCompetitive / business position\ndistillate of distill WID competitive-position\n"), "{}", calls[3].1);
         assert!(calls[3].1.contains("\nContrary evidence\ndistillate of distill WID disconfirming\n"), "{}", calls[3].1);
         assert!(calls[4].1.contains("\nPRIOR ANALYSIS (written 2026-08-01)\nThe prior analysis.\n"), "{}", calls[4].1);
         assert!(calls[4].1.contains("\n\ndistillate of distill WID merge\n"), "{}", calls[4].1);

@@ -1,6 +1,6 @@
 # Analysis — stock, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v79`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v80`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The analysis call is a thinking call with no grammar: Part 1 the holding header and FETCHED VALUES as the brief carries them, on a continuity run PRIOR ANALYSIS, then WRITE-UPS; Part 2 what the analysis consolidates and its length band. The analysis is the only research artifact the next run reads.
@@ -20,7 +20,7 @@ The statements are sized to the engine's persisted metrics and the consensus to 
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 7227 chars — the messages and tools as serialized |
+| Prompt material | 7219 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -29,7 +29,7 @@ You are an investment analyst consolidating one holding's research for a portfol
 the message gives the inputs. Part 2 says what the analysis covers and how to return it.
 ~~~~
 
-## User message (6844 chars)
+## User message (6836 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -157,7 +157,7 @@ RATES
 - Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%
 
 WRITE-UPS
-This run's research on the holding, one write-up per topic, the contrary-evidence pass last.
+The research on this holding, one write-up per topic, the contrary-evidence write-up last.
 
 Competitive / business position
 [stub: the topic's write-up so far — the root pass's account]
@@ -171,7 +171,7 @@ Contrary evidence
 ======== PART 2: TASK ========
 
 Write the holding's analysis as plain text — no code fence, no JSON, no heading before the first
-line. It consolidates what this run's research established on the holding: what the write-ups under
+line. It consolidates what the research on this holding established: what the write-ups under
 WRITE-UPS establish, where their sources disagree, and what stays unanswered. Each figure is quoted
 with the date or period its source gives for it, and its source is named: the page address the
 write-up names, or FETCHED VALUES where the figure comes from there.

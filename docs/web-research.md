@@ -21,9 +21,11 @@ The topic's text follows: the topic's questions; on a follow-up pass the questio
 The order serves the runtime's prompt cache: consecutive topic conversations on one holding share their leading text byte for byte, and the topic text after it stays short enough to sit past the previous conversation's saved checkpoint ([local-model-operations.md §Serving & memory](local-model-operations.md#serving--memory-apple-silicon-128-gb)).
 A truncated or re-read page shortens that shared prefix, and the saving is an expectation of the runtime until a run's serve log confirms it.
 Part 2 states what to find, that FETCHED VALUES is background that shapes how the questions are researched, how to weigh a source (a source tier nearer 0 and an extraction quality nearer 1 preferred; a weak source lowers confidence, it does not exclude; a figure that cannot be right is a defect of the source), the per-reply tool-call bound, and when to stop — a reply with no tool call.
+On a continuity run it also states that PRIOR ANALYSIS and PRIOR THESIS are background that shapes how the questions are researched, and that the falsifiers and triggers under PRIOR THESIS name what to look for evidence of since its date.
 Where pages are shown, it asks the model to read them before searching for the remaining answers; a brief with no page shown asks to search first.
 The model judges what the shown pages leave unanswered; there is no question-status tool and no app-assigned answered list.
 The follow-up pass's opening states what to find on the follow-up question, then that the topic's questions are what that question serves and are not searched on the pass.
+It also states that the content under WRITE-UP SO FAR is what the research on the topic has established, to be searched for what it leaves open and not for what it already states.
 The disconfirming pass's opening states what to find on its question, then that the write-ups are what that question tests, searched for evidence against them and not for more evidence for them.
 The fetch clause names the news leads as candidates beside the search results, under the one test of what is most likely to answer the questions.
 The gathering system message names the two tools its verbs map onto, `web_search` and `web_fetch`.

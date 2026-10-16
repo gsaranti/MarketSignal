@@ -287,11 +287,8 @@ pub(crate) fn research_brief(
         header: holding_header(dossier),
         fetched_values: fetched_values_section(dossier, rates),
         leads: dossier.news_leads.clone(),
-        prior_documents: format!(
-            "{}{}",
-            prior_analysis_section(dossier),
-            prior_thesis_section(dossier, prior_split)
-        ),
+        prior_analysis: prior_analysis_section(dossier),
+        prior_thesis: prior_thesis_section(dossier, prior_split),
     }
 }
 
@@ -1887,7 +1884,7 @@ fn hurdle_read_section(h: &engine::HurdleRead) -> String {
             rate * 100.0,
             format!("{:?}", h.state).to_lowercase(),
         ),
-        _ => "\nCAPITAL EFFICIENCY\nNo assessment this run.\n".to_string(),
+        _ => "\nCAPITAL EFFICIENCY\nNo assessment.\n".to_string(),
     }
 }
 
@@ -2024,7 +2021,7 @@ fn document_section(
         }
         Some(SplitContext::Unverifiable) => p.push_str(
             "Whether a share split re-based the price series since this document was written \
-             could not be verified this run: the close its prices were anchored to is missing \
+             could not be verified: the close its prices were anchored to is missing \
              from the fetched window. The document is as written; its prices may sit on a \
              pre-split basis.\n",
         ),
@@ -3434,7 +3431,7 @@ fn capital_efficiency_section(h: &engine::HurdleRead) -> String {
             bull * 100.0,
             rate * 100.0,
         ),
-        _ => "\nCAPITAL EFFICIENCY\nNo assessment this run.\n".to_string(),
+        _ => "\nCAPITAL EFFICIENCY\nNo assessment.\n".to_string(),
     }
 }
 
@@ -3650,8 +3647,8 @@ fn statement_basis_line(
             b.label()
         ),
         None => "Flow metrics (net margin, gross margin, revenue growth, P/E, P/S) have no \
-                 statement basis this run — no income-statement lines were available — so they \
-                 are not evaluable here."
+                 statement basis — no income-statement lines were available — so they are not \
+                 evaluable here."
             .to_string(),
     };
     let instants_line = match equity_source {
@@ -3659,8 +3656,8 @@ fn statement_basis_line(
             "Balance-sheet metrics (debt / equity, P/B) are from {}.",
             src.label()
         ),
-        None => "Balance-sheet metrics (debt / equity, P/B) have no balance sheet this run — no \
-                 equity line was available — so they are not evaluable here."
+        None => "Balance-sheet metrics (debt / equity, P/B) have no balance sheet — no equity \
+                 line was available — so they are not evaluable here."
             .to_string(),
     };
     format!("{flow_line} {instants_line}\n")
@@ -5718,7 +5715,7 @@ pub(crate) mod tests {
         assert!(
             message.contains(
                 "\nPRIOR THESIS (written 2026-08-03)\nWhether a share split re-based the price \
-                 series since this document was written could not be verified this run: the \
+                 series since this document was written could not be verified: the \
                  close its prices were anchored to is missing from the fetched window. The \
                  document is as written; its prices may sit on a pre-split basis.\nThesis: hold AAPL"
             ),
@@ -5792,7 +5789,8 @@ pub(crate) mod tests {
     #[test]
     fn the_research_brief_carries_prior_analysis_before_prior_thesis_each_dated() {
         let mut d = dossier(AssetClass::Stock, strong_financials());
-        assert_eq!(research_brief(&d, rates_static(), None).prior_documents, "");
+        let debut = research_brief(&d, rates_static(), None);
+        assert!(debut.prior_analysis.is_empty() && debut.prior_thesis.is_empty());
         let (v, _) = analyze_holding(&StubAnalyst, &d, &rates(), "2026-08-03").unwrap();
         d.prior_verdict = Some(v);
         d.prior_vintage = Some("2026-08-03T20:00:00Z".into());
@@ -5807,7 +5805,8 @@ pub(crate) mod tests {
                 value: bar.value * 2.0,
             }),
         });
-        let docs = research_brief(&d, rates_static(), None).prior_documents;
+        let brief = research_brief(&d, rates_static(), None);
+        let docs = format!("{}{}", brief.prior_analysis, brief.prior_thesis);
         assert!(
             docs.starts_with(
                 "\nPRIOR ANALYSIS (written 2026-08-01)\nA share split since this document was \
@@ -5827,7 +5826,7 @@ pub(crate) mod tests {
             date: "1999-01-04".into(),
             value: 1.0,
         });
-        assert!(prior_analysis_section(&d).contains("could not be verified this run"), "{}", prior_analysis_section(&d));
+        assert!(prior_analysis_section(&d).contains("could not be verified"), "{}", prior_analysis_section(&d));
         d.prior_analysis.as_mut().unwrap().anchor = None;
         let bare = prior_analysis_section(&d);
         assert!(bare.starts_with("\nPRIOR ANALYSIS (written 2026-08-01)\nThe prior analysis, verbatim.\n"), "{bare}");
@@ -5850,7 +5849,8 @@ pub(crate) mod tests {
         assert!(!thesis.contains("PRIOR ANALYSIS"), "{thesis}");
         assert!(thesis.contains("\nANALYSIS\nThis run's analysis.\n") && thesis.contains("\nPRIOR THESIS (written 2026-08-03)\n"), "{thesis}");
         d.prior_analysis = None;
-        let docs = research_brief(&d, rates_static(), None).prior_documents;
+        let brief = research_brief(&d, rates_static(), None);
+        let docs = format!("{}{}", brief.prior_analysis, brief.prior_thesis);
         assert!(docs.starts_with("\nPRIOR THESIS (written 2026-08-03)\n") && !docs.contains("PRIOR ANALYSIS"), "{docs}");
     }
 
@@ -7386,7 +7386,7 @@ pub(crate) mod tests {
             assert_eq!(prompt.matches("Name the returns you weighed by their values").count(), 1);
             let h = &engine.hurdle;
             if state == crate::portfolio::HurdleState::Unscorable {
-                assert!(prompt.contains("\nCAPITAL EFFICIENCY\nNo assessment this run.\n"), "{prompt}");
+                assert!(prompt.contains("\nCAPITAL EFFICIENCY\nNo assessment.\n"), "{prompt}");
             } else {
                 assert!(
                     prompt.contains(&format!(
@@ -7433,7 +7433,7 @@ pub(crate) mod tests {
                 dossier: &d, subject: ActionSubject::Priced { graded: &low, engine: &no_rate, pre_profit: None },
                 engine_set: &[Action::Hold], profile: &d.profile,
             });
-            assert!(prompt.contains("\nCAPITAL EFFICIENCY\nNo assessment this run.\n"), "{prompt}");
+            assert!(prompt.contains("\nCAPITAL EFFICIENCY\nNo assessment.\n"), "{prompt}");
             assert!(!prompt.contains("; hurdle "), "{prompt}");
         }
     }
@@ -7544,7 +7544,7 @@ pub(crate) mod tests {
         // Each stamp moves with every change to its prompts or persisted
         // shapes, so an interrupted pre-change run cannot resume into the new
         // contract; the pins here move with each bump.
-        assert_eq!(PROMPT_VERSION, "portfolio-v79");
+        assert_eq!(PROMPT_VERSION, "portfolio-v80");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v26"
@@ -8631,7 +8631,8 @@ pub(crate) mod tests {
             header: "HOLDING\nAAPL (Apple).\nPrice: $195.00 per share.\nDate: 2026-08-03.\n".into(),
             fetched_values: "\nFETCHED VALUES\nQuote: 195.00.\n".into(),
             leads: vec![],
-            prior_documents: String::new(),
+            prior_analysis: String::new(),
+            prior_thesis: String::new(),
         };
         let write_ups = [distill::WriteUp {
             key: "competitive-position".into(),
@@ -8683,8 +8684,8 @@ pub(crate) mod tests {
         assert!(d_req.tools.is_none() && d_req.format_schema.is_none());
         assert!(
             d_req.messages[1].content.contains(
-                "\nWRITE-UPS\nThis run's write-ups on the holding, each under its topic, the \
-                 contrary-evidence pass last.\n"
+                "\nWRITE-UPS\nThe write-ups on this holding, each under its topic, the \
+                 contrary-evidence write-up last.\n"
             ),
             "{}",
             d_req.messages[1].content

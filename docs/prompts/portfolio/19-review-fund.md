@@ -1,6 +1,6 @@
 # Self-review — priced fund, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v79`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v80`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: SPMO, on a continuity run over the prior position of 2026-09-02, its fund context synthetic.
 The review is a thinking call with no grammar, on a continuity run only: Part 1 the holding header and FETCHED VALUES, PRIOR POSITION, PRIOR THESIS, this run's ANALYSIS and REALIZED; Part 2 what the review covers, in order, and its length band. The review reaches this run's thesis document alone.
@@ -19,7 +19,7 @@ The fund's name, mandate, expense ratio, assets, NAV, weights and distributions 
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 7830 chars — the messages and tools as serialized |
+| Prompt material | 7827 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,7 +28,7 @@ You are an investment analyst reviewing the prior position on one holding for a 
 Part 1 of the message gives the inputs. Part 2 says what the review covers and how to return it.
 ~~~~
 
-## User message (7459 chars)
+## User message (7456 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -149,7 +149,7 @@ No check landed after the prior analysis was written: the scores above are the o
 thesis document under PRIOR THESIS.
 
 COMPUTED READS
-The computed reads at the prior analysis beside this run's, then → now; the prior price bands on
+The computed reads at the prior analysis beside today's, then → now; the prior price bands on
 today's price basis.
 - grade: C → C.
 - scores (0 to 100, higher is better; valuation higher means more attractive, risk higher means more

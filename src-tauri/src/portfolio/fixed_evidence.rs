@@ -537,7 +537,7 @@ fn attempt_6_interpretation_packets_carry_no_account_economics() {
                 f.symbol
             ),
             (None, None) => assert!(
-                taxable.contains("Balance-sheet metrics (debt / equity, P/B) have no balance sheet this run"),
+                taxable.contains("Balance-sheet metrics (debt / equity, P/B) have no balance sheet"),
                 "{}: {taxable}",
                 f.symbol
             ),
@@ -1525,12 +1525,12 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 );
                 assert!(part2.contains("where the question allows;") && !part2.contains("the questions"), "{}: {part2}", s.label);
                 assert!(
-                    part2.contains("under HOLDING. The questions under TOPIC are what that question serves; this pass does not search them.\n"),
+                    part2.contains("under HOLDING. The questions under TOPIC are what that question serves; this conversation does not search them. The content under WRITE-UP SO FAR is what the research on this topic has established; search for what it leaves open on the question, not for what it already states.\n"),
                     "{}: {part2}",
                     s.label
                 );
-                assert!(part1.contains("\nFOLLOW-UP\nThe question this pass pursues.\n"), "{}: {part1}", s.label);
-                assert!(part1.contains("\nWRITE-UP SO FAR\nThe topic's write-up from its earlier passes.\n"), "{}: {part1}", s.label);
+                assert!(part1.contains("\nFOLLOW-UP\nThe question this conversation pursues.\n"), "{}: {part1}", s.label);
+                assert!(part1.contains("\nWRITE-UP SO FAR\nWhat the research on this topic has established so far.\n"), "{}: {part1}", s.label);
             } else if !s.label.contains("disconfirming") {
                 assert!(
                     part2.contains("1. Search for what the questions ask") && !part2.contains("Read the pages"),
@@ -1550,7 +1550,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 );
                 assert!(part2.contains("where the question allows;") && !part2.contains("the questions"), "{}: {part2}", s.label);
                 assert!(
-                    part1.contains("\nWRITE-UPS SO FAR\nThis run's write-ups on the holding, each under its topic.\n"),
+                    part1.contains("\nWRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\n"),
                     "{}: {part1}",
                     s.label
                 );
@@ -1572,7 +1572,12 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             );
             assert!(!part2.contains("applies to the subjects"), "{}: {part2}", s.label);
             assert!(part2.contains("a figure that cannot be right is a defect of the source"), "{}: {part2}", s.label);
-            assert!(!part2.contains("PRIOR"), "{}: Part 2 points at a prior block\n{part2}", s.label);
+            assert_eq!(
+                part2.contains("\nUse PRIOR ANALYSIS and PRIOR THESIS as background to shape how "),
+                part1.contains("\nPRIOR THESIS (written "),
+                "{}: Part 2 and the prior documents disagree\n{part2}",
+                s.label
+            );
         }
         if s.label.contains("continuity") {
             assert!(part1.contains("\nPRIOR THESIS (written 2026-09-02)\n") && !part1.contains("STANDING CONDITIONS"), "{}: {part1}", s.label);
@@ -1586,7 +1591,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
         }
         if s.label.starts_with("synthesis") && s.label.contains("follow-up pass") {
             assert!(
-                part2.contains("Rewrite the write-up under WRITE-UP SO FAR whole as plain text — no code fence, no JSON, no heading before the first line, folding in what EVIDENCE shows on the question under FOLLOW-UP, so the topic has one write-up:"),
+                part2.contains("Rewrite the content under WRITE-UP SO FAR whole as plain text — no code fence, no JSON, no heading before the first line, folding in what EVIDENCE shows on the question under FOLLOW-UP, so the topic has one write-up:"),
                 "{}: {part2}",
                 s.label
             );
@@ -1598,7 +1603,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 "{}: {part2}",
                 s.label
             );
-            assert!(part1.contains("\nWRITE-UPS SO FAR\nThis run's write-ups on the holding, each under its topic.\n"), "{}: {part1}", s.label);
+            assert!(part1.contains("\nWRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\n"), "{}: {part1}", s.label);
         }
         if s.label.contains("the follow-up ask") {
             assert_eq!(s.appended.len(), 2, "{}", s.label);

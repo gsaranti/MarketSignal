@@ -1,6 +1,6 @@
 # Research gathering — the disconfirming pass
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v79`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v80`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The disconfirming pass, run once per holding after its topics: the run's write-ups so far are the target and the task is to find what contradicts them.
@@ -21,7 +21,7 @@ The statements are sized to the engine's persisted metrics and the consensus to 
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the two tools below; no `format` grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 9329 chars — the messages and tools as serialized |
+| Prompt material | 9358 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -31,7 +31,7 @@ gives the inputs. Part 2 states what to find and when to stop. You search with w
 with web_fetch, and write no findings in this conversation.
 ~~~~
 
-## User message (7610 chars)
+## User message (7639 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -173,7 +173,7 @@ Contrary evidence
 contrary data, claims that have failed, credible bear arguments?
 
 WRITE-UPS SO FAR
-This run's write-ups on the holding, each under its topic.
+What the research on this holding has established so far, each topic under its heading.
 
 Competitive / business position
 [stub: the topic's write-up so far — the root pass's account]

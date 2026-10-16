@@ -1,6 +1,6 @@
 # Research synthesis — follow-up pass
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v79`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v80`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The synthesis conversation closes a pass: no tools, no grammar, no history — the evidence packet is rebuilt from the run's store behind the holding header and FETCHED VALUES, and the reply is the pass's write-up as prose, read as text and validated by nothing.
@@ -21,7 +21,7 @@ The statements are sized to the engine's persisted metrics and the consensus to 
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 8935 chars — the messages and tools as serialized |
+| Prompt material | 8952 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -31,7 +31,7 @@ review. Part 1 of the message gives the inputs. Part 2 says what the write-up co
 return it.
 ~~~~
 
-## User message (8529 chars)
+## User message (8546 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -186,16 +186,16 @@ Competitive / business position
 - Which competitors or substitutes are gaining or losing against it?
 
 FOLLOW-UP
-The question this pass pursues.
+The question this conversation pursues.
 [stub: the follow-up question the root pass's synthesis returned]
 
 WRITE-UP SO FAR
-The topic's write-up from its earlier passes.
+What the research on this topic has established so far.
 [stub: the topic's write-up so far — the root pass's account]
 
 ======== PART 2: TASK ========
 
-Rewrite the write-up under WRITE-UP SO FAR whole as plain text — no code fence, no JSON, no heading
+Rewrite the content under WRITE-UP SO FAR whole as plain text — no code fence, no JSON, no heading
 before the first line, folding in what EVIDENCE shows on the question under FOLLOW-UP, so the topic
 has one write-up: what the research establishes on each question under TOPIC, where pages disagree,
 and what the evidence leaves unanswered. Each figure is quoted with the date or period its source

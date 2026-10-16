@@ -1,6 +1,6 @@
 # Distillation — the merged write-ups
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v74`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v80`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 A distillation is a non-thinking call with no grammar on the resident reasoner (the fast tier where the roster has one), issued only where the analysis prompt is over budget; the shape is the orchestrator's choice from size, never the model's, and the write-ups persist on the audit as written.
@@ -18,7 +18,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 1306 chars — the messages and tools as serialized |
+| Prompt material | 1304 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -27,7 +27,7 @@ You are an investment analyst shortening research write-ups on one holding for a
 Part 1 of the message gives the inputs. Part 2 says what the document keeps and how to return it.
 ~~~~
 
-## User message (1013 chars)
+## User message (1011 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -37,7 +37,7 @@ Price: $358.97 per share.
 Date: 2026-09-16.
 
 WRITE-UPS
-This run's write-ups on the holding, each under its topic, the contrary-evidence pass last.
+The write-ups on this holding, each under its topic, the contrary-evidence write-up last.
 
 Competitive / business position
 [stub: the topic's write-up so far — the root pass's account]

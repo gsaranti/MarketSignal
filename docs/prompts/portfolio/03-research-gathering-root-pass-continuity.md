@@ -1,6 +1,6 @@
 # Research gathering — root pass on a continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v79`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v80`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over a prior analysis of 2026-09-02.
 A root pass on a continuity run: the prior run's analysis and thesis document ride the holding-constant block verbatim under their dates — PRIOR ANALYSIS, the holding's research memory, then PRIOR THESIS — so research knows what was established and what the falsifiers and triggers are, and tests them.
@@ -20,7 +20,7 @@ The statements are sized to the engine's persisted metrics and the consensus to 
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the two tools below; no `format` grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 11971 chars — the messages and tools as serialized |
+| Prompt material | 12162 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +30,7 @@ gives the inputs. Part 2 states what to find and when to stop. You search with w
 with web_fetch, and write no findings in this conversation.
 ~~~~
 
-## User message (10245 chars)
+## User message (10435 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -216,6 +216,8 @@ Competitive / business position
 ======== PART 2: TASK ========
 Find what the web shows on each question under TOPIC for this holding, as of the date under HOLDING.
 Use FETCHED VALUES as background to shape how the questions are researched.
+Use PRIOR ANALYSIS and PRIOR THESIS as background to shape how the questions are researched; the
+falsifiers and triggers under PRIOR THESIS name what to look for evidence of since its date.
 
 1. Search for what the questions ask, then fetch and read the results and the leads under NEWS LEADS
 most likely to answer them. Prefer a source tier nearer 0 and an extraction quality nearer 1 where

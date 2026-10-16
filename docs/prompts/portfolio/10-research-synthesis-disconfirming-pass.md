@@ -1,6 +1,6 @@
 # Research synthesis — the disconfirming pass
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v79`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v80`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The synthesis conversation closes a pass: no tools, no grammar, no history — the evidence packet is rebuilt from the run's store behind the holding header and FETCHED VALUES, and the reply is the pass's write-up as prose, read as text and validated by nothing.
@@ -20,7 +20,7 @@ The statements are sized to the engine's persisted metrics and the consensus to 
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 8886 chars — the messages and tools as serialized |
+| Prompt material | 8926 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,7 +30,7 @@ review. Part 1 of the message gives the inputs. Part 2 says what the write-up co
 return it.
 ~~~~
 
-## User message (8480 chars)
+## User message (8520 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -185,7 +185,7 @@ Contrary evidence
 contrary data, claims that have failed, credible bear arguments?
 
 WRITE-UPS SO FAR
-This run's write-ups on the holding, each under its topic.
+What the research on this holding has established so far, each topic under its heading.
 
 Competitive / business position
 [stub: the topic's write-up so far — the root pass's account]
@@ -195,13 +195,14 @@ Recent results and estimate revisions
 
 ======== PART 2: TASK ========
 
-Write the pass's write-up as plain text — no code fence, no JSON, no heading before the first line.
-It states how EVIDENCE bears on the write-ups under WRITE-UPS SO FAR: which it contradicts or
-weakens and how, which it leaves standing, and any contrary evidence that stands on its own. Each
-figure is quoted with the date or period its source gives for it, and its source is named: the
-address of the page under EVIDENCE that states it, or FETCHED VALUES where the figure comes from
-there. Weigh each page by its source tier and extraction quality; a weak source lowers confidence in
-what it says, it does not exclude it, and a figure that cannot be right is a defect of the source.
+Write the contrary-evidence write-up as plain text — no code fence, no JSON, no heading before the
+first line. It states how EVIDENCE bears on the write-ups under WRITE-UPS SO FAR: which it
+contradicts or weakens and how, which it leaves standing, and any contrary evidence that stands on
+its own. Each figure is quoted with the date or period its source gives for it, and its source is
+named: the address of the page under EVIDENCE that states it, or FETCHED VALUES where the figure
+comes from there. Weigh each page by its source tier and extraction quality; a weak source lowers
+confidence in what it says, it does not exclude it, and a figure that cannot be right is a defect of
+the source.
 
 The write-up runs 400 to 900 words.
 ~~~~

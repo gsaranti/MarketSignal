@@ -1,6 +1,6 @@
 # Research gathering — follow-up pass
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v79`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v80`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The follow-up pass on the same topic, taken when the root pass's synthesis answered the follow-up ask with a question.
@@ -24,7 +24,7 @@ The statements are sized to the engine's persisted metrics and the consensus to 
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the two tools below; no `format` grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 9931 chars — the messages and tools as serialized |
+| Prompt material | 10123 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -34,7 +34,7 @@ gives the inputs. Part 2 states what to find and when to stop. You search with w
 with web_fetch, and write no findings in this conversation.
 ~~~~
 
-## User message (8204 chars)
+## User message (8396 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -186,16 +186,18 @@ Competitive / business position
 - Which competitors or substitutes are gaining or losing against it?
 
 FOLLOW-UP
-The question this pass pursues.
+The question this conversation pursues.
 [stub: the follow-up question the root pass's synthesis returned]
 
 WRITE-UP SO FAR
-The topic's write-up from its earlier passes.
+What the research on this topic has established so far.
 [stub: the topic's write-up so far — the root pass's account]
 
 ======== PART 2: TASK ========
 Find what the web shows on the question under FOLLOW-UP for this holding, as of the date under
-HOLDING. The questions under TOPIC are what that question serves; this pass does not search them.
+HOLDING. The questions under TOPIC are what that question serves; this conversation does not search
+them. The content under WRITE-UP SO FAR is what the research on this topic has established; search
+for what it leaves open on the question, not for what it already states.
 Use FETCHED VALUES as background to shape how the question under FOLLOW-UP is researched.
 
 1. Read the pages under PAGES ALREADY RETRIEVED against the question under FOLLOW-UP. Search for
