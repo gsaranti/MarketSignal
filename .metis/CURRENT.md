@@ -6,15 +6,16 @@ Trade Opportunities: the job spine, engine arm and gate — next in the backlog 
 
 ## What happened
 
-The prompt review's analysis files (15–17) are reviewed and closed: slice 6 landed (`a1ee4c4`, Metis approve-with-nits applied, Codex approved); the stamp is `portfolio-v83`.
-The analysis is no longer a distillation task: the role line names its output ("writing the analysis of one holding's research"), the task opens on "the research under WRITE-UPS" (true over a distillate too) and asks what that research establishes "when its topics are read together".
-PRIOR ANALYSIS is named as "background and the foundation the new analysis builds on" with no carry rule: "keep what it says where the research does not revisit it" was refused as binding the model to material the write-ups merely omit, and the docs now say what carries forward is the model's judgment — the review's first docs change (Step 6d, stage 4, the research-memory paragraph).
-The WRITE-UPS gloss names the contrary-evidence write-up last only when one closes the list, since the disconfirming pass may write none.
-The split-context line above a prior document speaks in the model's terms, the unverifiable branch naming the last close before the session (the anchor bar).
+The prompt review's review files (18–20) are closed and a whole-set convention landed: slice 7 (`c713860`, review waived by the user) and slice 8 (`6592ee0`, Metis approve-with-nits taken, Codex approved over three rounds); the stamp is `portfolio-v85`.
+Every Portfolio prompt now heads its blocks `# LABEL` and the groups inside a block `## LABEL`, the Part banners unchanged, stated once in `local-models.md §Prompt posture`; the five sections that sit under COMPUTED on the priced messages and at top level on the role/risk ones take a `Tier` from their caller; COMPUTED's gloss no longer names the label it runs up to.
+The review's Part 1 reads today's material, then the prior's, then REALIZED.
+REALIZED lost its per-position outcome group — on a weekly cadence a prior position's horizons never pass before the next run, and resolutions reach the model through CHECKS SINCE THE PRIOR ANALYSIS — relabelled ACCURACY SCORES as ACCURACY RECORD, describes each group once at the group in short sentences (the close rule stated once, "check" and "computed" defined at first use), leaves a no-price check out of the list, and its item 2 allows "cannot be told, from what is under FETCHED VALUES, ANALYSIS and REALIZED".
+Rulings that bind the remaining files: glosses are short sentences or bullets, never a semicolon chain; a block's gloss never restates its groups' glosses; "the prior analysis" stays the time marker; a shared heading change re-stamps the whole set.
+The docs moved with each change (Steps 6b and 6e, stage 5, §Outcome learning, TO Step 5e's mirrored clause).
 
 ## Current state
 
-The prompt review continues at file 18, the first review prompt; files 18–20 are unread end to end; the next stamp is `portfolio-v84`.
+The prompt review continues at file 21, the first thesis-document prompt; files 21–31 are unread in the new format; the next stamp is `portfolio-v86`.
 The TO spine stays next in the backlog and unplanned; the plan-task decides its task breakdown.
 The dev-run batch (every Portfolio item's dev run) and the big run are the user's call; the next big run starts testing afresh, every earlier attempt's findings retired.
 
@@ -26,7 +27,7 @@ Residue, grouped by what triggers it:
 3. Fetch each candidate's deep history once through `fetch_dated_bars` and derive its closes from the bars.
 4. Verify FMP's light-EOD volume and its five annual income rows live at the spine's dev run.
 5. `§Step 5h` restates the entry gate's legs beside the entry asymmetry row. It's tagged "later docs pass", but the spine will be editing that section anyway.
-6. The TO docs still describe the TO analysis as "consolidating what this run's research established" with the confirm / revise / untouched sort (`trade-opportunities-workflow.md §Step 5e`, `trade-opportunities.md §The pipeline`); Portfolio's Step 6d is the precedent when the TO prompts are reviewed.
+6. The TO docs still describe the TO analysis as "consolidating what this run's research established" with the confirm / revise / untouched sort (`trade-opportunities-workflow.md §Step 5e`, `trade-opportunities.md §The pipeline`); Portfolio's Step 6d is the precedent when the TO prompts are reviewed, and TO Step 5e's REALIZED list should be read against Portfolio's slice-8 shape then.
 
 **After the dev-run batch (your call)**
 7. Shadow-tune the drafted cutoffs, anchors and cap bands through `sweep_grade_bands`.
@@ -59,5 +60,5 @@ None.
 
 ## Where to start
 
-`/metis-session-start`, then the prompt review on file 18: read it against `local-models.md §Prompt posture`, the review call's contract in `portfolio-workflow.md §Step 6e`, the accuracy record in `portfolio-analysis.md §Outcome learning` and the review's length band in `§Starting parameters`, under the lexicon rule; the first known finding is the REALIZED block's "re-based the price series" and "the close its prices were anchored to is missing from the fetched series" in `review.rs`, the split-context line's wording its precedent; check the opening sentence names its input, every noun the system message uses is introduced, and the task's phrases are the analysis's and the thesis document's own; put findings through the selector; land accepted changes, bump the stamp to `portfolio-v84` on the first, regenerate the set and read the diff; `/metis-review-task` then Codex review each slice; commit on the user's word. Then files 19 (the fund review) and 20 (the role/risk review) one at a time.
+`/metis-session-start`, then the prompt review on file 21: read it against the thesis-document contract in `portfolio-workflow.md §Step 6f`, `portfolio-analysis.md §The holding verdict` and `§Intrinsic verdict`, and the document's length band in `§Starting parameters`, under the lexicon rule and the slice-8 conventions (every block `#`, every group `##`, glosses in short sentences, one description per group, no app concept); the first known finding is residue 10; check the role line names its output, the opening names its input, every noun the system message uses is introduced, and the task's phrases are the analysis's and the review's own; put findings through the selector; land accepted changes, bump the stamp to `portfolio-v86` on the first, regenerate the set and read the diff; `/metis-review-task` then Codex review; commit on the user's word. Then files 22–27 one at a time.
 Never propose the run.
