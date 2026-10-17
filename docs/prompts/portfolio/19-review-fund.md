@@ -1,9 +1,9 @@
 # Self-review — priced fund, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v81`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v84`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: SPMO, on a continuity run over the prior position of 2026-09-02, its fund context synthetic.
-The review is a thinking call with no grammar, on a continuity run only: Part 1 the holding header and FETCHED VALUES, PRIOR POSITION, PRIOR THESIS, this run's ANALYSIS and REALIZED; Part 2 what the review covers, in order, and its length band. The review reaches this run's thesis document alone.
+The review is a thinking call with no grammar, on a continuity run only: Part 1 the holding header and FETCHED VALUES, this run's ANALYSIS, then PRIOR POSITION and PRIOR THESIS, then REALIZED; Part 2 what the review covers, in order, and its length band. The review reaches this run's thesis document alone.
 A priced fund takes the same call; with no check landed since the prior analysis, the fixed sentence says the scores shown are the ones it read. The prior's read-through mark here is hand-written.
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the dates, URLs and headers around it are as rendered.
 The fund's name, mandate, expense ratio, assets, NAV, weights and distributions — the PROFILE, WEIGHTS and DIVIDENDS rows and the FUND block — are synthetic values layered onto the fixture for these examples alone.
@@ -19,7 +19,7 @@ The fund's name, mandate, expense ratio, assets, NAV, weights and distributions 
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 7827 chars — the messages and tools as serialized |
+| Prompt material | 7847 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,7 +28,7 @@ You are an investment analyst reviewing the prior position on one holding for a 
 Part 1 of the message gives the inputs. Part 2 says what the review covers and how to return it.
 ~~~~
 
-## User message (7456 chars)
+## User message (7476 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -64,6 +64,10 @@ QUOTE AND CLOSES
 
 RATES
 - Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%
+
+ANALYSIS
+[stub: this run's analysis — the research consolidated across the topics, as the analysis call
+returned it]
 
 PRIOR POSITION
 The position stated at the prior analysis: its date, the price then, the action with its rationale,
@@ -114,12 +118,8 @@ under severe cases). My bull case assumes momentum factor continuation into AI l
 with potential net-short squeeze convexity as noted in the house view; my bear reflects valuation
 reset scenario if HY spreads breach 3.0% and rotation to defensives accelerates.
 
-ANALYSIS
-[stub: this run's analysis — the research consolidated across the topics, as the analysis call
-returned it]
-
 REALIZED
-What has happened since the prior analysis, computed from the fetched prices and the stored records,
+What has happened since the prior analysis, computed from the daily closes and the stored records,
 under the labels below.
 
 PRICE
@@ -129,7 +129,7 @@ Closes since the prior analysis: high $144.19 on 2026-09-14, low $139.86 on 2026
 EXPECTED PRICES
 Each expected price under PRIOR POSITION at its horizon date: once the date has passed, the close on
 it — or the last close within 5 sessions before it — and the score, 100 × (1 − |expected − close| ÷
-close), floored at 0; before it, not reached, the path so far under PRICE.
+close), floored at 0; a date not yet passed reads not reached, with the path so far under PRICE.
 - three months: none stated.
 - twelve months (2027-09-02): not reached.
 - three years: none stated.

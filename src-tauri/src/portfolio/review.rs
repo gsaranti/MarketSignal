@@ -66,10 +66,10 @@ and how to return it."
     let mut user = String::from(PART_1);
     user.push_str(&pipeline::holding_header(d));
     user.push_str(&pipeline::fetched_values_section(d, input.rates));
+    user.push_str(&pipeline::analysis_section(d, input.analysis));
     let position = prior_position_section(input);
     user.push_str(&position.text);
     user.push_str(&pipeline::prior_thesis_section(d, input.prior_split));
-    user.push_str(&pipeline::analysis_section(d, input.analysis));
     user.push_str(&realized_section(input));
     user.push_str(&task_section(input, &position));
     DistillPrompt { system, user }
@@ -154,12 +154,13 @@ fn per_share(v: Option<(f64, bool)>) -> String {
 fn basis_gloss(bridge: Option<f64>) -> &'static str {
     match bridge {
         None => {
-            " A price shown as withheld could not be put on today's price basis: whether a share \
-             split re-based the price series since the prior analysis could not be verified."
+            " A price shown as withheld could not be put on today's basis: the daily closes under \
+             QUOTE AND CLOSES do not include the last close before the prior analysis, so whether \
+             a share split re-based the share price since could not be verified."
         }
         Some(f) if f != 1.0 => {
-            " A price marked bridged was converted onto today's price basis across a share split \
-             since the prior analysis."
+            " A price marked bridged was put on today's basis across a share split since the \
+             prior analysis."
         }
         Some(_) => "",
     }
@@ -338,8 +339,9 @@ fn cause_words(cause: UnscorableCause) -> String {
         UnscorableCause::NoAnchor => {
             "the forecast carries no close to put its prices on today's basis".to_string()
         }
-        UnscorableCause::AnchorBarMissing => "the close its prices were anchored to is missing \
-             from the fetched series, so its basis could not be verified"
+        UnscorableCause::AnchorBarMissing => "the daily closes read did not include the last \
+             close before the forecast's date, so whether a share split re-based the share price \
+             since could not be verified"
             .to_string(),
         UnscorableCause::NoCloseInProximity => format!(
             "no close within {} sessions before the date",
@@ -370,7 +372,7 @@ fn realized_section(input: &ReviewInput) -> String {
 fn priced_realized(input: &ReviewInput, engine_now: &EngineOutput) -> String {
     let d = input.dossier;
     let mut p = String::from(
-        "\nREALIZED\nWhat has happened since the prior analysis, computed from the fetched prices \
+        "\nREALIZED\nWhat has happened since the prior analysis, computed from the daily closes \
          and the stored records, under the labels below.\n",
     );
     p.push_str(&price_block(d));
@@ -397,8 +399,8 @@ fn price_block(d: &HoldingDossier) -> String {
             base.date
         )),
         (Some(now), None) => p.push_str(&format!(
-            "Now: ${now:.2} per share; no close before the prior analysis is in the fetched \
-             series, so the move since is not computed.\n"
+            "Now: ${now:.2} per share; the daily closes under QUOTE AND CLOSES include no close \
+             before the prior analysis, so the move since is not computed.\n"
         )),
         (None, _) => p.push_str("Now: (gap).\n"),
     }
@@ -439,8 +441,8 @@ fn expected_prices_block(input: &ReviewInput, g: &GradedVerdict) -> String {
     let mut p = format!(
         "\nEXPECTED PRICES\nEach expected price under PRIOR POSITION at its horizon date: once the \
          date has passed, the close on it — or the last close within {} sessions before it — \
-         and the score, 100 × (1 − |expected − close| ÷ close), floored at 0; before it, not \
-         reached, the path so far under PRICE.\n",
+         and the score, 100 × (1 − |expected − close| ÷ close), floored at 0; a date not yet \
+         passed reads not reached, with the path so far under PRICE.\n",
         outcome::HORIZON_PROXIMITY_SESSIONS
     );
     for (h, price) in prior_prices(g) {
@@ -831,7 +833,7 @@ fn role_risk_realized(input: &ReviewInput) -> String {
     let then = d.prior_fund_exposure.as_ref();
     let now = d.fund.as_ref().map(|f| crate::portfolio::fund::exposure_basis(&f.fund));
     let mut p = format!(
-        "\nREALIZED\nWhat has happened since the prior analysis, computed from the fetched prices \
+        "\nREALIZED\nWhat has happened since the prior analysis, computed from the daily closes \
          and the stored reads, then → now.{}\n",
         basis_gloss(input.price_bridge)
     );
@@ -931,7 +933,7 @@ fn task_section(input: &ReviewInput, position: &PriorPosition) -> String {
             "\n2. Each trigger the document under PRIOR THESIS names — whether it fired, by the \
              numbers under FETCHED VALUES, ANALYSIS and REALIZED.\n",
         );
-        p.push_str("\n3. Whether the role read survives.\n");
+        p.push_str("\n3. Whether the role survives.\n");
     } else {
         p.push_str(
             "\n2. Each falsifier and each trigger the document under PRIOR THESIS names — whether \
@@ -1059,9 +1061,9 @@ mod tests {
             "======== PART 1: INPUTS ========",
             "\nHOLDING\n",
             "\nFETCHED VALUES",
+            "\nANALYSIS\n",
             "\nPRIOR POSITION\n",
             "\nPRIOR THESIS (written 2026-07-01)\n",
-            "\nANALYSIS\n",
             "\nREALIZED\n",
             "\nPRICE\n",
             "\nEXPECTED PRICES\n",
@@ -1098,11 +1100,11 @@ mod tests {
         // A 2:1 split since: every prior price is halved and marked, the gloss says so.
         let split = render(&d, &now, Some(0.5));
         assert!(split.contains("Price then: $50.00 (bridged) per share."), "{split}");
-        assert!(split.contains("A price marked bridged was converted"), "{split}");
+        assert!(split.contains("A price marked bridged was put on today's basis"), "{split}");
         // An unresolvable bridge withholds every prior price and says why.
         let withheld = render(&d, &now, None);
         assert!(withheld.contains("Price then: withheld.\n"), "{withheld}");
-        assert!(withheld.contains("could not be verified"), "{withheld}");
+        assert!(withheld.contains("do not include the last close before the prior analysis"), "{withheld}");
         assert!(withheld.contains("passed; withheld."), "{withheld}");
     }
 
@@ -1298,7 +1300,7 @@ mod tests {
         assert!(user.contains("- expense ratio: 0.03% → (gap).\n"), "{user}");
         assert!(!user.contains("ACCURACY SCORES"), "{user}");
         assert!(user.contains("1. The action under PRIOR POSITION against what happened, from REALIZED."), "{user}");
-        assert!(user.contains("3. Whether the role read survives."), "{user}");
+        assert!(user.contains("3. Whether the role survives."), "{user}");
     }
 
     #[test]
@@ -1383,7 +1385,7 @@ mod tests {
             subject: ReviewSubject::RoleRisk,
         })
         .user;
-        assert!(user.contains("A price marked bridged was converted onto today's price basis"), "{user}");
+        assert!(user.contains("A price marked bridged was put on today's basis"), "{user}");
         let realized = &user[user.find("\nREALIZED\n").unwrap()..];
         assert!(realized.contains("A price marked bridged"), "{realized}");
         assert!(user.contains("1. The document under PRIOR THESIS against what happened, from PRIOR POSITION and REALIZED."), "{user}");

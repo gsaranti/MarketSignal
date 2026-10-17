@@ -1,9 +1,9 @@
 # Self-review — stock, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v81`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v84`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over the prior position of 2026-09-02.
-The review is a thinking call with no grammar, on a continuity run only: Part 1 the holding header and FETCHED VALUES, PRIOR POSITION, PRIOR THESIS, this run's ANALYSIS and REALIZED; Part 2 what the review covers, in order, and its length band. The review reaches this run's thesis document alone.
+The review is a thinking call with no grammar, on a continuity run only: Part 1 the holding header and FETCHED VALUES, this run's ANALYSIS, then PRIOR POSITION and PRIOR THESIS, then REALIZED; Part 2 what the review covers, in order, and its length band. The review reaches this run's thesis document alone.
 REALIZED carries the price now with its move and the path since, each prior expected price at its horizon date, the accuracy scores with whether the prior analysis read each, the checks written since the prior analysis, and the computed reads then and now.
 The accuracy record here is synthetic, layered for this example alone: four earlier forecasts, two checks the prior analysis read and two this run wrote after it — one scored, one with no forecast at its horizon — so the three-month scores read both ways and the lines show both outcomes.
 The prior here is attempt 6's persisted verdict, re-dated to 2026-09-02, with a hand-written prior spot 3% under today's; its twelve-month price has not reached its date.
@@ -23,7 +23,7 @@ The statements are sized to the engine's persisted metrics and the consensus to 
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 13431 chars — the messages and tools as serialized |
+| Prompt material | 13451 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -32,7 +32,7 @@ You are an investment analyst reviewing the prior position on one holding for a 
 Part 1 of the message gives the inputs. Part 2 says what the review covers and how to return it.
 ~~~~
 
-## User message (12984 chars)
+## User message (13004 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -160,6 +160,10 @@ Revenue by geography, newest fiscal year first
 RATES
 - Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%
 
+ANALYSIS
+[stub: this run's analysis — the research consolidated across the topics, as the analysis call
+returned it]
+
 PRIOR POSITION
 The position stated at the prior analysis: its date, the price then, the action with its rationale,
 the conviction, and the expected share price at each horizon with the horizon's date.
@@ -210,12 +214,8 @@ four fatalities). My bear target ($92) applies a distress multiple to core auto 
 credits. Bull case ($398) requires successful Robotaxi launch with approved commercial operations by
 Q1-CY27; this is possible but not probable given regulatory and technical execution risks.
 
-ANALYSIS
-[stub: this run's analysis — the research consolidated across the topics, as the analysis call
-returned it]
-
 REALIZED
-What has happened since the prior analysis, computed from the fetched prices and the stored records,
+What has happened since the prior analysis, computed from the daily closes and the stored records,
 under the labels below.
 
 PRICE
@@ -225,7 +225,7 @@ Closes since the prior analysis: high $358.97 on 2026-09-14, low $348.20 on 2026
 EXPECTED PRICES
 Each expected price under PRIOR POSITION at its horizon date: once the date has passed, the close on
 it — or the last close within 5 sessions before it — and the score, 100 × (1 − |expected − close| ÷
-close), floored at 0; before it, not reached, the path so far under PRICE.
+close), floored at 0; a date not yet passed reads not reached, with the path so far under PRICE.
 - three months: none stated.
 - twelve months (2027-09-02): not reached.
 - three years: none stated.

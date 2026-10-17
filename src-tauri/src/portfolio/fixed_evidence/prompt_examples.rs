@@ -1261,7 +1261,7 @@ fn examples() -> Vec<Example> {
     }
 
     // ---- Step 6e: the self-review ----
-    let review_common = "The review is a thinking call with no grammar, on a continuity run only: Part 1 the holding header and FETCHED VALUES, PRIOR POSITION, PRIOR THESIS, this run's ANALYSIS and REALIZED; Part 2 what the review covers, in order, and its length band. The review reaches this run's thesis document alone.";
+    let review_common = "The review is a thinking call with no grammar, on a continuity run only: Part 1 the holding header and FETCHED VALUES, this run's ANALYSIS, then PRIOR POSITION and PRIOR THESIS, then REALIZED; Part 2 what the review covers, in order, and its length band. The review reaches this run's thesis document alone.";
     {
         let mut d = review_dossier(&tsla);
         layer_synthetic_accuracy(&mut d);

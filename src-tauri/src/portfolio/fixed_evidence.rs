@@ -1211,7 +1211,7 @@ fn continuity_review_messages_are_two_parts_with_no_app_concept() {
             .split_once("\n======== PART 2: TASK ========\n")
             .unwrap_or_else(|| panic!("{label}: no Part 2 marker\n{user}"));
         assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{label}: {part1}");
-        let mut sections = vec!["FETCHED VALUES\n", "PRIOR POSITION\n", "PRIOR THESIS (written ", "ANALYSIS\n", "REALIZED\n"];
+        let mut sections = vec!["FETCHED VALUES\n", "ANALYSIS\n", "PRIOR POSITION\n", "PRIOR THESIS (written ", "REALIZED\n"];
         if *priced {
             sections.extend(["PRICE\n", "ACCURACY SCORES\n", "CHECKS SINCE THE PRIOR ANALYSIS\n", "COMPUTED READS\n"]);
         }
