@@ -1357,7 +1357,7 @@ fn reuse_pages(
     ) / 3;
     // The gloss names web_fetch as the shape each page is shown in, so the
     // header fields point at the one place they are defined.
-    let heading = "\nPAGES ALREADY RETRIEVED\nPages retrieved while researching this holding, each as \
+    let heading = "\n# PAGES ALREADY RETRIEVED\nPages retrieved while researching this holding, each as \
                    web_fetch returns it.\n";
     // Reserve the omission line even when no omission is ultimately needed,
     // and size against the brief as it renders with a page shown (the longer
@@ -2421,7 +2421,7 @@ fn annotation_fields(a: &SourceAnnotation) -> String {
 }
 
 fn topic_section(topic: &AgendaTopic) -> String {
-    let mut out = format!("\nTOPIC\n{}\n", topic.title);
+    let mut out = format!("\n# TOPIC\n{}\n", topic.title);
     for q in &topic.questions {
         out.push_str(&format!("- {q}\n"));
     }
@@ -2430,7 +2430,7 @@ fn topic_section(topic: &AgendaTopic) -> String {
 
 /// Capped, since the question is unbounded model output.
 fn followup_section(question: &str) -> String {
-    let mut out = String::from("\nFOLLOW-UP\nThe question this conversation pursues.\n");
+    let mut out = String::from("\n# FOLLOW-UP\nThe question this conversation pursues.\n");
     let (question, cut) = crate::data_sources::cap_chars(question, FOLLOWUP_CAP_CHARS);
     out.push_str(&question);
     if cut {
@@ -2453,19 +2453,19 @@ fn capped_write_up(write_up: &str) -> String {
 
 fn write_up_so_far_section(write_up: &str) -> String {
     format!(
-        "\nWRITE-UP SO FAR\nWhat the research on this topic has established so far.\n{}",
+        "\n# WRITE-UP SO FAR\nWhat the research on this topic has established so far.\n{}",
         capped_write_up(write_up)
     )
 }
 
 fn write_ups_so_far_section(write_ups: &[(String, String)]) -> String {
     let mut out =
-        String::from("\nWRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\n");
+        String::from("\n# WRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\n");
     if write_ups.is_empty() {
         out.push_str("None.\n");
     }
     for (title, write_up) in write_ups {
-        out.push_str(&format!("\n{title}\n{}", capped_write_up(write_up)));
+        out.push_str(&format!("\n## {title}\n{}", capped_write_up(write_up)));
     }
     out
 }
@@ -2551,7 +2551,7 @@ fn synthesis_brief(
     // the pages are sized.
     let tail = synthesis_orientation(ctx);
     let task = synthesis_task(ctx);
-    out.push_str("\nEVIDENCE\n");
+    out.push_str("\n# EVIDENCE\n");
     out.push_str(&evidence_gloss(ctx));
     out.push('\n');
     // Dedup by URL, keeping the first (annotation) occurrence — a re-fetch of
@@ -2933,7 +2933,7 @@ fn pass_brief(ctx: &PassContext<'_>) -> String {
 
 fn gathering_countdown(remaining: u32) -> ChatMessage {
     ChatMessage::user(format!(
-        "SEARCHING\nReplies remaining, including this one: {remaining}.\nPages fetched on the last \
+        "# SEARCHING\nReplies remaining, including this one: {remaining}.\nPages fetched on the last \
          reply are kept.\n"
     ))
 }
@@ -2946,7 +2946,7 @@ fn gathering_constant_block(ctx: &PassContext<'_>) -> String {
     out.push_str(&ctx.brief.lead());
     if !ctx.brief.leads.is_empty() {
         out.push_str(
-            "\nNEWS LEADS\nRecent headlines about the holding, each with its source and date. A \
+            "\n# NEWS LEADS\nRecent headlines about the holding, each with its source and date. A \
              headline is a lead, not evidence.\n",
         );
         for s in &ctx.brief.leads {
@@ -4454,7 +4454,7 @@ mod tests {
     }
 
     const WID_HEADER: &str =
-        "HOLDING\nWID (Widget Co).\nPrice: $10.00 per share.\nDate: 2026-08-22.\n";
+        "\n# HOLDING\nWID (Widget Co).\nPrice: $10.00 per share.\nDate: 2026-08-22.\n";
 
     fn brief_of(header: &str) -> HoldingBrief {
         HoldingBrief { header: header.to_string(), ..Default::default() }
@@ -4996,8 +4996,8 @@ mod tests {
             assert!(calls[3].0.ends_with(" synthesis follow-up"), "{}", calls[3].0);
             let followup = &calls[7].1[1].content;
             assert!(followup.contains("PAGES ALREADY RETRIEVED"));
-            assert!(followup.contains("\nFOLLOW-UP\n") && followup.contains("What happened to costs?"));
-            assert!(followup.contains("\nWRITE-UP SO FAR\n") && followup.contains("ROOT WRITE-UP MUST NOT SEED"));
+            assert!(followup.contains("\n# FOLLOW-UP\n") && followup.contains("What happened to costs?"));
+            assert!(followup.contains("\n# WRITE-UP SO FAR\n") && followup.contains("ROOT WRITE-UP MUST NOT SEED"));
             assert!(calls[7].1.last().unwrap().content.contains("including this one: 8."));
             let topic_b = &calls[4].1[1].content;
             for value in [
@@ -5014,7 +5014,7 @@ mod tests {
             let disconfirm = &calls[10].1[1].content;
             assert!(!disconfirm.contains("PAGES ALREADY RETRIEVED"));
             assert!(disconfirm.contains("are what that question tests: search for evidence against them"));
-            assert!(disconfirm.contains("\nWRITE-UPS SO FAR\n") && disconfirm.contains("REWRITTEN WHOLE") && disconfirm.contains("\nCosts\n"));
+            assert!(disconfirm.contains("\n# WRITE-UPS SO FAR\n") && disconfirm.contains("REWRITTEN WHOLE") && disconfirm.contains("\n## Costs\n"));
             assert!(model.inner.turns.lock().unwrap().borrow().is_empty());
         }
         assert_eq!(*web.calls.lock().unwrap(), 2);
@@ -5466,7 +5466,7 @@ mod tests {
         ];
         let brief = HoldingBrief {
             header: WID_HEADER.into(),
-            fetched_values: "\nFETCHED VALUES\nQuote: 10.00 per share (the live print, undated).\n".into(),
+            fetched_values: "\n# FETCHED VALUES\nQuote: 10.00 per share (the live print, undated).\n".into(),
             leads: leads(),
             prior_analysis: String::new(),
             prior_thesis: String::new(),
@@ -5481,22 +5481,22 @@ mod tests {
                 .map(|(_, messages, _)| messages[1].content.clone())
                 .unwrap_or_else(|| panic!("no call for {stage_part}"))
         };
-        let topic_at = |message: &str| message.find("\nTOPIC\n").expect("TOPIC");
+        let topic_at = |message: &str| message.find("\n# TOPIC\n").expect("TOPIC");
 
         // Roots: the constant text plus the reused pages is a byte prefix of
         // the next root's brief; the topic text follows.
         let (root_b, root_c) = (user(" b gathering turn 1"), user(" c gathering turn 1"));
         let shared = &root_b[..topic_at(&root_b)];
         assert!(
-            shared.contains("\nFETCHED VALUES\n")
-                && shared.contains("\nNEWS LEADS\n")
-                && shared.contains("\nPAGES ALREADY RETRIEVED\n")
+            shared.contains("\n# FETCHED VALUES\n")
+                && shared.contains("\n# NEWS LEADS\n")
+                && shared.contains("\n# PAGES ALREADY RETRIEVED\n")
                 && shared.contains("https://example.com/1"),
             "{shared}"
         );
-        assert!(shared.find("\nFETCHED VALUES\n").unwrap() < shared.find("\nNEWS LEADS\n").unwrap());
+        assert!(shared.find("\n# FETCHED VALUES\n").unwrap() < shared.find("\n# NEWS LEADS\n").unwrap());
         assert!(root_c.starts_with(shared), "root c does not extend root b:\n{root_c}");
-        assert!(root_c.contains("https://example.com/2") && root_c.contains("\nTOPIC\nGamma\n"));
+        assert!(root_c.contains("https://example.com/2") && root_c.contains("\n# TOPIC\nGamma\n"));
         let tail = root_b[topic_at(&root_b)..].chars().count()
             + gathering_countdown(MAX_TURNS_PER_PASS).content.chars().count();
         assert!(tail <= RESTORE_TAIL_CHARS, "gathering tail {tail} chars");
@@ -5517,8 +5517,8 @@ mod tests {
         );
         assert!(synth_c.starts_with(shared), "synthesis c does not extend synthesis b:\n{synth_c}");
         assert!(synth_c.contains("PAGE: https://example.com/3"));
-        assert!(synth_c.find("\nEVIDENCE\n").unwrap() < topic_at(&synth_c));
-        assert!(!synth_c.contains("\nNEWS LEADS\n"), "the synthesis carries no leads");
+        assert!(synth_c.find("\n# EVIDENCE\n").unwrap() < topic_at(&synth_c));
+        assert!(!synth_c.contains("\n# NEWS LEADS\n"), "the synthesis carries no leads");
         let tail = synth_b[topic_at(&synth_b)..].chars().count();
         assert!(tail <= RESTORE_TAIL_CHARS, "synthesis tail {tail} chars");
     }
@@ -5604,7 +5604,7 @@ mod tests {
         let rendered = pass_brief(&ctx);
         assert!(rendered.contains(&topic_section(&agenda[0])), "TOPIC was cut: {}", &rendered[rendered.len() - 600..]);
         assert_eq!(rendered.matches(INPUTS_CONTINUE_MARKER.trim()).count(), 1);
-        assert!(rendered.find(INPUTS_CONTINUE_MARKER).unwrap() < rendered.find("\nTOPIC\n").unwrap());
+        assert!(rendered.find(INPUTS_CONTINUE_MARKER).unwrap() < rendered.find("\n# TOPIC\n").unwrap());
         assert!(rendered.chars().count() + countdown <= prefix_cap);
         assert!(rendered.ends_with(&gathering_task(&ctx, false)));
         // The production path on a later topic: the inventory is not empty, no
@@ -5632,7 +5632,7 @@ mod tests {
         assert!(selected.is_empty() && block.contains("1 previously retrieved page(s) are not shown."), "{block}");
         let rendered = pass_brief_with_reuse(&ctx, &block, !selected.is_empty());
         assert!(rendered.contains(&topic_section(&agenda[0])), "TOPIC was cut: {}", &rendered[rendered.len() - 600..]);
-        assert!(rendered.contains("\nPAGES ALREADY RETRIEVED\n"));
+        assert!(rendered.contains("\n# PAGES ALREADY RETRIEVED\n"));
         // A heading-and-omission block shows no page, so item 1 asks to search
         // first rather than to read pages that are not there.
         assert!(!rendered.contains("Read the pages under") && rendered.contains("1. Search for what the questions ask"), "{rendered}");
@@ -5696,7 +5696,7 @@ mod tests {
         let agenda = one_topic_agenda();
         let brief = HoldingBrief {
             header: WID_HEADER.into(),
-            fetched_values: "\nFETCHED VALUES\nQuote: 10.00 per share (the live print, undated).\n".into(),
+            fetched_values: "\n# FETCHED VALUES\nQuote: 10.00 per share (the live print, undated).\n".into(),
             ..Default::default()
         };
         let ctx = pass_ctx(&brief, &agenda[0]);
@@ -5729,14 +5729,14 @@ mod tests {
             &mut gaps,
         );
         let (part1, part2) = user.split_once("======== PART 2: TASK ========").expect("two parts");
-        assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{part1}");
-        for section in ["\nFETCHED VALUES\n", "\nTOPIC\n", "\nEVIDENCE\n"] {
+        assert!(part1.starts_with("======== PART 1: INPUTS ========\n\n# HOLDING\n"), "{part1}");
+        for section in ["\n# FETCHED VALUES\n", "\n# TOPIC\n", "\n# EVIDENCE\n"] {
             assert!(part1.contains(section), "Part 1 lacks {section}: {part1}");
         }
         // The evidence follows the header and the fetched values and precedes
         // the topic's text.
         let at = |section: &str| part1.find(section).unwrap_or_else(|| panic!("{section}"));
-        assert!(at("\nFETCHED VALUES\n") < at("\nEVIDENCE\n") && at("\nEVIDENCE\n") < at("\nTOPIC\n"), "{part1}");
+        assert!(at("\n# FETCHED VALUES\n") < at("\n# EVIDENCE\n") && at("\n# EVIDENCE\n") < at("\n# TOPIC\n"), "{part1}");
         assert!(!part1.contains("SEARCHING") && !part2.contains("SEARCHING"), "{user}");
         assert!(
             part1.contains(
@@ -5800,7 +5800,7 @@ mod tests {
         };
         let orientation = synthesis_orientation(&ctx);
         assert!(
-            orientation.contains("\nWRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\n\nCompetitive position\nPrior write-up to test.\n\nResults\nResults write-up.\n"),
+            orientation.contains("\n# WRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\n\n## Competitive position\nPrior write-up to test.\n\n## Results\nResults write-up.\n"),
             "{orientation}"
         );
         // No news lead, no URL roster, no search instruction on the synthesis.
@@ -5828,13 +5828,13 @@ mod tests {
             depth: 1,
         };
         let orientation = synthesis_orientation(&fu);
-        assert!(orientation.contains(&format!("\nFOLLOW-UP\nThe question this conversation pursues.\n{}…\n", "é".repeat(FOLLOWUP_CAP_CHARS))), "{orientation}");
-        assert!(orientation.contains(&format!("\nWRITE-UP SO FAR\nWhat the research on this topic has established so far.\n{}{}", "w".repeat(WRITE_UP_CAP_CHARS), INPUTS_CONTINUE_MARKER)), "{orientation}");
+        assert!(orientation.contains(&format!("\n# FOLLOW-UP\nThe question this conversation pursues.\n{}…\n", "é".repeat(FOLLOWUP_CAP_CHARS))), "{orientation}");
+        assert!(orientation.contains(&format!("\n# WRITE-UP SO FAR\nWhat the research on this topic has established so far.\n{}{}", "w".repeat(WRITE_UP_CAP_CHARS), INPUTS_CONTINUE_MARKER)), "{orientation}");
         let task = synthesis_task(&fu);
         assert!(task.contains("Rewrite the content under WRITE-UP SO FAR whole as plain text — no code fence, no JSON, no heading before the first line, folding in what EVIDENCE shows on the question under FOLLOW-UP, so the topic has one write-up:"), "{task}");
         // An empty disconfirming subject renders its heading with None.
         let none = PassContext { write_ups_so_far: &[], ..ctx };
-        assert!(synthesis_orientation(&none).contains("\nWRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\nNone.\n"));
+        assert!(synthesis_orientation(&none).contains("\n# WRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\nNone.\n"));
     }
 
     #[test]
@@ -7520,8 +7520,8 @@ mod tests {
             }
             for (key, depth, messages) in calls.iter().filter(|(k, _, _)| k != "disconfirming") {
                 let brief = &messages[1].content;
-                assert_eq!(brief.contains("\nFOLLOW-UP\n"), *depth > 0);
-                assert_eq!(brief.contains("\nWRITE-UP SO FAR\n"), *depth > 0);
+                assert_eq!(brief.contains("\n# FOLLOW-UP\n"), *depth > 0);
+                assert_eq!(brief.contains("\n# WRITE-UP SO FAR\n"), *depth > 0);
                 for other in &keys {
                     if other != key {
                         assert!(!brief.contains(&format!("write-up-{other}-")));
@@ -7541,7 +7541,7 @@ mod tests {
             assert!(!disconfirm.contains("PAGES ALREADY RETRIEVED"));
             // Every topic's latest write-up under its title, and no earlier one.
             for t in &out.topics {
-                assert!(disconfirm.contains(&format!("\n{}\nwrite-up-{}-2\n", t.title, t.topic_key)), "{disconfirm}");
+                assert!(disconfirm.contains(&format!("\n## {}\nwrite-up-{}-2\n", t.title, t.topic_key)), "{disconfirm}");
                 for depth in 0..2 { assert!(!disconfirm.contains(&format!("write-up-{}-{depth}", t.topic_key))); }
             }
             assert_eq!(out.disconfirming.as_deref(), Some("write-up-disconfirming-0"));
@@ -7725,16 +7725,16 @@ mod tests {
         let agenda = one_topic_agenda();
         let brief = HoldingBrief {
             header: WID_HEADER.into(),
-            fetched_values: "\nFETCHED VALUES\nQuote: 10.00 per share (the live print, undated).\n".into(),
+            fetched_values: "\n# FETCHED VALUES\nQuote: 10.00 per share (the live print, undated).\n".into(),
             leads: leads(),
             prior_analysis: String::new(),
-            prior_thesis: "\nPRIOR THESIS (written 2026-08-01)\nThesis: hold for the share gain.\n".into(),
+            prior_thesis: "\n# PRIOR THESIS (written 2026-08-01)\nThesis: hold for the share gain.\n".into(),
         };
         let ctx = pass_ctx(&brief, &agenda[0]);
         let user = pass_brief(&ctx);
         let (part1, part2) = user.split_once("\n======== PART 2: TASK ========\n").expect("two parts");
-        assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{part1}");
-        for section in ["\nFETCHED VALUES\n", "\nNEWS LEADS\n", "\nPRIOR THESIS (written 2026-08-01)\n", "\nTOPIC\n"] {
+        assert!(part1.starts_with("======== PART 1: INPUTS ========\n\n# HOLDING\n"), "{part1}");
+        for section in ["\n# FETCHED VALUES\n", "\n# NEWS LEADS\n", "\n# PRIOR THESIS (written 2026-08-01)\n", "\n# TOPIC\n"] {
             assert!(part1.contains(section), "Part 1 lacks {section}: {part1}");
         }
         for gone in ["PRIOR FINDINGS", "CLAIMS SO FAR", "STANDING CONDITIONS"] {
@@ -7744,9 +7744,9 @@ mod tests {
         // own text follows them.
         let at = |section: &str| part1.find(section).unwrap_or_else(|| panic!("{section}"));
         assert!(
-            at("\nFETCHED VALUES\n") < at("\nNEWS LEADS\n")
-                && at("\nNEWS LEADS\n") < at("\nPRIOR THESIS")
-                && at("\nPRIOR THESIS") < at("\nTOPIC\n"),
+            at("\n# FETCHED VALUES\n") < at("\n# NEWS LEADS\n")
+                && at("\n# NEWS LEADS\n") < at("\n# PRIOR THESIS")
+                && at("\n# PRIOR THESIS") < at("\n# TOPIC\n"),
             "{part1}"
         );
         assert!(part1.contains("- Widget beats — https://reuters.com/widget (fmp-news, 2026-08-20)\n"), "{part1}");
@@ -7781,7 +7781,7 @@ mod tests {
         let (_, debut_part2) = debut_user.split_once("\n======== PART 2: TASK ========\n").expect("two parts");
         assert!(!debut_part2.contains("PRIOR"), "Part 2 points at no prior block: {debut_part2}");
         let both = HoldingBrief {
-            prior_analysis: "\nPRIOR ANALYSIS (written 2026-08-01)\nShare held.\n".into(),
+            prior_analysis: "\n# PRIOR ANALYSIS (written 2026-08-01)\nShare held.\n".into(),
             ..brief.clone()
         };
         let both_user = pass_brief(&pass_ctx(&both, &agenda[0]));
@@ -7790,7 +7790,7 @@ mod tests {
             "{both_user}"
         );
         let analysis_only = HoldingBrief {
-            prior_analysis: "\nPRIOR ANALYSIS (written 2026-08-01)\nShare held.\n".into(),
+            prior_analysis: "\n# PRIOR ANALYSIS (written 2026-08-01)\nShare held.\n".into(),
             prior_thesis: String::new(),
             ..brief.clone()
         };
@@ -7814,7 +7814,7 @@ mod tests {
             assert!(hits.is_empty(), "banned {hits:?} in {text}");
         }
         // The pass kinds change the opening and the sections, never the frame.
-        let bare = brief_of("HOLDING\nWID.\n");
+        let bare = brief_of("\n# HOLDING\nWID.\n");
         let question = "Did share hold in Q3?".to_string();
         let so_far = "Widget Co held 40% share (https://example.com/share).".to_string();
         let fu = pass_brief(&PassContext {
@@ -7827,11 +7827,11 @@ mod tests {
             depth: 1,
         });
         assert!(
-            fu.contains("\nFOLLOW-UP\nThe question this conversation pursues.\nDid share hold in Q3?\n"),
+            fu.contains("\n# FOLLOW-UP\nThe question this conversation pursues.\nDid share hold in Q3?\n"),
             "{fu}"
         );
         assert!(
-            fu.contains("\nWRITE-UP SO FAR\nWhat the research on this topic has established so far.\nWidget Co held 40% share (https://example.com/share).\n"),
+            fu.contains("\n# WRITE-UP SO FAR\nWhat the research on this topic has established so far.\nWidget Co held 40% share (https://example.com/share).\n"),
             "{fu}"
         );
         assert!(
@@ -7862,7 +7862,7 @@ mod tests {
             depth: 0,
         });
         assert!(
-            dc.contains("\nWRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\n\nCompetitive position\nWidget Co held 40% share (https://example.com/share).\n"),
+            dc.contains("\n# WRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\n\n## Competitive position\nWidget Co held 40% share (https://example.com/share).\n"),
             "{dc}"
         );
         assert!(

@@ -6284,19 +6284,13 @@ mod tests {
         assert!(debut.0.borrow().is_empty(), "a debut reviews nothing");
         let aapl_first = audit_for(&first, "AAPL");
         assert_eq!((aapl_first.review.as_deref(), aapl_first.accuracy_read_through), (None, None));
-        let prior_3m = priced(verdict(&first, "AAPL")).appendix.expected_price_3m.expect("a three-month price");
 
         let second_recorder = ReviewRecorder::default();
         let second = run("2026-10-09T15:00:00Z", &second_recorder, None);
         let review = review_of(&second_recorder, "AAPL");
-        let score = crate::portfolio::outcome::per_check_score(prior_3m, 200.0);
-        assert!(
-            review.contains(&format!("- three months (2026-10-06): close $200.00 on 2026-10-06; score {score:.1}.\n")),
-            "{review}"
-        );
         // The prior was a debut, so it read no accuracy record at all.
-        assert!(review.contains("The prior analysis read no accuracy record, so none of these was read before."), "{review}");
-        assert!(review.contains("- forecast of 2026-07-06, three months (2026-10-06): close $200.00 on 2026-10-06; analyst $"), "{review}");
+        assert!(review.contains("The prior analysis read no accuracy record, so it saw none of these checks."), "{review}");
+        assert!(review.contains("- analysis of 2026-07-06, three months (2026-10-06): close $200.00 on 2026-10-06; analyst $"), "{review}");
         assert!(review.contains("last moved 2026-10-09, not read by the prior analysis"), "{review}");
         let high_water = second.accuracy.checks.iter().map(|c| c.id).max();
         let aapl_second = audit_for(&second, "AAPL");
@@ -6312,7 +6306,7 @@ mod tests {
         );
         let review = review_of(&third_recorder, "MSFT");
         assert!(
-            review.contains("No check landed after the prior analysis was written: the scores above are the ones it read"),
+            review.contains("No check has been written since the prior analysis. The scores above are the ones it read"),
             "{review}"
         );
         assert!(review.contains("last moved 2026-10-09, read by the prior analysis"), "{review}");

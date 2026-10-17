@@ -177,7 +177,7 @@ const PLAIN: &str = "as plain text — no code fence, no JSON, no heading before
 /// renders, and names the contrary-evidence write-up only when the list ends on
 /// one, since the disconfirming pass may have written none.
 fn write_ups_gloss(write_ups: &[WriteUp], each_shortened: bool) -> String {
-    let mut gloss = String::from("\nWRITE-UPS\nThe research on this holding, one write-up per topic");
+    let mut gloss = String::from("\n# WRITE-UPS\nThe research on this holding, one write-up per topic");
     if each_shortened {
         gloss.push_str(", each already shortened");
     }
@@ -191,7 +191,7 @@ fn write_ups_gloss(write_ups: &[WriteUp], each_shortened: bool) -> String {
 fn write_ups_block(write_ups: &[WriteUp]) -> String {
     let mut out = String::new();
     for w in write_ups {
-        out.push_str(&format!("\n{}\n{}\n", w.title, w.text.trim()));
+        out.push_str(&format!("\n## {}\n{}\n", w.title, w.text.trim()));
     }
     out
 }
@@ -212,7 +212,7 @@ what the document keeps and how to return it."
             true
         }
         DistillSubject::Single(write_up) => {
-            user.push_str("\nWRITE-UP\nOne write-up on this holding, under its topic.\n");
+            user.push_str("\n# WRITE-UP\nOne write-up on this holding, under its topic.\n");
             user.push_str(&write_ups_block(std::slice::from_ref(write_up)));
             false
         }
@@ -262,7 +262,7 @@ covers and how to return it."
         }
         WriteUps::Distilled(distillate) => {
             user.push_str(
-                "\nWRITE-UPS\nThe research on this holding, the topics' write-ups \
+                "\n# WRITE-UPS\nThe research on this holding, the topics' write-ups \
                  shortened into one document.\n",
             );
             user.push_str(&format!("\n{}\n", distillate.trim()));
@@ -471,7 +471,11 @@ pub fn consolidate(
 /// model call.
 pub fn stub_analysis(input: &AnalysisInput<'_>) -> String {
     match input.write_ups {
-        WriteUps::AsWritten(write_ups) => write_ups_block(write_ups).trim().to_string(),
+        WriteUps::AsWritten(write_ups) => write_ups
+            .iter()
+            .map(|w| format!("{}\n{}", w.title, w.text.trim()))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
         WriteUps::Distilled(distillate) => distillate.trim().to_string(),
     }
 }
@@ -524,8 +528,8 @@ mod tests {
 
     fn brief() -> HoldingBrief {
         HoldingBrief {
-            header: "HOLDING\nWID (Widget Co).\nPrice: $10.00 per share.\nDate: 2026-08-22.\n".into(),
-            fetched_values: "\nFETCHED VALUES\nQuote: 10.00 per share (the live print, undated).\n".into(),
+            header: "\n# HOLDING\nWID (Widget Co).\nPrice: $10.00 per share.\nDate: 2026-08-22.\n".into(),
+            fetched_values: "\n# FETCHED VALUES\nQuote: 10.00 per share (the live print, undated).\n".into(),
             leads: vec![],
             prior_analysis: String::new(),
             prior_thesis: String::new(),
@@ -606,7 +610,7 @@ mod tests {
     fn the_analysis_prompt_leads_with_the_brief_then_prior_analysis_then_the_write_ups() {
         let ws = write_ups_of(&research());
         let b = brief();
-        let prior = "\nPRIOR ANALYSIS (written 2026-08-01)\nThe prior analysis.\n";
+        let prior = "\n# PRIOR ANALYSIS (written 2026-08-01)\nThe prior analysis.\n";
         let p = analysis_prompt(&AnalysisInput {
             symbol: "WID",
             brief: &b,
@@ -617,9 +621,9 @@ mod tests {
         let (part1, part2) = p.user.split_once(PART_2).expect("two parts");
         assert!(part1.starts_with(&format!("{PART_1}{}{}", b.header, b.fetched_values)), "{part1}");
         let at = |s: &str| part1.find(s).unwrap_or_else(|| panic!("{s}\n{part1}"));
-        assert!(at("\nFETCHED VALUES\n") < at("\nPRIOR ANALYSIS (written 2026-08-01)\n"));
-        assert!(at("\nPRIOR ANALYSIS (written 2026-08-01)\n") < at("\nWRITE-UPS\n"));
-        assert!(part1.contains("\nWRITE-UPS\nThe research on this holding, one write-up per topic, the contrary-evidence write-up last.\n\nCompetitive / business position\nShare held.\n\nCatalysts and risks\nA ruling is due in Q4.\n\nContrary evidence\nNothing contradicts the share read.\n"), "{part1}");
+        assert!(at("\n# FETCHED VALUES\n") < at("\n# PRIOR ANALYSIS (written 2026-08-01)\n"));
+        assert!(at("\n# PRIOR ANALYSIS (written 2026-08-01)\n") < at("\n# WRITE-UPS\n"));
+        assert!(part1.contains("\n# WRITE-UPS\nThe research on this holding, one write-up per topic, the contrary-evidence write-up last.\n\n## Competitive / business position\nShare held.\n\n## Catalysts and risks\nA ruling is due in Q4.\n\n## Contrary evidence\nNothing contradicts the share read.\n"), "{part1}");
         assert!(part2.starts_with("Write the analysis of the research under WRITE-UPS as plain text — no code fence, no JSON, no heading before the first line. It states what that research establishes on the holding when its topics are read together; where its sources disagree; and what stays unanswered. Each figure is quoted with the date or period its source gives for it, and its source is named: the page address named under WRITE-UPS, or FETCHED VALUES where the figure comes from there."), "{part2}");
         assert!(part2.contains("or FETCHED VALUES where the figure comes from there."), "{part2}");
         assert!(part2.contains(" PRIOR ANALYSIS is the analysis written for this holding on the date shown. Use it as background and as the foundation the new analysis builds on."), "{part2}");
@@ -634,7 +638,7 @@ mod tests {
             write_ups: WriteUps::Distilled("  The shortened document.  "),
         });
         assert!(!d.user.contains("PRIOR ANALYSIS"), "{}", d.user);
-        assert!(d.user.contains("\nWRITE-UPS\nThe research on this holding, the topics' write-ups shortened into one document.\n\nThe shortened document.\n"), "{}", d.user);
+        assert!(d.user.contains("\n# WRITE-UPS\nThe research on this holding, the topics' write-ups shortened into one document.\n\nThe shortened document.\n"), "{}", d.user);
         let debut = analysis_prompt(&AnalysisInput {
             symbol: "WID",
             brief: &b,
@@ -666,35 +670,35 @@ mod tests {
             prior_analysis: "",
             write_ups: WriteUps::AsWritten(&ws),
         });
-        assert!(p.user.contains("\nWRITE-UPS\nThe research on this holding, one write-up per topic.\n\nCompetitive / business position\n"), "{}", p.user);
+        assert!(p.user.contains("\n# WRITE-UPS\nThe research on this holding, one write-up per topic.\n\n## Competitive / business position\n"), "{}", p.user);
         assert!(!p.user.contains("contrary-evidence"), "{}", p.user);
         let merged = distillation_prompt(&DistillInput {
             header: &b.header,
             subject: DistillSubject::Merged(&ws),
             stage: "distill WID".into(),
         });
-        assert!(merged.user.contains("\nWRITE-UPS\nThe research on this holding, one write-up per topic.\n"), "{}", merged.user);
+        assert!(merged.user.contains("\n# WRITE-UPS\nThe research on this holding, one write-up per topic.\n"), "{}", merged.user);
         let outputs: Vec<WriteUp> = ws.iter().map(|w| WriteUp { key: w.key.clone(), title: w.title.clone(), text: format!("short {}", w.key) }).collect();
         let merge = distillation_prompt(&DistillInput {
             header: &b.header,
             subject: DistillSubject::MergedDistillates(&outputs),
             stage: "distill WID".into(),
         });
-        assert!(merge.user.contains("\nWRITE-UPS\nThe research on this holding, one write-up per topic, each already shortened.\n"), "{}", merge.user);
+        assert!(merge.user.contains("\n# WRITE-UPS\nThe research on this holding, one write-up per topic, each already shortened.\n"), "{}", merge.user);
     }
 
     #[test]
     fn the_distillation_prompt_takes_the_three_subjects_under_one_task() {
         let ws = write_ups_of(&research());
-        let header = "HOLDING\nWID (Widget Co).\n";
+        let header = "\n# HOLDING\nWID (Widget Co).\n";
         let merged = distillation_prompt(&DistillInput {
             header,
             subject: DistillSubject::Merged(&ws),
             stage: "distill WID".into(),
         });
         assert!(merged.system.starts_with("You are an investment analyst shortening research write-ups on one holding into one shorter document"), "{}", merged.system);
-        assert!(merged.user.starts_with(&format!("{PART_1}{header}\nWRITE-UPS\nThe research on this holding, one write-up per topic, the contrary-evidence write-up last.\n\nCompetitive / business position\nShare held.\n")), "{}", merged.user);
-        assert!(merged.user.contains("\nContrary evidence\nNothing contradicts the share read.\n"), "{}", merged.user);
+        assert!(merged.user.starts_with(&format!("{PART_1}{header}\n# WRITE-UPS\nThe research on this holding, one write-up per topic, the contrary-evidence write-up last.\n\n## Competitive / business position\nShare held.\n")), "{}", merged.user);
+        assert!(merged.user.contains("\n## Contrary evidence\nNothing contradicts the share read.\n"), "{}", merged.user);
         let (_, task) = merged.user.split_once(PART_2).unwrap();
         assert_eq!(
             task,
@@ -710,7 +714,7 @@ mod tests {
             subject: DistillSubject::Single(&ws[1]),
             stage: "distill WID catalysts-risks".into(),
         });
-        assert!(single.user.contains("\nWRITE-UP\nOne write-up on this holding, under its topic.\n\nCatalysts and risks\nA ruling is due in Q4.\n"), "{}", single.user);
+        assert!(single.user.contains("\n# WRITE-UP\nOne write-up on this holding, under its topic.\n\n## Catalysts and risks\nA ruling is due in Q4.\n"), "{}", single.user);
         assert!(!single.user.contains("Share held."), "{}", single.user);
         assert!(
             single.user.contains(
@@ -731,7 +735,7 @@ mod tests {
             subject: DistillSubject::MergedDistillates(&outputs),
             stage: "distill WID merge".into(),
         });
-        assert!(merge.user.contains("\nWRITE-UPS\nThe research on this holding, one write-up per topic, each already shortened, the contrary-evidence write-up last.\n\nCompetitive / business position\nshort competitive-position\n"), "{}", merge.user);
+        assert!(merge.user.contains("\n# WRITE-UPS\nThe research on this holding, one write-up per topic, each already shortened, the contrary-evidence write-up last.\n\n## Competitive / business position\nshort competitive-position\n"), "{}", merge.user);
     }
 
     #[test]
@@ -751,7 +755,7 @@ mod tests {
             written: "2026-08-01".into(),
             anchor: Some(crate::portfolio::engine::DatedValue { date: "2026-07-31".into(), value: 9.5 }),
         };
-        let out = consolidate(&model, "WID", &b, &none, Some(&prior), "\nPRIOR ANALYSIS\n...", &ConsolidationBudgets::live()).unwrap();
+        let out = consolidate(&model, "WID", &b, &none, Some(&prior), "\n# PRIOR ANALYSIS\n...", &ConsolidationBudgets::live()).unwrap();
         assert_eq!(out.analysis, Consolidated::Carried(prior));
         assert_eq!(out.distillation, DistillationRecord::none());
         assert!(model.calls.borrow().is_empty(), "no call over nothing");
@@ -848,7 +852,7 @@ mod tests {
         let calls = model.calls.take();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "analysis WID");
-        assert!(calls[0].1.contains("\nContrary evidence\nNothing contradicts the share read.\n"), "{}", calls[0].1);
+        assert!(calls[0].1.contains("\n## Contrary evidence\nNothing contradicts the share read.\n"), "{}", calls[0].1);
 
         // One char over the analysis budget, the merged prompt within the
         // widest: the merged shape.
@@ -866,8 +870,8 @@ mod tests {
         assert_eq!(out.distillation, DistillationRecord { shape: DistillationShape::Merged, calls: 1 });
         let calls = model.calls.take();
         assert_eq!(calls.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), vec!["distill WID", "analysis WID"]);
-        assert!(calls[0].1.contains("\nWRITE-UPS\nThe research on this holding, one write-up per topic, the contrary-evidence write-up last.\n\nCompetitive / business position\nShare held.\n\nCatalysts and risks\n"), "{}", calls[0].1);
-        assert!(calls[1].1.contains("\nWRITE-UPS\nThe research on this holding, the topics' write-ups shortened into one document.\n\ndistillate of distill WID\n"), "{}", calls[1].1);
+        assert!(calls[0].1.contains("\n# WRITE-UPS\nThe research on this holding, one write-up per topic, the contrary-evidence write-up last.\n\n## Competitive / business position\nShare held.\n\n## Catalysts and risks\n"), "{}", calls[0].1);
+        assert!(calls[1].1.contains("\n# WRITE-UPS\nThe research on this holding, the topics' write-ups shortened into one document.\n\ndistillate of distill WID\n"), "{}", calls[1].1);
         assert!(!calls[1].1.contains("Share held."), "the analysis reads the distillate, not the write-ups: {}", calls[1].1);
 
         // The merged prompt over the widest budget: the per-write-up shape,
@@ -878,7 +882,7 @@ mod tests {
             written: "2026-08-01".into(),
             anchor: None,
         };
-        let prior_section = "\nPRIOR ANALYSIS (written 2026-08-01)\nThe prior analysis.\n";
+        let prior_section = "\n# PRIOR ANALYSIS (written 2026-08-01)\nThe prior analysis.\n";
         // The budget is read against the prompt as it will render — PRIOR
         // ANALYSIS and the continuity clause included — one char under it.
         let as_written_with_prior = analysis_prompt(&AnalysisInput {
@@ -910,10 +914,10 @@ mod tests {
                 "analysis WID",
             ]
         );
-        assert!(calls[0].1.contains("\nWRITE-UP\nOne write-up on this holding, under its topic.\n\nCompetitive / business position\nShare held.\n"), "{}", calls[0].1);
-        assert!(calls[3].1.contains("one write-up per topic, each already shortened, the contrary-evidence write-up last.\n\nCompetitive / business position\ndistillate of distill WID competitive-position\n"), "{}", calls[3].1);
-        assert!(calls[3].1.contains("\nContrary evidence\ndistillate of distill WID disconfirming\n"), "{}", calls[3].1);
-        assert!(calls[4].1.contains("\nPRIOR ANALYSIS (written 2026-08-01)\nThe prior analysis.\n"), "{}", calls[4].1);
+        assert!(calls[0].1.contains("\n# WRITE-UP\nOne write-up on this holding, under its topic.\n\n## Competitive / business position\nShare held.\n"), "{}", calls[0].1);
+        assert!(calls[3].1.contains("one write-up per topic, each already shortened, the contrary-evidence write-up last.\n\n## Competitive / business position\ndistillate of distill WID competitive-position\n"), "{}", calls[3].1);
+        assert!(calls[3].1.contains("\n## Contrary evidence\ndistillate of distill WID disconfirming\n"), "{}", calls[3].1);
+        assert!(calls[4].1.contains("\n# PRIOR ANALYSIS (written 2026-08-01)\nThe prior analysis.\n"), "{}", calls[4].1);
         assert!(calls[4].1.contains("\n\ndistillate of distill WID merge\n"), "{}", calls[4].1);
         assert!(calls[4].1.contains("PRIOR ANALYSIS is the analysis written for this holding"), "{}", calls[4].1);
     }

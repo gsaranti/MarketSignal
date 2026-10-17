@@ -1,6 +1,6 @@
 # Distillation — one write-up of the per-write-up shape
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v82`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v85`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 A distillation is a non-thinking call with no grammar on the resident reasoner (the fast tier where the roster has one), issued only where the analysis prompt is over budget; the shape is the orchestrator's choice from size, never the model's, and the write-ups persist on the audit as written.
@@ -18,7 +18,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 1122 chars — the messages and tools as serialized |
+| Prompt material | 1131 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,19 +28,20 @@ for a portfolio review. Part 1 of the message gives the inputs. Part 2 says what
 and how to return it.
 ~~~~
 
-## User message (809 chars)
+## User message (817 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
-HOLDING
+
+# HOLDING
 TSLA (Tesla, Inc.).
 Price: $358.97 per share.
 Date: 2026-09-16.
 
-WRITE-UP
+# WRITE-UP
 One write-up on this holding, under its topic.
 
-Competitive / business position
+## Competitive / business position
 [stub: the topic's write-up so far — the root pass's account]
 
 ======== PART 2: TASK ========

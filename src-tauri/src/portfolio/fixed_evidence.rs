@@ -374,7 +374,7 @@ fn reconstructed_interpretation_uses_the_persisted_options_evidence() {
         let prompt = thesis_user_prompt(&thesis_input(&f, &d));
         let options = &graded.options_signal;
         let activity = format!(
-            "\nOPTIONS ACTIVITY\nput/call volume {:.3}, put/call open interest {:.3}, implied \
+            "\n## OPTIONS ACTIVITY\nput/call volume {:.3}, put/call open interest {:.3}, implied \
              volatility {:.3}, IV skew 0.000 (mean put IV minus mean call IV, in IV's decimal \
              unit; positive means puts are richer).\n",
             options.put_call_volume.expect("persisted volume"),
@@ -408,7 +408,7 @@ fn attempt_6_action_packets_carry_the_position_and_are_tax_invariant() {
         assert_eq!(taxable, exempt, "{}: the tax posture must not change the packet", f.symbol);
         // The position's economics render once, under POSITION; a repriced
         // position changes POSITION's lines and nothing else.
-        assert_eq!(taxable.matches("\nPOSITION\n").count(), 1, "{}: {taxable}", f.symbol);
+        assert_eq!(taxable.matches("\n# POSITION\n").count(), 1, "{}: {taxable}", f.symbol);
         assert!(taxable.contains("\nShares held: 10. Cost basis: $"), "{}: {taxable}", f.symbol);
         let p = &f.synthetic_position;
         let pl_word = if p.market_value > p.cost_basis { "Unrealized gain: $" } else { "Unrealized loss: $" };
@@ -428,7 +428,7 @@ fn attempt_6_action_packets_carry_the_position_and_are_tax_invariant() {
         }
         assert!(!taxable.to_lowercase().contains("- tax"), "{}: {taxable}", f.symbol);
         // The sub-scores' polarity gloss stays on the thesis message.
-        assert_eq!(taxable.matches("\nSUPPORTED ACTIONS\n").count(), 1, "{}", f.symbol);
+        assert_eq!(taxable.matches("\n# SUPPORTED ACTIONS\n").count(), 1, "{}", f.symbol);
         assert_eq!(taxable.matches("higher is better on every axis").count(), 0, "{}", f.symbol);
         // The app-appended caveat for the rung the run chose, on the synthetic P/L.
         let d = dossier_of(&f, true);
@@ -512,7 +512,7 @@ fn attempt_6_interpretation_packets_carry_no_account_economics() {
             assert!(!lower.contains(phrase), "{}: {phrase} leaked: {taxable}", f.symbol);
         }
         assert!(
-            taxable.starts_with(&format!("======== PART 1: INPUTS ========\nHOLDING\n{} (", f.symbol)),
+            taxable.starts_with(&format!("======== PART 1: INPUTS ========\n\n# HOLDING\n{} (", f.symbol)),
             "{taxable}"
         );
         // No position line of any kind: the position's change reaches the
@@ -527,7 +527,7 @@ fn attempt_6_interpretation_packets_carry_no_account_economics() {
             // A fund has no statement series: its line names the market
             // metrics' cadence and the expense ratio's source instead.
             _ if f.is_fund => assert!(
-                taxable.contains("\nMETRICS\nThe market metrics are daily; the expense ratio is the fund's published figure.\n"),
+                taxable.contains("\n## METRICS\nThe market metrics are daily; the expense ratio is the fund's published figure.\n"),
                 "{}: {taxable}",
                 f.symbol
             ),
@@ -861,7 +861,10 @@ fn assert_part2_headings_render(label: &str, part1: &str, part2: &str) {
     ] {
         if part2.contains(heading) {
             assert!(
-                part1.contains(&format!("\n{heading}\n")) || part1.contains(&format!("\n{heading} (")),
+                ["# ", "## "].iter().any(|mark| {
+                    part1.contains(&format!("\n{mark}{heading}\n"))
+                        || part1.contains(&format!("\n{mark}{heading} ("))
+                }),
                 "{label}: Part 2 names {heading}, which Part 1 does not render\n{part1}"
             );
         }
@@ -906,9 +909,9 @@ fn attempt_6_thesis_messages_are_two_parts_with_no_app_concept() {
         assert!(part1.starts_with("======== PART 1: INPUTS ========"), "{}: {part1}", f.symbol);
         let mut last = 0;
         for section in [
-            "HOLDING\n", "FETCHED VALUES\n", "COMPUTED\n", "METRICS\n", "SCORES\n",
-            "PRICE BANDS (USD)\n", "CAPITAL EFFICIENCY\n", "OPTIONS ACTIVITY\n", "MARKET ANALYSIS\n",
-            "ANALYSIS\n",
+            "# HOLDING\n", "# FETCHED VALUES\n", "# COMPUTED\n", "## METRICS\n", "## SCORES\n",
+            "## PRICE BANDS (USD)\n", "## CAPITAL EFFICIENCY\n", "## OPTIONS ACTIVITY\n", "# MARKET ANALYSIS\n",
+            "# ANALYSIS\n",
         ] {
             let i = part1
                 .find(&format!("\n{section}"))
@@ -919,16 +922,16 @@ fn attempt_6_thesis_messages_are_two_parts_with_no_app_concept() {
         // A debut carries no PRIOR THESIS and no continuity clause.
         assert!(!part1.contains("PRIOR THESIS"), "{}: {part1}", f.symbol);
         assert!(!part2.contains("PRIOR THESIS"), "{}: {part2}", f.symbol);
-        let scores = part1.split("\nSCORES\n").nth(1).unwrap().split("\nPRICE BANDS").next().unwrap();
+        let scores = part1.split("\n## SCORES\n").nth(1).unwrap().split("\n## PRICE BANDS").next().unwrap();
         assert!(scores.contains(&format!("Grade {}.", f.engine_output.grade.as_str())), "{}: {scores}", f.symbol);
         assert_eq!(scores.contains("One score is imputed."), f.engine_output.low_confidence_grade);
         assert!(part1.contains("- three-month: bear ") && part1.contains("prorated to three months"), "{}", f.symbol);
         assert!(part1.contains("- three-year: bear ") && part1.contains("extrapolation"), "{}", f.symbol);
         assert!(part1.contains("; hurdle ") && part1.contains("; read: "), "{}: {part1}", f.symbol);
         assert!(part1.contains(&format!("\nPrice: ${:.2} per share.\n", f.spot)), "{}: {part1}", f.symbol);
-        assert!(part1.contains("\nQUOTE AND CLOSES\n") && !part1.contains("the live print"), "{}: {part1}", f.symbol);
-        assert!(part1.contains("\nRATES\n- Treasury yields (FRED): 10-year "), "{}: {part1}", f.symbol);
-        assert!(f.is_fund || !part1.contains("\nFUND\n"), "{}", f.symbol);
+        assert!(part1.contains("\n## QUOTE AND CLOSES\n") && !part1.contains("the live print"), "{}: {part1}", f.symbol);
+        assert!(part1.contains("\n## RATES\n- Treasury yields (FRED): 10-year "), "{}: {part1}", f.symbol);
+        assert!(f.is_fund || !part1.contains("\n## FUND\n"), "{}", f.symbol);
         assert!(!part1.contains("Return "), "{}: Part 1 instructs\n{part1}", f.symbol);
         assert!(!part1.to_lowercase().contains("your "), "{}: Part 1 addresses the model\n{part1}", f.symbol);
         let mut last = 0;
@@ -971,7 +974,7 @@ fn attempt_6_thesis_messages_are_two_parts_with_no_app_concept() {
         assert_eq!((appendix.messages[2].role.as_str(), appendix.messages[2].content.as_str()), ("assistant", "[stub: the document]"));
         let ask = &appendix.messages[3].content;
         assert!(ask.contains("A field is null where the document states no value."), "{ask}");
-        assert!(ask.ends_with(&format!("RETURN SHAPE (every value is a placeholder)\n{}\n", crate::portfolio::appendix_return_shape())), "{ask}");
+        assert!(ask.ends_with(&format!("# RETURN SHAPE (every value is a placeholder)\n{}\n", crate::portfolio::appendix_return_shape())), "{ask}");
         assert!(banned_hits(ask).is_empty(), "{ask}");
     }
 }
@@ -998,12 +1001,12 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
         let (part1, part2) = user
             .split_once("\n======== PART 2: TASK ========\n")
             .unwrap_or_else(|| panic!("{}: no Part 2 marker\n{user}", f.symbol));
-        assert!(part1.starts_with(&format!("======== PART 1: INPUTS ========\nHOLDING\n{} (", f.symbol)), "{}: {part1}", f.symbol);
+        assert!(part1.starts_with(&format!("======== PART 1: INPUTS ========\n\n# HOLDING\n{} (", f.symbol)), "{}: {part1}", f.symbol);
         let mut last = 0;
         for section in [
-            "POSITION\n", "VERDICT\n", "COMPUTED\n", "COMPUTED ACTION\n", "GRADE\n",
-            "PRICE BANDS (USD, with the move each implies from the current price; the analyst's expected price from VERDICT beside each)\n",
-            "CAPITAL EFFICIENCY\n", "SUPPORTED ACTIONS\n", "INVESTOR PROFILE\n",
+            "# POSITION\n", "# VERDICT\n", "# COMPUTED\n", "## COMPUTED ACTION\n", "## GRADE\n",
+            "## PRICE BANDS (USD, with the move each implies from the current price; the analyst's expected price from VERDICT beside each)\n",
+            "## CAPITAL EFFICIENCY\n", "# SUPPORTED ACTIONS\n", "# INVESTOR PROFILE\n",
         ] {
             let key = format!("\n{section}");
             assert_eq!(part1.matches(&key).count(), 1, "{}: Part 1 lacks {section}\n{part1}", f.symbol);
@@ -1021,7 +1024,7 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
         let move_12 = (a.expected_price_12m.unwrap() / f.spot - 1.0) * 100.0;
         assert!(
             part1.contains(&format!(
-                "\nVERDICT\nAn analyst's read of the holding's data and research: the conviction, the expected share price at each horizon (USD, with the move each implies from the current price) and the thesis document.\nConviction: {}. Expected share price: three-month none, twelve-month {:.2} ({:+.1}%), three-year none.\nThesis document:\n{}",
+                "\n# VERDICT\nAn analyst's read of the holding's data and research: the conviction, the expected share price at each horizon (USD, with the move each implies from the current price) and the thesis document.\nConviction: {}. Expected share price: three-month none, twelve-month {:.2} ({:+.1}%), three-year none.\nThesis document:\n{}",
                 a.conviction.unwrap().as_str(),
                 a.expected_price_12m.unwrap(),
                 move_12,
@@ -1042,7 +1045,7 @@ fn attempt_6_action_messages_are_two_parts_with_no_app_concept() {
             h.tr_bear.unwrap() * 100.0, h.tr_base.unwrap() * 100.0, h.tr_bull.unwrap() * 100.0, h.hurdle_rate.unwrap() * 100.0
         )), "{}: {part1}", f.symbol);
         assert!(!part1.contains("Return "), "{}: Part 1 instructs\n{part1}", f.symbol);
-        for item in ["1. action — one rung for this holding", "2. rationale — one sentence", "RETURN SHAPE (every value is a placeholder)"] {
+        for item in ["1. action — one rung for this holding", "2. rationale — one sentence", "# RETURN SHAPE (every value is a placeholder)"] {
             assert!(part2.contains(item), "{}: Part 2 lacks {item}\n{part2}", f.symbol);
         }
         for absent in [
@@ -1095,17 +1098,17 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
             .unwrap_or_else(|| panic!("{label}: no Part 2 marker\n{user}"));
         assert!(
             part1.starts_with(
-                "======== PART 1: INPUTS ========\nHOLDING\nBND (VANGUARD TOTAL BOND MARKET ETF).\nPrice: $72.38 per share.\n"
+                "======== PART 1: INPUTS ========\n\n# HOLDING\nBND (VANGUARD TOTAL BOND MARKET ETF).\nPrice: $72.38 per share.\n"
             ),
             "{label}: {part1}"
         );
         let mut sections = vec![
-            "FETCHED VALUES\n", "CLASS\n", "EXPOSURE TILT\n", "UNDERLYING POSITIONING (CFTC weekly, as of 2026-09-09)\n",
-            "RISK PROFILE\n", "EVIDENCE GAPS\n", "COMPUTED\n", "MARKET ANALYSIS\n", "ANALYSIS\n",
+            "# FETCHED VALUES\n", "# CLASS\n", "# EXPOSURE TILT\n", "# UNDERLYING POSITIONING (CFTC weekly, as of 2026-09-09)\n",
+            "# RISK PROFILE\n", "# EVIDENCE GAPS\n", "# COMPUTED\n", "# MARKET ANALYSIS\n", "# ANALYSIS\n",
         ];
         if !debut {
-            sections.push("REVIEW\n");
-            sections.push("PRIOR THESIS (written 2026-09-03)\n");
+            sections.push("# REVIEW\n");
+            sections.push("# PRIOR THESIS (written 2026-09-03)\n");
         }
         let mut last = 0;
         for section in sections {
@@ -1115,16 +1118,16 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
             assert!(i > last, "{label}: {section} out of order\n{part1}");
             last = i;
         }
-        assert!(part1.contains("\nCLASS\nbond fund. Reported asset class: Fixed Income.\n"), "{label}: {part1}");
+        assert!(part1.contains("\n# CLASS\nbond fund. Reported asset class: Fixed Income.\n"), "{label}: {part1}");
         assert!(
-            part1.contains("\nEXPOSURE TILT\nThe fund's largest weights, by sector where reported and otherwise by country.\n- United States: 94.0%\n"),
+            part1.contains("\n# EXPOSURE TILT\nThe fund's largest weights, by sector where reported and otherwise by country.\n- United States: 94.0%\n"),
             "{label}: {part1}"
         );
-        assert!(part1.contains("\nEVIDENCE GAPS\nno duration, credit or yield-curve data for this fund\n"), "{label}: {part1}");
-        assert!(part1.contains("\nRISK PROFILE\nAnnualized realized volatility: "), "{label}: {part1}");
-        assert!(part1.contains("\nANALYSIS\nThe Vanguard Total Bond Market ETF tracks") || !debut, "{label}: {part1}");
-        assert!(part1.contains("\nPROFILE\n- name: Vanguard Total Bond Market ETF\n- asset class: Fixed Income\n- expense ratio: 0.03%\n- assets under management: 340.0B\n- NAV: 72.41\n"), "{label}: {part1}");
-        assert!(part1.contains("\nWEIGHTS\n- countries, largest first: United States 94.0%, Supranational 2.0%, Canada 1.0%\n"), "{label}: {part1}");
+        assert!(part1.contains("\n# EVIDENCE GAPS\nno duration, credit or yield-curve data for this fund\n"), "{label}: {part1}");
+        assert!(part1.contains("\n# RISK PROFILE\nAnnualized realized volatility: "), "{label}: {part1}");
+        assert!(part1.contains("\n# ANALYSIS\nThe Vanguard Total Bond Market ETF tracks") || !debut, "{label}: {part1}");
+        assert!(part1.contains("\n## PROFILE\n- name: Vanguard Total Bond Market ETF\n- asset class: Fixed Income\n- expense ratio: 0.03%\n- assets under management: 340.0B\n- NAV: 72.41\n"), "{label}: {part1}");
+        assert!(part1.contains("\n## WEIGHTS\n- countries, largest first: United States 94.0%, Supranational 2.0%, Canada 1.0%\n"), "{label}: {part1}");
         assert_eq!(part1.matches("daily realized return volatility: ").count(), 1, "{label}: the daily volatility renders once\n{part1}");
         assert!(!part1.contains("Return "), "{label}: Part 1 instructs\n{part1}");
         assert!(!part1.to_lowercase().contains("your "), "{label}: Part 1 addresses the model\n{part1}");
@@ -1169,7 +1172,7 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
         );
     }
     assert!(
-        cont_user.contains("\nPRIOR THESIS (written 2026-09-03)\nRole: bond fund supplying United States exposure; held for its portfolio role.\n"),
+        cont_user.contains("\n# PRIOR THESIS (written 2026-09-03)\nRole: bond fund supplying United States exposure; held for its portfolio role.\n"),
         "{cont_user}"
     );
     assert!(!cont_user.contains("A share split after this document was written"), "{cont_user}");
@@ -1210,10 +1213,10 @@ fn continuity_review_messages_are_two_parts_with_no_app_concept() {
         let (part1, part2) = user
             .split_once("\n======== PART 2: TASK ========\n")
             .unwrap_or_else(|| panic!("{label}: no Part 2 marker\n{user}"));
-        assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{label}: {part1}");
-        let mut sections = vec!["FETCHED VALUES\n", "ANALYSIS\n", "PRIOR POSITION\n", "PRIOR THESIS (written ", "REALIZED\n"];
+        assert!(part1.starts_with("======== PART 1: INPUTS ========\n\n# HOLDING\n"), "{label}: {part1}");
+        let mut sections = vec!["# FETCHED VALUES\n", "# ANALYSIS\n", "# PRIOR POSITION\n", "# PRIOR THESIS (written ", "# REALIZED\n"];
         if *priced {
-            sections.extend(["PRICE\n", "ACCURACY SCORES\n", "CHECKS SINCE THE PRIOR ANALYSIS\n", "COMPUTED READS\n"]);
+            sections.extend(["## PRICE\n", "## ACCURACY RECORD\n", "## CHECKS SINCE THE PRIOR ANALYSIS\n", "## COMPUTED READS\n"]);
         }
         let mut last = 0;
         for section in sections {
@@ -1224,9 +1227,9 @@ fn continuity_review_messages_are_two_parts_with_no_app_concept() {
             last = i;
         }
         // The prior analysis stays out: this run's analysis already folds it in.
-        assert!(!part1.contains("\nPRIOR ANALYSIS"), "{label}: {part1}");
+        assert!(!part1.contains("\n# PRIOR ANALYSIS"), "{label}: {part1}");
         // A role read carries no accuracy record.
-        assert_eq!(part1.contains("ACCURACY SCORES"), *priced, "{label}: {part1}");
+        assert_eq!(part1.contains("ACCURACY RECORD"), *priced, "{label}: {part1}");
         assert!(!part1.contains("Return "), "{label}: Part 1 instructs\n{part1}");
         assert!(!part1.to_lowercase().contains("your "), "{label}: Part 1 addresses the model\n{part1}");
         let mut last = 0;
@@ -1298,12 +1301,12 @@ fn synthetic_role_risk_action_message_is_two_parts_with_no_app_concept() {
     let (part1, part2) = user
         .split_once("\n======== PART 2: TASK ========\n")
         .unwrap_or_else(|| panic!("no Part 2 marker\n{user}"));
-    assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\nBND ("), "{part1}");
+    assert!(part1.starts_with("======== PART 1: INPUTS ========\n\n# HOLDING\nBND ("), "{part1}");
     let mut last = 0;
     for section in [
-        "POSITION\n", "CLASS\n", "EXPOSURE TILT\n", "RISK PROFILE\n",
-        "EVIDENCE GAPS\n", "VERDICT\n",
-        "SUPPORTED ACTIONS\n", "INVESTOR PROFILE\n",
+        "# POSITION\n", "# CLASS\n", "# EXPOSURE TILT\n", "# RISK PROFILE\n",
+        "# EVIDENCE GAPS\n", "# VERDICT\n",
+        "# SUPPORTED ACTIONS\n", "# INVESTOR PROFILE\n",
     ] {
         let key = format!("\n{section}");
         assert_eq!(part1.matches(&key).count(), 1, "Part 1 lacks {section}\n{part1}");
@@ -1311,20 +1314,20 @@ fn synthetic_role_risk_action_message_is_two_parts_with_no_app_concept() {
         assert!(at > last, "{section} out of order\n{part1}");
         last = at;
     }
-    assert!(!part1.contains("\nCOMPUTED\n"), "{part1}");
-    assert!(part1.contains("\nEVIDENCE GAPS\nno duration, credit or yield-curve data for this fund\n"), "{part1}");
-    assert!(part1.contains("\nSUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed in full: sell-all, trim, hold. A rung not listed is outside that rule.\n"), "{part1}");
+    assert!(!part1.contains("\n# COMPUTED\n"), "{part1}");
+    assert!(part1.contains("\n# EVIDENCE GAPS\nno duration, credit or yield-curve data for this fund\n"), "{part1}");
+    assert!(part1.contains("\n# SUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed in full: sell-all, trim, hold. A rung not listed is outside that rule.\n"), "{part1}");
     assert!(
         part2.contains("Decide it from CLASS, VERDICT, EXPOSURE TILT and RISK PROFILE first, refined by EVIDENCE GAPS, POSITION, SUPPORTED ACTIONS and INVESTOR PROFILE."),
         "{part2}"
     );
     assert!(!part1.contains("Return "), "Part 1 instructs\n{part1}");
     assert!(!part2.contains("Name the returns you weighed"));
-    for item in ["1. action — one rung for this holding", "2. rationale — one sentence", "RETURN SHAPE (every value is a placeholder)"] {
+    for item in ["1. action — one rung for this holding", "2. rationale — one sentence", "# RETURN SHAPE (every value is a placeholder)"] {
         assert!(part2.contains(item), "Part 2 lacks {item}\n{part2}");
     }
     assert!(!user.contains("CAPITAL EFFICIENCY") && !user.contains("PRICE TARGETS"), "{user}");
-    assert!(part1.contains("\nVERDICT\nAn analyst's read of the holding's data and research: the thesis document.\nThesis document:\nRole: "), "{part1}");
+    assert!(part1.contains("\n# VERDICT\nAn analyst's read of the holding's data and research: the thesis document.\nThesis document:\nRole: "), "{part1}");
     assert!(!part1.contains("Conviction:") && !part1.contains("Expected share price"), "{part1}");
     let mut blank = rr.clone();
     blank.thesis_document.clear();
@@ -1383,11 +1386,11 @@ fn research_samples() -> Vec<super::research::samples::Sample> {
 /// model's own text, rendered verbatim by contract, so the lexicon checks read
 /// the app's text around it.
 fn without_prior_document(user: &str) -> String {
-    let Some(start) = user.find("\nPRIOR THESIS") else {
+    let Some(start) = user.find("\n# PRIOR THESIS") else {
         return user.to_string();
     };
     let rest = &user[start + 1..];
-    let end = ["\nPAGES ALREADY RETRIEVED\n", "\nTOPIC\n"]
+    let end = ["\n# PAGES ALREADY RETRIEVED\n", "\n# TOPIC\n"]
         .iter()
         .filter_map(|marker| rest.find(marker))
         .min()
@@ -1417,10 +1420,10 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             .user
             .split_once("======== PART 2: TASK ========")
             .unwrap_or_else(|| panic!("{}: no Part 2 marker\n{}", s.label, s.user));
-        assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{}: {part1}", s.label);
+        assert!(part1.starts_with("======== PART 1: INPUTS ========\n\n# HOLDING\n"), "{}: {part1}", s.label);
         assert!(part1.contains("\nDate: 2026-09-16.\n"), "{}: no date line\n{part1}", s.label);
-        assert!(part1.contains("\nFETCHED VALUES\n"), "{}: no FETCHED VALUES\n{part1}", s.label);
-        assert!(part1.contains("\nTOPIC\n"), "{}: no TOPIC\n{part1}", s.label);
+        assert!(part1.contains("\n# FETCHED VALUES\n"), "{}: no FETCHED VALUES\n{part1}", s.label);
+        assert!(part1.contains("\n# TOPIC\n"), "{}: no TOPIC\n{part1}", s.label);
         assert!(s.format.is_none(), "{}: no research call carries a grammar", s.label);
         for gone in ["PRIOR FINDINGS", "CLAIMS SO FAR", "RETURN SHAPE", "followup_question", "fact_period"] {
             assert!(!s.user.contains(gone), "{}: {gone} survives\n{}", s.label, s.user);
@@ -1441,13 +1444,13 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 s.user
             );
             let at = |section: &str| part1.find(section).unwrap_or_else(|| panic!("{}: {section}", s.label));
-            assert!(at("\nFETCHED VALUES\n") < at("\nNEWS LEADS\n") && at("\nNEWS LEADS\n") < at("\nTOPIC\n"), "{}: {part1}", s.label);
+            assert!(at("\n# FETCHED VALUES\n") < at("\n# NEWS LEADS\n") && at("\n# NEWS LEADS\n") < at("\n# TOPIC\n"), "{}: {part1}", s.label);
         } else {
             assert!(part1.contains("0 a primary source"), "{}: the tier scale is unstated\n{part1}", s.label);
             assert!(part1.contains("source tier (0 to 5: 0 a primary source — a filing, the issuer, a regulator; 1 a licensed data provider; 2 high-trust factual reporting; 3 a specialist source, trusted within its vertical; 4 opinion-heavy commentary; 5 sentiment only)"), "{}: the tier scale's rungs are unstated\n{part1}", s.label);
             let questions = if s.label.contains("disconfirming") { "the question" } else { "the questions" };
             assert!(
-                part1.contains(&format!("\nEVIDENCE\nThe pages retrieved for {questions} under TOPIC, each under a header of: the url and title; the published date, where the search reported one; when it was retrieved; its source tier (0 to 5:")),
+                part1.contains(&format!("\n# EVIDENCE\nThe pages retrieved for {questions} under TOPIC, each under a header of: the url and title; the published date, where the search reported one; when it was retrieved; its source tier (0 to 5:")),
                 "{}: {part1}",
                 s.label
             );
@@ -1461,7 +1464,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 s.label
             );
             assert!(part1.contains("\nPAGE: https://") && part1.contains("BEGIN PAGE TEXT"), "{}: {part1}", s.label);
-            assert!(!part1.contains("\nNEWS LEADS\n"), "{}: a synthesis carries no leads", s.label);
+            assert!(!part1.contains("\n# NEWS LEADS\n"), "{}: a synthesis carries no leads", s.label);
             assert!(part2.contains("as plain text — no code fence, no JSON, no heading before the first line"), "{}: {part2}", s.label);
             assert!(part2.contains("The write-up runs 400 to 900 words."), "{}: {part2}", s.label);
             assert!(part2.contains("or FETCHED VALUES where the figure comes from there"), "{}: {part2}", s.label);
@@ -1499,14 +1502,14 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             assert_eq!(s.appended[0].role, "user");
             assert_eq!(
                 s.appended[0].content,
-                "SEARCHING\nReplies remaining, including this one: 8.\nPages fetched on the last reply are kept.\n"
+                "# SEARCHING\nReplies remaining, including this one: 8.\nPages fetched on the last reply are kept.\n"
             );
             assert!(banned_hits(&s.appended[0].content).is_empty());
             assert_no_routing_words(&s.label, &s.appended[0].content);
             if s.label.contains("previously retrieved pages") {
                 assert!(part1.contains("PAGES ALREADY RETRIEVED") && part1.contains("BEGIN PAGE TEXT"));
                 assert!(
-                    part1.contains("\nPAGES ALREADY RETRIEVED\nPages retrieved while researching this holding, each as web_fetch returns it.\n"),
+                    part1.contains("\n# PAGES ALREADY RETRIEVED\nPages retrieved while researching this holding, each as web_fetch returns it.\n"),
                     "{}: {part1}",
                     s.label
                 );
@@ -1517,7 +1520,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                     s.label
                 );
             } else if s.label.contains("follow-up pass") {
-                assert!(part1.contains("\nPAGES ALREADY RETRIEVED\n") && part1.contains("BEGIN PAGE TEXT"), "{}: {part1}", s.label);
+                assert!(part1.contains("\n# PAGES ALREADY RETRIEVED\n") && part1.contains("BEGIN PAGE TEXT"), "{}: {part1}", s.label);
                 assert!(
                     part2.contains("1. Read the pages under PAGES ALREADY RETRIEVED against the question under FOLLOW-UP. Search for what remains unanswered"),
                     "{}: {part2}",
@@ -1529,8 +1532,8 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                     "{}: {part2}",
                     s.label
                 );
-                assert!(part1.contains("\nFOLLOW-UP\nThe question this conversation pursues.\n"), "{}: {part1}", s.label);
-                assert!(part1.contains("\nWRITE-UP SO FAR\nWhat the research on this topic has established so far.\n"), "{}: {part1}", s.label);
+                assert!(part1.contains("\n# FOLLOW-UP\nThe question this conversation pursues.\n"), "{}: {part1}", s.label);
+                assert!(part1.contains("\n# WRITE-UP SO FAR\nWhat the research on this topic has established so far.\n"), "{}: {part1}", s.label);
             } else if !s.label.contains("disconfirming") {
                 assert!(
                     part2.contains("1. Search for what the questions ask") && !part2.contains("Read the pages"),
@@ -1550,7 +1553,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 );
                 assert!(part2.contains("where the question allows;") && !part2.contains("the questions"), "{}: {part2}", s.label);
                 assert!(
-                    part1.contains("\nWRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\n"),
+                    part1.contains("\n# WRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\n"),
                     "{}: {part1}",
                     s.label
                 );
@@ -1574,15 +1577,15 @@ fn research_messages_are_two_parts_with_no_app_concept() {
             assert!(part2.contains("a figure that cannot be right is a defect of the source"), "{}: {part2}", s.label);
             assert_eq!(
                 part2.contains("\nUse PRIOR ANALYSIS and PRIOR THESIS as background to shape how "),
-                part1.contains("\nPRIOR THESIS (written "),
+                part1.contains("\n# PRIOR THESIS (written "),
                 "{}: Part 2 and the prior documents disagree\n{part2}",
                 s.label
             );
         }
         if s.label.contains("continuity") {
-            assert!(part1.contains("\nPRIOR THESIS (written 2026-09-02)\n") && !part1.contains("STANDING CONDITIONS"), "{}: {part1}", s.label);
+            assert!(part1.contains("\n# PRIOR THESIS (written 2026-09-02)\n") && !part1.contains("STANDING CONDITIONS"), "{}: {part1}", s.label);
             let at = |section: &str| part1.find(section).unwrap_or_else(|| panic!("{}: {section}", s.label));
-            assert!(at("\nNEWS LEADS\n") < at("\nPRIOR THESIS") && at("\nPRIOR THESIS") < at("\nTOPIC\n"), "{}: {part1}", s.label);
+            assert!(at("\n# NEWS LEADS\n") < at("\n# PRIOR THESIS") && at("\n# PRIOR THESIS") < at("\n# TOPIC\n"), "{}: {part1}", s.label);
         } else {
             assert!(!part1.contains("PRIOR THESIS"), "{}: a debut carries no prior\n{part1}", s.label);
         }
@@ -1595,7 +1598,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 "{}: {part2}",
                 s.label
             );
-            assert!(part1.contains("\nFOLLOW-UP\n") && part1.contains("\nWRITE-UP SO FAR\n"), "{}: {part1}", s.label);
+            assert!(part1.contains("\n# FOLLOW-UP\n") && part1.contains("\n# WRITE-UP SO FAR\n"), "{}: {part1}", s.label);
         }
         if s.label.starts_with("synthesis") && s.label.contains("disconfirming") {
             assert!(
@@ -1603,7 +1606,7 @@ fn research_messages_are_two_parts_with_no_app_concept() {
                 "{}: {part2}",
                 s.label
             );
-            assert!(part1.contains("\nWRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\n"), "{}: {part1}", s.label);
+            assert!(part1.contains("\n# WRITE-UPS SO FAR\nWhat the research on this holding has established so far, each topic under its heading.\n"), "{}: {part1}", s.label);
         }
         if s.label.contains("the follow-up ask") {
             assert_eq!(s.appended.len(), 2, "{}", s.label);

@@ -1,6 +1,6 @@
 # Thesis document — stock, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v81`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v85`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 The thesis document is a thinking call with no grammar: Part 1 the fetched values, the computed reads under one heading, the market analysis and this run's analysis; Part 2 what the document covers, in order, and its length band.
@@ -21,7 +21,7 @@ Under SCORES, the factor lines and the return and cost of capital they name are 
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 13670 chars — the messages and tools as serialized |
+| Prompt material | 13719 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -31,20 +31,21 @@ of the message gives the inputs. Part 2 says what the document covers, in order,
 it.
 ~~~~
 
-## User message (13204 chars)
+## User message (13252 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
-HOLDING
+
+# HOLDING
 TSLA (Tesla, Inc.).
 Price: $358.97 per share.
 Date: 2026-09-16.
 
-FETCHED VALUES
+# FETCHED VALUES
 The holding's data (USD; B is billions, M is millions; a yield or a return as a percentage); a
 missing figure reads (gap). The rows follow under their labels.
 
-PROFILE
+## PROFILE
 - name: Tesla, Inc.
 - exchange: NASDAQ
 - sector: Consumer Cyclical
@@ -52,7 +53,7 @@ PROFILE
 - market capitalization: 1260.0B
 - shares outstanding: 3.5B
 
-STATEMENTS
+## STATEMENTS
 Quarterly statements as reported, newest first (period end, then the figure)
 - revenue: 2026-06-30 22.5B; 2026-03-31 19.3B; 2025-12-31 25.7B; 2025-09-30 25.2B; 2025-06-30 20.1B;
 2025-03-31 17.3B; 2024-12-31 23.0B; 2024-09-30 22.5B
@@ -79,30 +80,30 @@ Quarterly statements as reported, newest first (period end, then the figure)
 - cash and equivalents: 2026-06-30 33.0B; 2026-03-31 31.5B; 2025-12-31 30.8B; 2025-09-30 29.9B;
 2025-06-30 28.7B; 2025-03-31 27.4B; 2024-12-31 26.1B; 2024-09-30 25.0B
 
-CONSENSUS
+## CONSENSUS
 - consensus EPS by fiscal period end, as published: 2026-12-31 1.71; 2027-12-31 2.27
 
-DIVIDENDS
+## DIVIDENDS
 - (gap)
 
-QUOTE AND CLOSES
+## QUOTE AND CLOSES
 - 52-week range as served: low 215.38, high 430.76
 - daily closes: 1 session from 2026-09-14 to 2026-09-14
 
-FILINGS
+## FILINGS
 8-K filings of the trailing twelve months, newest first (filing date: items)
 - 2026-07-23: 2.02, 9.01
 - 2026-05-15 (8-K/A): 5.02
 - 2026-04-22: 2.02, 9.01
 
-SHORT INTEREST PRINT
+## SHORT INTEREST PRINT
 - settlement: 2026-08-31 (FINRA)
 - shares short: 80.0M
 - shares short at the prior settlement: 76.0M
 - average daily volume: 95.0M
 - days to cover: 0.84
 
-STREET
+## STREET
 - price targets: consensus 387.69, median 394.87, low 179.49, high 717.94
 - targets published: last month 4 averaging 412.82; last quarter 15 averaging 384.10; last year 48
 averaging 358.97
@@ -112,7 +113,7 @@ Rating actions, newest first (date: firm, previous grade to new grade, action)
 - 2026-07-24: [stub: grading firm], Buy to Buy, maintain
 - 2026-04-23: [stub: grading firm], (gap) to Hold, initiate
 
-INSIDERS AND CONGRESS
+## INSIDERS AND CONGRESS
 Insider trades, newest first (transaction date: name, role, type, shares at price, filing date)
 - 2026-09-05: [stub: insider name], officer, S-Sale, 10000 shares at 351.79, filed 2026-09-08
 - 2026-08-20: [stub: insider name], director, A-Award, 2500 shares at 0.00, filed 2026-08-21
@@ -125,7 +126,7 @@ disclosure date)
 - 2026-08-14: House, [stub: member], Joint, Purchase, $1,001 - $15,000, disclosed 2026-09-02
 - 2026-06-03: Senate, [stub: member], Spouse, Sale, $15,001 - $50,000, disclosed 2026-07-01
 
-EARNINGS
+## EARNINGS
 Surprises, newest first (announcement date: EPS actual vs estimate, revenue actual)
 - 2026-07-22: EPS 0.34 vs 0.37 estimated, revenue 22.5B
 - 2026-04-22: EPS 0.17 vs 0.25 estimated, revenue 19.3B
@@ -133,19 +134,19 @@ Surprises, newest first (announcement date: EPS actual vs estimate, revenue actu
 - 2025-10-22: EPS 0.20 vs 0.16 estimated, revenue 25.2B
 - next earnings: 2026-10-21 (EPS estimate 0.55)
 
-VALUATION
+## VALUATION
 - trailing-twelve-month ratios: P/E 370.07; EV/EBITDA 124.79; EV/sales 13.33; P/B 16.22; FCF yield
 0.2%; ROIC 8.3%; ROE 4.4%; net debt/EBITDA -2.48
 - owner earnings (FY2026 Q2, period end 2026-06-30): 2.1B; 0.60 per share
 - enterprise value (2026-06-30): 1235.4B; market capitalization 1260.0B; total debt 8.4B; cash 33.0B
 - float (2026-09-01): float shares 3.0B; shares outstanding 3.5B; free float 86.9%
 
-M&A
+## M&A
 SEC merger registration filings, trailing twelve months; a filing follows a deal's announcement,
 typically by several weeks, and covers deals paid at least partly in stock
 - acquirer of [stub: counterparty], filed 2026-05-20
 
-SEGMENTS
+## SEGMENTS
 Revenue by product, newest fiscal year first
 - FY2025 (period end 2025-12-31): Automotive 68.5B, Services and other 10.3B, Energy generation and
 storage 9.5B
@@ -155,14 +156,14 @@ Revenue by geography, newest fiscal year first
 - FY2025 (period end 2025-12-31): United States 41.5B, Other 27.0B, China 19.8B
 - FY2024 (period end 2024-12-31): United States 42.0B, Other 25.5B, China 18.5B
 
-RATES
+## RATES
 - Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%
 
-COMPUTED
-The computed reads follow under their labels, up to MARKET ANALYSIS; each is derived from the
-fetched data by fixed formulas.
+# COMPUTED
+The computed reads follow under their labels; each is derived from the fetched data by fixed
+formulas.
 
-METRICS
+## METRICS
 Flow metrics (net margin, gross margin, revenue growth, P/E, P/S) are on a TTM (four trailing
 quarters) basis. Balance-sheet metrics (debt / equity, P/B) are from FMP's latest quarterly balance
 sheet.
@@ -179,7 +180,7 @@ day)
 - forward consensus, next twelve months blended over 2 fiscal periods: EPS low 1.38 / mid 2.10 /
 high 3.07; revenue low 98.0B / mid 104.0B / high 110.0B — the price bands' driver
 
-SCORES
+## SCORES
 Four scores from 0 to 100, higher is better on every axis: quality; valuation, where higher means
 more attractive; momentum; risk, where higher means more resilient. The grade is a letter derived
 from the quality, valuation and risk scores. Each score is the mean of the factors listed under it,
@@ -216,7 +217,7 @@ risk
 - debt over equity (lower is better): 0.1076; band 0.8000 ± 0.8000 (Consumer Cyclical): 93; rank
 among 12 earlier readings: 83; score 88
 
-PRICE BANDS (USD)
+## PRICE BANDS (USD)
 - three-month: bear 229.41 / base 310.01 / bull 390.61. Method: base = the twelve-month base price
 return prorated to three months; bear and bull = ±26.0% (two standard deviations of daily volatility
 over 63 sessions, capped at 26%)
@@ -231,23 +232,23 @@ multiples — an extrapolation that assumes today's rate and spread regime holds
 of +11.2% at the bull multiple, +325.8% at the base multiple, +634.8% at the bear multiple.
 Assumptions: rate-anchored (spread-percentile) multiples, 10-year Treasury 4.97%.
 
-CAPITAL EFFICIENCY
+## CAPITAL EFFICIENCY
 The computed twelve-month total return in each scenario (the move from the current price to the
 scenario price, plus forward income per share, as a fraction of the current price) and the hurdle
 rate it is measured against, with the read: clears when even the bear case clears the hurdle, fails
 when even the bull case misses it, indeterminate otherwise.
 bear -82.6% / base -54.3% / bull +155.7%; hurdle 12.7%; read: indeterminate.
 
-OPTIONS ACTIVITY
+## OPTIONS ACTIVITY
 put/call volume 0.961, put/call open interest 1.090, implied volatility 0.435, IV skew 0.000 (mean
 put IV minus mean call IV, in IV's decimal unit; positive means puts are richer).
 
-SHORT INTEREST (FINRA biweekly file, settlement 2026-08-31; the file lags its settlement by about 7
-business days)
+## SHORT INTEREST (FINRA biweekly file, settlement 2026-08-31; the file lags its settlement by about
+7 business days)
 80.0M shares short (+5.3% vs the prior settlement's 76.0M), average daily volume 95.0M, days to
 cover 0.84
 
-MARKET ANALYSIS
+# MARKET ANALYSIS
 A market-level analysis dated 2026-09-16, followed by the stance of the 3 most recent analyses.
 ## Market Signal Thesis
 
@@ -261,7 +262,7 @@ A market-level analysis dated 2026-09-16, followed by the stance of the 3 most r
 - 2026-08-30: thesis mixed, risk posture mixed
 - 2026-08-25: thesis mixed, risk posture mixed
 
-ANALYSIS
+# ANALYSIS
 [stub: this run's analysis — the research consolidated across the topics, as the analysis call
 returned it]
 

@@ -1,10 +1,10 @@
 # Self-review — priced fund, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v84`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v85`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: SPMO, on a continuity run over the prior position of 2026-09-02, its fund context synthetic.
 The review is a thinking call with no grammar, on a continuity run only: Part 1 the holding header and FETCHED VALUES, this run's ANALYSIS, then PRIOR POSITION and PRIOR THESIS, then REALIZED; Part 2 what the review covers, in order, and its length band. The review reaches this run's thesis document alone.
-A priced fund takes the same call; with no check landed since the prior analysis, the fixed sentence says the scores shown are the ones it read. The prior's read-through mark here is hand-written.
+A priced fund takes the same call; with no check written since the prior analysis, the fixed sentence says the scores shown are the ones it read. The prior's read-through mark here is hand-written.
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the dates, URLs and headers around it are as rendered.
 The fund's name, mandate, expense ratio, assets, NAV, weights and distributions — the PROFILE, WEIGHTS and DIVIDENDS rows and the FUND block — are synthetic values layered onto the fixture for these examples alone.
 
@@ -19,7 +19,7 @@ The fund's name, mandate, expense ratio, assets, NAV, weights and distributions 
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 7847 chars — the messages and tools as serialized |
+| Prompt material | 7754 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -28,48 +28,49 @@ You are an investment analyst reviewing the prior position on one holding for a 
 Part 1 of the message gives the inputs. Part 2 says what the review covers and how to return it.
 ~~~~
 
-## User message (7476 chars)
+## User message (7388 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
-HOLDING
+
+# HOLDING
 SPMO (Invesco S&P 500 Momentum ETF).
 Price: $144.19 per share.
 Date: 2026-09-16.
 
-FETCHED VALUES
+# FETCHED VALUES
 The holding's data (USD; B is billions, M is millions; a yield or a return as a percentage); a
 missing figure reads (gap). The rows follow under their labels.
 
-PROFILE
+## PROFILE
 - name: Invesco S&P 500 Momentum ETF
 - asset class: Equity
 - expense ratio: 0.13%
 - assets under management: 16.0B
 - NAV: 144.69
 
-WEIGHTS
+## WEIGHTS
 - sectors: Technology 31.0%, Financial Services 19.0%, Industrials 14.0%, Communication Services
 12.0%, Consumer Cyclical 9.0%, Healthcare 7.0%, Utilities 4.0%, Energy 2.0%, Basic Materials 2.0%
 - countries, largest first: United States 100.0%
 
-DIVIDENDS
+## DIVIDENDS
 - dividends, latest ex-dates first (ex-date, amount per share): 2026-06-23 0.2756 (paid 2026-06-27);
 2026-03-24 0.2611 (paid 2026-03-28); 2025-12-22 0.2544 (paid 2025-12-26); 2025-09-22 0.2578 (paid
 2025-09-26)
 
-QUOTE AND CLOSES
+## QUOTE AND CLOSES
 - daily closes: 3 sessions from 2026-09-01 to 2026-09-14
 - close on the prior analysis date 2026-09-02: 139.86
 
-RATES
+## RATES
 - Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%
 
-ANALYSIS
+# ANALYSIS
 [stub: this run's analysis — the research consolidated across the topics, as the analysis call
 returned it]
 
-PRIOR POSITION
+# PRIOR POSITION
 The position stated at the prior analysis: its date, the price then, the action with its rationale,
 the conviction, and the expected share price at each horizon with the horizon's date.
 Date: 2026-09-02.
@@ -82,7 +83,7 @@ Expected price at three months: none stated (2026-12-02).
 Expected price at twelve months: $139.00 by 2027-09-02.
 Expected price at three years: none stated (2029-09-02).
 
-PRIOR THESIS (written 2026-09-02)
+# PRIOR THESIS (written 2026-09-02)
 Thesis: SPMO delivers momentum-alpha by rotating S&P 500 into price-momentum leaders, providing
 tactical outperformance during trending markets but vulnerable to factor mean-reversion in rotation
 regimes or valuation compression from rising rates.
@@ -118,39 +119,32 @@ under severe cases). My bull case assumes momentum factor continuation into AI l
 with potential net-short squeeze convexity as noted in the house view; my bear reflects valuation
 reset scenario if HY spreads breach 3.0% and rotation to defensives accelerates.
 
-REALIZED
-What has happened since the prior analysis, computed from the daily closes and the stored records,
-under the labels below.
+# REALIZED
+What has happened since the prior analysis, computed from the daily closes and the stored records.
 
-PRICE
+## PRICE
 Now: $144.19 per share, +3.1% since the prior analysis (from the close of $139.86 on 2026-09-01).
 Closes since the prior analysis: high $144.19 on 2026-09-14, low $139.86 on 2026-09-02.
 
-EXPECTED PRICES
-Each expected price under PRIOR POSITION at its horizon date: once the date has passed, the close on
-it — or the last close within 5 sessions before it — and the score, 100 × (1 − |expected − close| ÷
-close), floored at 0; a date not yet passed reads not reached, with the path so far under PRICE.
-- three months: none stated.
-- twelve months (2027-09-02): not reached.
-- three years: none stated.
-
-ACCURACY SCORES
-How the expected prices stated on this holding have scored once their horizon dates passed, at each
-horizon, for the analyst's prices and for the computed base values: the mean of the per-check
-scores, each 100 × (1 − |expected − close| ÷ close), floored at 0, so 0 to 100; no score yet before
-the first check. Each score names the date of the check that last moved it and whether the prior
-analysis read it.
+## ACCURACY RECORD
+The running mean, at each horizon, of the scores of the expected prices stated at earlier analyses
+of this holding, one mean for the analyst's prices and one for the computed base values (the base of
+the price band a fixed formula derives from the holding's data). A score is 100 × (1 − |expected −
+close| ÷ close), floored at 0, so 0 to 100. The close is the one on the price's horizon date, or the
+last close within 5 sessions before it. No score yet before the first. Each mean names the date it
+last moved and whether the prior analysis read it.
 - three months: analyst no score yet; computed base no score yet.
 - twelve months: analyst no score yet; computed base no score yet.
 - three years: analyst no score yet; computed base no score yet.
 
-CHECKS SINCE THE PRIOR ANALYSIS
-No check landed after the prior analysis was written: the scores above are the ones it read, its
-thesis document under PRIOR THESIS.
+## CHECKS SINCE THE PRIOR ANALYSIS
+No check has been written since the prior analysis. The scores above are the ones it read, and the
+document under PRIOR THESIS was written with them in view.
 
-COMPUTED READS
-The computed reads at the prior analysis beside today's, then → now; the prior price bands on
-today's price basis.
+## COMPUTED READS
+The reads fixed formulas derive from the holding's data — the grade, scores, risk tier, capital
+efficiency, price bands and metrics — at the prior analysis beside today's, then → now; the prior
+price bands on today's price basis.
 - grade: C → C.
 - scores (0 to 100, higher is better; valuation higher means more attractive, risk higher means more
 resilient): quality 50 → 50; valuation 83 → 83; momentum 94 → 94; risk 67 → 67.
@@ -170,7 +164,8 @@ first line. It covers, in this order:
 1. Each expected price under PRIOR POSITION against what happened, from REALIZED.
 
 2. Each falsifier and each trigger the document under PRIOR THESIS names — whether the falsifier
-tripped or the trigger fired, by the numbers under FETCHED VALUES, ANALYSIS and REALIZED.
+tripped or the trigger fired, or whether that cannot be told, from what is under FETCHED VALUES,
+ANALYSIS and REALIZED.
 
 3. Whether the thesis survives.
 

@@ -10,7 +10,7 @@ use chrono::NaiveDate;
 use crate::portfolio::distill::DistillPrompt;
 use crate::portfolio::dossier::HoldingDossier;
 use crate::portfolio::engine::{self, DatedValue, EngineOutput, RateAnchors, ThenNow};
-use crate::portfolio::outcome::{self, CheckOutcome, Horizon, HorizonPrices, PriceRecord, UnscorableCause};
+use crate::portfolio::outcome::{self, CheckOutcome, Horizon, UnscorableCause};
 use crate::portfolio::pipeline::{self, SplitContext};
 use crate::portfolio::{ActionSource, AnalysisRecord, GradedVerdict, VerdictDisposition};
 
@@ -109,10 +109,6 @@ fn prior_session(d: &HoldingDossier) -> Option<NaiveDate> {
     d.prior_vintage.as_deref().and_then(crate::market_clock::et_date_of)
 }
 
-fn run_session(d: &HoldingDossier) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(&d.analysis_date, "%Y-%m-%d").ok()
-}
-
 fn iso(date: NaiveDate) -> String {
     date.format("%Y-%m-%d").to_string()
 }
@@ -203,7 +199,7 @@ fn prior_position_section(input: &ReviewInput) -> PriorPosition {
     match &prior.disposition {
         VerdictDisposition::Priced(g) => {
             let mut p = format!(
-                "\nPRIOR POSITION\nThe position stated at the prior analysis: its date, the price \
+                "\n# PRIOR POSITION\nThe position stated at the prior analysis: its date, the price \
                  then, the action with its rationale, the conviction, and the expected share \
                  price at each horizon with the horizon's date.{basis_gloss}\n"
             );
@@ -249,14 +245,14 @@ fn prior_position_section(input: &ReviewInput) -> PriorPosition {
         }
         VerdictDisposition::RoleRiskOnly(_) => {
             let mut p = String::from(
-                "\nPRIOR POSITION\nThe action taken at the prior analysis, with its rationale.\n",
+                "\n# PRIOR POSITION\nThe action taken at the prior analysis, with its rationale.\n",
             );
             p.push_str(&action_lines(prior));
             PriorPosition { text: p, has_prices: false, role_read: true }
         }
         VerdictDisposition::InsufficientEvidence { .. } => {
             let mut p = format!(
-                "\nPRIOR POSITION\nThe position behind the document under PRIOR THESIS: its date \
+                "\n# PRIOR POSITION\nThe position behind the document under PRIOR THESIS: its date \
                  and the price then.{basis_gloss}\n"
             );
             p.push_str(&format!("Date: {date}.\n"));
@@ -371,25 +367,29 @@ fn realized_section(input: &ReviewInput) -> String {
 
 fn priced_realized(input: &ReviewInput, engine_now: &EngineOutput) -> String {
     let d = input.dossier;
+    let priced = match d.prior_verdict.as_ref().map(|v| &v.disposition) {
+        Some(VerdictDisposition::Priced(g)) => Some(g),
+        _ => None,
+    };
+    let price = price_block(d);
+    let accuracy = accuracy_block(d);
+    let computed = priced
+        .map(|g| computed_then_now_block(input, g, engine_now))
+        .unwrap_or_default();
     let mut p = String::from(
-        "\nREALIZED\nWhat has happened since the prior analysis, computed from the daily closes \
-         and the stored records, under the labels below.\n",
+        "\n# REALIZED\nWhat has happened since the prior analysis, computed from the daily closes \
+         and the stored records.\n",
     );
-    p.push_str(&price_block(d));
-    if let Some(VerdictDisposition::Priced(g)) = d.prior_verdict.as_ref().map(|v| &v.disposition) {
-        p.push_str(&expected_prices_block(input, g));
-    }
-    p.push_str(&accuracy_block(d));
-    if let Some(VerdictDisposition::Priced(g)) = d.prior_verdict.as_ref().map(|v| &v.disposition) {
-        p.push_str(&computed_then_now_block(input, g, engine_now));
-    }
+    p.push_str(&price);
+    p.push_str(&accuracy);
+    p.push_str(&computed);
     p
 }
 
 /// PRICE: the price now, its move since the prior run against the base close,
 /// and the path since — the highest and lowest closes with their dates.
 fn price_block(d: &HoldingDossier) -> String {
-    let mut p = String::from("\nPRICE\n");
+    let mut p = String::from("\n## PRICE\n");
     match (price_now(d), move_base(d)) {
         (Some(now), Some(base)) => p.push_str(&format!(
             "Now: ${now:.2} per share, {:+.1}% since the prior analysis (from the close of \
@@ -413,90 +413,22 @@ fn price_block(d: &HoldingDossier) -> String {
     p
 }
 
-/// EXPECTED PRICES: each prior expected price at its horizon date, scored by
-/// the accuracy pass's own check once the date has passed (strictly before
-/// this run's session, the due rule); omitted where the prior stated no price.
-fn expected_prices_block(input: &ReviewInput, g: &GradedVerdict) -> String {
-    let d = input.dossier;
-    if prior_prices(g).iter().all(|(_, v)| v.is_none()) {
-        return String::new();
-    }
-    let (Some(created), Some(session)) = (prior_session(d), run_session(d)) else {
-        return String::new();
-    };
-    // The prior position as a price record, so the check reads the close and
-    // the bridge exactly as the accuracy pass would.
-    let record = PriceRecord {
-        symbol: d.position.symbol.clone(),
-        created_on: iso(created),
-        spot: d.prior_spot.unwrap_or(0.0),
-        anchor: d.prior_authoring_close.clone(),
-        model: HorizonPrices {
-            three_month: g.appendix.expected_price_3m,
-            twelve_month: g.appendix.expected_price_12m,
-            three_year: g.appendix.expected_price_3y,
-        },
-        engine: HorizonPrices::default(),
-    };
-    let mut p = format!(
-        "\nEXPECTED PRICES\nEach expected price under PRIOR POSITION at its horizon date: once the \
-         date has passed, the close on it — or the last close within {} sessions before it — \
-         and the score, 100 × (1 − |expected − close| ÷ close), floored at 0; a date not yet \
-         passed reads not reached, with the path so far under PRICE.\n",
-        outcome::HORIZON_PROXIMITY_SESSIONS
-    );
-    for (h, price) in prior_prices(g) {
-        let Some(_) = price else {
-            p.push_str(&format!("- {}: none stated.\n", horizon_words(h)));
-            continue;
-        };
-        let Some(date) = outcome::horizon_date(created, h) else {
-            continue;
-        };
-        if date >= session {
-            p.push_str(&format!("- {} ({}): not reached.\n", horizon_words(h), iso(date)));
-            continue;
-        }
-        if input.price_bridge.is_none() {
-            p.push_str(&format!("- {} ({}): passed; withheld.\n", horizon_words(h), iso(date)));
-            continue;
-        }
-        match outcome::check_horizon(&record, h, &d.financials.daily_closes) {
-            CheckOutcome::Scored { close, model: Some(leg), .. } => p.push_str(&format!(
-                "- {} ({}): close ${:.2} on {}; score {:.1}.\n",
-                horizon_words(h),
-                iso(date),
-                close.value,
-                close.date,
-                leg.score
-            )),
-            CheckOutcome::Scored { model: None, .. } => {
-                p.push_str(&format!("- {}: none stated.\n", horizon_words(h)))
-            }
-            CheckOutcome::Unscorable { cause } => p.push_str(&format!(
-                "- {} ({}): passed, not scored — {}.\n",
-                horizon_words(h),
-                iso(date),
-                cause_words(cause)
-            )),
-        }
-    }
-    p
-}
-
-/// ACCURACY SCORES and the checks since the prior analysis
+/// ACCURACY RECORD and the checks since the prior analysis
 /// (`docs/portfolio-analysis.md` §Outcome learning).
 fn accuracy_block(d: &HoldingDossier) -> String {
     let Some(acc) = &d.accuracy else {
-        return "\nACCURACY SCORES\nThe accuracy record could not be read.\n".to_string();
+        return "\n## ACCURACY RECORD\nThe accuracy record could not be read.\n".to_string();
     };
     let mark = d.prior_accuracy_read_through;
-    let mut p = String::from(
-        "\nACCURACY SCORES\nHow the expected prices stated on this holding have scored once their \
-         horizon dates passed, at each horizon, for the analyst's prices and for the computed \
-         base values: the mean of the per-check scores, each 100 × (1 − |expected − close| ÷ \
-         close), floored at 0, so 0 to 100; no score yet before the first check. Each score names \
-         the date of the check that last moved it and whether the prior analysis read it.\n",
+    let mut p = format!(
+        "\n## ACCURACY RECORD\nThe running mean, at each horizon, of the scores of the expected prices \
+         stated at earlier analyses of this holding, one mean for the analyst's prices and one \
+         for the computed base values (the base of the price band a fixed formula derives from \
+         the holding's data). A score is 100 × (1 − |expected − close| ÷ close), floored at 0, so 0 to 100. \
+         The close is the one on the price's horizon date, or the last close within {} sessions \
+         before it. No score yet before the first. Each mean names the date it last moved and \
+         whether the prior analysis read it.\n",
+        outcome::HORIZON_PROXIMITY_SESSIONS
     );
     let arm = |s: Option<&outcome::ArmScore>| match s {
         None => "no score yet".to_string(),
@@ -522,12 +454,14 @@ fn accuracy_block(d: &HoldingDossier) -> String {
     if since.lines.is_empty() {
         p.push_str(match mark {
             Some(_) => {
-                "\nCHECKS SINCE THE PRIOR ANALYSIS\nNo check landed after the prior analysis was \
-                 written: the scores above are the ones it read, its thesis document under PRIOR \
-                 THESIS.\n"
+                "\n## CHECKS SINCE THE PRIOR ANALYSIS\nNo check has been written since the prior analysis. \
+                 The scores above are the ones it read, and the document under PRIOR THESIS was \
+                 written with them in view.\n"
             }
-            None => "\nCHECKS SINCE THE PRIOR ANALYSIS\nNo check has been written on this holding's \
-                     forecasts.\n",
+            None => {
+                "\n## CHECKS SINCE THE PRIOR ANALYSIS\nNo check has been written on this holding's \
+                 expected prices.\n"
+            }
         });
         return p;
     }
@@ -535,21 +469,23 @@ fn accuracy_block(d: &HoldingDossier) -> String {
     // but not every one landed after it.
     p.push_str(match mark {
         Some(_) => {
-            "\nCHECKS SINCE THE PRIOR ANALYSIS\nEvery line landed after the prior analysis was \
-             written; none was read before. One line per forecast and horizon, newest horizon \
-             date first: the forecast's date, the horizon and its date, the close read, and each \
-             expected price with its score.\n"
+            "\n## CHECKS SINCE THE PRIOR ANALYSIS\nThe checks added to the record since the prior \
+             analysis was written, so it saw none of them. A check is one horizon of an earlier analysis of this \
+             holding: the analyst's expected price and the computed base value, each scored against that horizon's close as under ACCURACY RECORD. A price that was not \
+             stated reads none stated, and a check with no usable close says why it was not \
+             scored. Newest horizon date first.\n"
         }
         None => {
-            "\nCHECKS SINCE THE PRIOR ANALYSIS\nThe prior analysis read no accuracy record, so none \
-             of these was read before. One line per forecast and horizon, newest horizon date \
-             first: the forecast's date, the horizon and its date, the close read, and each \
-             expected price with its score.\n"
+            "\n## CHECKS SINCE THE PRIOR ANALYSIS\nThe prior analysis read no accuracy record, so it \
+             saw none of these checks. A check is one horizon of an earlier analysis of this \
+             holding: the analyst's expected price and the computed base value, each scored against that horizon's close as under ACCURACY RECORD. A price that was not \
+             stated reads none stated, and a check with no usable close says why it was not \
+             scored. Newest horizon date first.\n"
         }
     });
     for (ep, check, date) in &since.lines {
         let head = format!(
-            "- forecast of {}, {} ({})",
+            "- analysis of {}, {} ({})",
             ep.record.created_on,
             horizon_words(check.check.horizon),
             iso(*date)
@@ -580,7 +516,7 @@ fn accuracy_block(d: &HoldingDossier) -> String {
     }
     if since.total > since.lines.len() {
         p.push_str(&format!(
-            "The {} lines with the newest horizon dates of {}.\n",
+            "The {} checks with the newest horizon dates of {}.\n",
             since.lines.len(),
             since.total
         ));
@@ -714,8 +650,9 @@ fn computed_then_now_block(input: &ReviewInput, g: &GradedVerdict, now: &EngineO
         input.price_bridge,
     );
     let mut p = String::from(
-        "\nCOMPUTED READS\nThe computed reads at the prior analysis beside today's, then → now; \
-         the prior price bands on today's price basis.\n",
+        "\n## COMPUTED READS\nThe reads fixed formulas derive from the holding's data — the grade, \
+         scores, risk tier, capital efficiency, price bands and metrics — at the prior analysis \
+         beside today's, then → now; the prior price bands on today's price basis.\n",
     );
     p.push_str(&format!("- grade: {} → {}.\n", realized.grade.then.as_str(), realized.grade.now.as_str()));
     let scores: Vec<String> = realized
@@ -833,7 +770,7 @@ fn role_risk_realized(input: &ReviewInput) -> String {
     let then = d.prior_fund_exposure.as_ref();
     let now = d.fund.as_ref().map(|f| crate::portfolio::fund::exposure_basis(&f.fund));
     let mut p = format!(
-        "\nREALIZED\nWhat has happened since the prior analysis, computed from the daily closes \
+        "\n# REALIZED\nWhat has happened since the prior analysis, computed from the daily closes \
          and the stored reads, then → now.{}\n",
         basis_gloss(input.price_bridge)
     );
@@ -930,15 +867,15 @@ fn task_section(input: &ReviewInput, position: &PriorPosition) -> String {
     p.push_str(&format!("\n1. {first}\n"));
     if role {
         p.push_str(
-            "\n2. Each trigger the document under PRIOR THESIS names — whether it fired, by the \
-             numbers under FETCHED VALUES, ANALYSIS and REALIZED.\n",
+            "\n2. Each trigger the document under PRIOR THESIS names — whether it fired, or whether \
+             that cannot be told, from what is under FETCHED VALUES, ANALYSIS and REALIZED.\n",
         );
         p.push_str("\n3. Whether the role survives.\n");
     } else {
         p.push_str(
             "\n2. Each falsifier and each trigger the document under PRIOR THESIS names — whether \
-             the falsifier tripped or the trigger fired, by the numbers under FETCHED VALUES, \
-             ANALYSIS and REALIZED.\n",
+             the falsifier tripped or the trigger fired, or whether that cannot be told, from \
+             what is under FETCHED VALUES, ANALYSIS and REALIZED.\n",
         );
         p.push_str("\n3. Whether the thesis survives.\n");
     }
@@ -956,7 +893,7 @@ fn task_section(input: &ReviewInput, position: &PriorPosition) -> String {
 mod tests {
     use super::*;
     use crate::portfolio::engine::EngineVerdict;
-    use crate::portfolio::outcome::{Check, LegScore, StoredCheck, StoredEpisode};
+    use crate::portfolio::outcome::{Check, HorizonPrices, LegScore, PriceRecord, StoredCheck, StoredEpisode};
     use crate::portfolio::pipeline::tests::{dossier, rates, strong_financials};
     use crate::portfolio::pipeline::{analyze_holding, StubAnalyst};
     use crate::portfolio::{AssetClass, HoldingVerdict};
@@ -1059,17 +996,16 @@ mod tests {
         let user = render(&d, &now, Some(1.0));
         let order = [
             "======== PART 1: INPUTS ========",
-            "\nHOLDING\n",
-            "\nFETCHED VALUES",
-            "\nANALYSIS\n",
-            "\nPRIOR POSITION\n",
-            "\nPRIOR THESIS (written 2026-07-01)\n",
-            "\nREALIZED\n",
-            "\nPRICE\n",
-            "\nEXPECTED PRICES\n",
-            "\nACCURACY SCORES\n",
-            "\nCHECKS SINCE THE PRIOR ANALYSIS\n",
-            "\nCOMPUTED READS\n",
+            "\n# HOLDING\n",
+            "\n# FETCHED VALUES",
+            "\n# ANALYSIS\n",
+            "\n# PRIOR POSITION\n",
+            "\n# PRIOR THESIS (written 2026-07-01)\n",
+            "\n# REALIZED\n",
+            "\n## PRICE\n",
+            "\n## ACCURACY RECORD\n",
+            "\n## CHECKS SINCE THE PRIOR ANALYSIS\n",
+            "\n## COMPUTED READS\n",
             "======== PART 2: TASK ========",
         ];
         let mut at = 0;
@@ -1105,7 +1041,6 @@ mod tests {
         let withheld = render(&d, &now, None);
         assert!(withheld.contains("Price then: withheld.\n"), "{withheld}");
         assert!(withheld.contains("do not include the last close before the prior analysis"), "{withheld}");
-        assert!(withheld.contains("passed; withheld."), "{withheld}");
     }
 
     #[test]
@@ -1119,21 +1054,12 @@ mod tests {
     }
 
     #[test]
-    fn a_passed_horizon_scores_its_close_and_an_open_one_shows_the_path() {
-        let (mut d, now) = continuity();
-        graded_mut(&mut d).appendix.expected_price_3m = Some(100.0);
+    fn realized_opens_on_one_line_and_the_price_group_shows_the_move_and_the_path() {
+        let (d, now) = continuity();
         let user = render(&d, &now, Some(1.0));
-        // The three-month date 2026-10-01 is before the run's session: the
-        // close on it scores the prior price (100 vs 110: 90.9).
-        assert!(user.contains("- three months (2026-10-01): close $110.00 on 2026-10-01; score 90.9.\n"), "{user}");
-        assert!(user.contains("- twelve months (2027-07-01): not reached.\n"), "{user}");
-        assert!(user.contains("high $120.00 on 2026-07-15, low $90.00 on 2026-08-14."), "{user}");
+        assert!(user.contains("\n# REALIZED\nWhat has happened since the prior analysis, computed from the daily closes and the stored records.\n\n## PRICE\n"), "{user}");
         assert!(user.contains("Now: $115.00 per share, +15.0% since the prior analysis (from the close of $100.00 on 2026-06-30)."), "{user}");
-        // A passed horizon whose close is out of reach is written unscorable.
-        let mut gap = d.clone();
-        gap.financials.daily_closes.retain(|c| c.date.as_str() < "2026-09-01" );
-        let user = render(&gap, &now, Some(1.0));
-        assert!(user.contains("passed, not scored — no close within 5 sessions before the date."), "{user}");
+        assert!(user.contains("high $120.00 on 2026-07-15, low $90.00 on 2026-08-14."), "{user}");
     }
 
     #[test]
@@ -1153,27 +1079,27 @@ mod tests {
             "{user}"
         );
         assert!(user.contains("- twelve months: analyst no score yet; computed base no score yet.\n"), "{user}");
-        assert!(user.contains("Every line landed after the prior analysis was written; none was read before."), "{user}");
+        assert!(user.contains("The checks added to the record since the prior analysis was written, so it saw none of them."), "{user}");
         assert!(
-            user.contains("- forecast of 2026-05-01, three months (2026-08-01): close $110.00 on 2026-08-03; analyst $105.00, score 60.0; computed base $100.00, score 50.0.\n"),
+            user.contains("- analysis of 2026-05-01, three months (2026-08-01): close $110.00 on 2026-08-03; analyst $105.00, score 60.0; computed base $100.00, score 50.0.\n"),
             "{user}"
         );
-        assert!(!user.contains("forecast of 2026-04-01"), "check 10 was read:\n{user}");
+        assert!(!user.contains("analysis of 2026-04-01"), "check 10 was read:\n{user}");
         // Read through everything: the scores read as read and the fixed sentence stands.
         d.prior_accuracy_read_through = Some(11);
         let user = render(&d, &now, Some(1.0));
         assert!(user.contains("last moved 2026-08-03, read by the prior analysis"), "{user}");
-        assert!(user.contains("No check landed after the prior analysis was written: the scores above are the ones it read, its thesis document under PRIOR THESIS."), "{user}");
+        assert!(user.contains("No check has been written since the prior analysis. The scores above are the ones it read, and the document under PRIOR THESIS was written with them in view."), "{user}");
         // Past the cap: the newest twelve with the total.
         let eps: Vec<StoredEpisode> = (1..=14).map(|i| episode(i, &format!("2025-{:02}-01", (i % 12) + 1))).collect();
         let checks: Vec<StoredCheck> = (1..=14).map(|i| check(100 + i, i, Horizon::ThreeMonth, "2026-01-02", 50.0, 50.0)).collect();
         d.accuracy = Some(outcome::subject_accuracy(&eps, &checks, "AAPL"));
         d.prior_accuracy_read_through = None;
         let user = render(&d, &now, Some(1.0));
-        assert!(user.contains("The 12 lines with the newest horizon dates of 14.\n"), "{user}");
+        assert!(user.contains("The 12 checks with the newest horizon dates of 14.\n"), "{user}");
         d.accuracy = None;
         let user = render(&d, &now, Some(1.0));
-        assert!(user.contains("ACCURACY SCORES\nThe accuracy record could not be read.\n"), "{user}");
+        assert!(user.contains("## ACCURACY RECORD\nThe accuracy record could not be read.\n"), "{user}");
         assert!(!user.contains("CHECKS SINCE"), "{user}");
     }
 
@@ -1185,9 +1111,28 @@ mod tests {
         d.accuracy = Some(outcome::subject_accuracy(&[episode(1, "2026-04-01")], &[c], "AAPL"));
         let user = render(&d, &now, Some(1.0));
         assert!(
-            user.contains("- forecast of 2026-04-01, three months (2026-07-01): not scored — no close within 5 sessions before the date.\n"),
+            user.contains("- analysis of 2026-04-01, three months (2026-07-01): not scored — no close within 5 sessions before the date.\n"),
             "{user}"
         );
+    }
+
+    #[test]
+    fn a_check_with_an_earlier_close_and_one_stated_price_renders_both() {
+        let (mut d, now) = continuity();
+        // No close on the horizon date itself: the pass read the session
+        // before it, as the proximity rule allows, and wrote the check later.
+        let mut c = check(5, 1, Horizon::ThreeMonth, "2026-07-02", 60.0, 50.0);
+        if let CheckOutcome::Scored { close, engine, .. } = &mut c.check.outcome {
+            *close = bar("2026-06-30", 110.0);
+            *engine = None;
+        }
+        d.accuracy = Some(outcome::subject_accuracy(&[episode(1, "2026-04-01")], &[c], "AAPL"));
+        let user = render(&d, &now, Some(1.0));
+        assert!(
+            user.contains("- analysis of 2026-04-01, three months (2026-07-01): close $110.00 on 2026-06-30; analyst $105.00, score 60.0; computed base none stated.\n"),
+            "{user}"
+        );
+        assert!(user.contains("or the last close within 5 sessions before it."), "{user}");
     }
 
     #[test]
@@ -1250,9 +1195,8 @@ mod tests {
         assert!(user.contains("A later analysis made no call, so no action, conviction or expected price is on record"), "{user}");
         // The abstention's own reason is app text and never reaches the model.
         assert!(!user.contains("fund metadata unavailable"), "{user}");
-        assert!(!user.contains("EXPECTED PRICES"), "{user}");
         assert!(!user.contains("COMPUTED READS"), "{user}");
-        assert!(user.contains("ACCURACY SCORES"), "{user}");
+        assert!(user.contains("ACCURACY RECORD"), "{user}");
         assert!(user.contains("1. Each expected price the document under PRIOR THESIS states"), "{user}");
     }
 
@@ -1298,7 +1242,7 @@ mod tests {
         assert!(user.contains("- price per share: $100.00 (the close on 2026-06-30) → $115.00; +15.0% since the prior analysis.\n"), "{user}");
         assert!(user.contains("- NAV per share: $72.10 → (gap).\n"), "{user}");
         assert!(user.contains("- expense ratio: 0.03% → (gap).\n"), "{user}");
-        assert!(!user.contains("ACCURACY SCORES"), "{user}");
+        assert!(!user.contains("ACCURACY RECORD"), "{user}");
         assert!(user.contains("1. The action under PRIOR POSITION against what happened, from REALIZED."), "{user}");
         assert!(user.contains("3. Whether the role survives."), "{user}");
     }
@@ -1357,13 +1301,13 @@ mod tests {
         d.accuracy = Some(outcome::subject_accuracy(&[episode(1, "2026-04-01")], &checks, "AAPL"));
         d.prior_accuracy_read_through = None;
         let user = render(&d, &now, Some(1.0));
-        assert!(user.contains("The prior analysis read no accuracy record, so none of these was read before."), "{user}");
-        assert!(!user.contains("Every line landed after"), "{user}");
+        assert!(user.contains("The prior analysis read no accuracy record, so it saw none of these checks."), "{user}");
+        assert!(!user.contains("The checks added to the record since"), "{user}");
         // No mark and no check at all: the no-check sentence, never the
         // read-scores one.
         d.accuracy = Some(outcome::subject_accuracy(&[], &[], "AAPL"));
         let user = render(&d, &now, Some(1.0));
-        assert!(user.contains("\nCHECKS SINCE THE PRIOR ANALYSIS\nNo check has been written on this holding's forecasts.\n"), "{user}");
+        assert!(user.contains("\n## CHECKS SINCE THE PRIOR ANALYSIS\nNo check has been written on this holding's expected prices.\n"), "{user}");
         assert!(!user.contains("the scores above are the ones it read"), "{user}");
     }
 
@@ -1386,7 +1330,7 @@ mod tests {
         })
         .user;
         assert!(user.contains("A price marked bridged was put on today's basis"), "{user}");
-        let realized = &user[user.find("\nREALIZED\n").unwrap()..];
+        let realized = &user[user.find("\n# REALIZED\n").unwrap()..];
         assert!(realized.contains("A price marked bridged"), "{realized}");
         assert!(user.contains("1. The document under PRIOR THESIS against what happened, from PRIOR POSITION and REALIZED."), "{user}");
         assert!(!user.contains("etf/info"), "{user}");

@@ -479,7 +479,9 @@ pub fn subject_accuracy(
 
 /// The checks the self-review lists: those after the prior pass's mark (every
 /// check where the prior read none), newest by horizon date then by check id,
-/// capped at `cap` with the total before the cap.
+/// capped at `cap` with the total before the cap. A check written for a
+/// horizon the analysis stated no price at stays out — it carries nothing to
+/// weigh — so the cap and the total run over the checks shown.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChecksSince<'a> {
     pub lines: Vec<(&'a StoredEpisode, &'a StoredCheck, NaiveDate)>,
@@ -493,6 +495,7 @@ pub fn checks_since(subject: &SubjectAccuracy, read_through: Option<i64>, cap: u
         .checks
         .iter()
         .filter(|c| read_through.is_none_or(|mark| c.id > mark))
+        .filter(|c| !matches!(c.check.outcome, CheckOutcome::Unscorable { cause: UnscorableCause::NoForecast }))
         .filter_map(|c| {
             let ep = *episode_of.get(&c.episode_id)?;
             let date = parse_date(&ep.record.created_on).and_then(|d| horizon_date(d, c.check.horizon))?;
@@ -965,5 +968,21 @@ mod tests {
         let t = checks_since(&s, None, REVIEW_CHECK_LINES);
         assert_eq!(t.lines.iter().map(|(_, c, _)| c.id).collect::<Vec<_>>(), vec![9, 8]);
         assert_eq!(checks_since(&s, Some(9), REVIEW_CHECK_LINES).total, 0);
+    }
+
+    #[test]
+    fn a_no_price_check_stays_out_of_the_review_list_and_its_count() {
+        let eps = vec![stored(1, record("2026-01-05"))];
+        let mut empty = scored_check(3, 1, Horizon::ThreeYear, "2029-01-06", None, None);
+        empty.check.outcome = CheckOutcome::Unscorable { cause: UnscorableCause::NoForecast };
+        let mut gap = scored_check(4, 1, Horizon::TwelveMonth, "2027-01-06", None, None);
+        gap.check.outcome = CheckOutcome::Unscorable { cause: UnscorableCause::NoCloseInProximity };
+        let checks = vec![scored_check(2, 1, Horizon::ThreeMonth, "2026-04-06", Some(90.0), None), empty, gap];
+        let s = subject_accuracy(&eps, &checks, "AAPL");
+        // The no-price check would sort first on its horizon date; it neither
+        // lists nor counts, while the other unscorable cause does both.
+        let since = checks_since(&s, None, 1);
+        assert_eq!(since.total, 2);
+        assert_eq!(since.lines.iter().map(|(_, c, _)| c.id).collect::<Vec<_>>(), vec![4]);
     }
 }

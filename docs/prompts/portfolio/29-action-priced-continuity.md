@@ -1,6 +1,6 @@
 # Action — priced holding, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v74`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v85`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over the prior document of 2026-09-02.
 The action call is the investor profile's one entry point: the finished verdict, the holding's own evidence, the engine's supported set and the profile decide the rung and one rationale — never a comparison with other holdings.
@@ -20,7 +20,7 @@ This packet renders no article or research text, so it carries no stub.
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | the JSON schema below as the `format` grammar; no tools |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 7492 chars — the messages and tools as serialized |
+| Prompt material | 7502 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -30,16 +30,17 @@ will return action and rationale, as one JSON object. Part 1 of the message give
 defines those outputs and gives the shape to return.
 ~~~~
 
-## User message (7083 chars)
+## User message (7092 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
-HOLDING
+
+# HOLDING
 TSLA (Tesla, Inc.).
 Price: $358.97 per share.
 Date: 2026-09-16.
 
-POSITION
+# POSITION
 The holding as the account carries it: the shares held, the total cost basis, the market value, the
 unrealized gain or loss (the market value less the cost basis, and as a share of a positive cost
 basis; not available where no basis is reported) and the change in the shares held since the last
@@ -48,7 +49,7 @@ held then and now.
 Shares held: 10. Cost basis: $2,871.76. Market value: $3,589.70. Unrealized gain: $717.94 (+25.0% of
 the cost basis). Change since the last pull: unchanged at 10.
 
-VERDICT
+# VERDICT
 An analyst's read of the holding's data and research: the conviction, the expected share price at
 each horizon (USD, with the move each implies from the current price) and the thesis document.
 Conviction: low. Expected share price: three-month none, twelve-month 145.00 (-59.6%), three-year
@@ -90,18 +91,18 @@ four fatalities). My bear target ($92) applies a distress multiple to core auto 
 credits. Bull case ($398) requires successful Robotaxi launch with approved commercial operations by
 Q1-CY27; this is possible but not probable given regulatory and technical execution risks.
 
-COMPUTED
-The computed reads follow under their labels, up to PRIOR ACTION; each is derived from the holding's
-data by fixed formulas.
+# COMPUTED
+The computed reads follow under their labels; each is derived from the holding's data by fixed
+formulas.
 
-COMPUTED ACTION
+## COMPUTED ACTION
 The rung a fixed rule gives from the computed reads: trim.
 
-GRADE
+## GRADE
 A letter from A to F, derived from the computed quality, valuation and risk scores.
 F.
 
-PRICE BANDS (USD, with the move each implies from the current price; the analyst's expected price
+## PRICE BANDS (USD, with the move each implies from the current price; the analyst's expected price
 from VERDICT beside each)
 - three-month: bear 229.41 (-36.1%) / base 310.01 (-13.6%) / bull 390.61 (+8.8%); analyst none.
 Method: base = the twelve-month base price return prorated to three months; bear and bull = ±26.0%
@@ -115,22 +116,22 @@ Method: the twelve-month drivers held at flat growth for two further years (a si
 consensus row, or no definable growth) at the same multiples — an extrapolation that assumes today's
 rate and spread regime holds.
 
-CAPITAL EFFICIENCY
+## CAPITAL EFFICIENCY
 The computed twelve-month total return in each scenario (the move from the current price to the
 scenario price, plus forward income per share, as a fraction of the current price) and the hurdle
 rate it is measured against.
 bear -82.6% / base -54.3% / bull +155.7%; hurdle 12.7%.
 
-PRIOR ACTION
+# PRIOR ACTION
 trim, chosen in the prior analysis.
 Rationale: [rationale removed from the fixture: the run's sentence referenced whether the position
 was up or down]
 
-SUPPORTED ACTIONS
+# SUPPORTED ACTIONS
 The rungs a fixed rule over the holding's reads supports, listed in full: sell-all, trim, hold. A
 rung not listed is outside that rule.
 
-INVESTOR PROFILE
+# INVESTOR PROFILE
 - objective: maximize profit (total return; no income or capital-preservation mandate)
 - risk tolerance: aggressive (medium-to-high)
 - horizon: long-term (durable multi-quarter / multi-year theses)
@@ -151,7 +152,7 @@ materially changed since the prior analysis.
 2. rationale — one sentence giving the single investment reason for the rung. Name the returns you
 weighed by their values; do not describe them by their relation to another figure.
 
-RETURN SHAPE (every value is a placeholder)
+# RETURN SHAPE (every value is a placeholder)
 {"action":"<sell-all|trim|hold|add|add-aggressively>","rationale":""}
 ~~~~
 

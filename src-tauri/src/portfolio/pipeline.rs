@@ -1182,7 +1182,7 @@ pub(crate) fn prompt_renders_house_view(d: &HoldingDossier) -> bool {
 /// analysis rather than the model's training horizon.
 pub(crate) fn holding_header(d: &HoldingDossier) -> String {
     format!(
-        "HOLDING\n{} ({}).\nPrice: {}\nDate: {}.\n",
+        "\n# HOLDING\n{} ({}).\nPrice: {}\nDate: {}.\n",
         d.position.symbol,
         holding_display_name(d),
         spot_line(d),
@@ -1252,7 +1252,7 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
 
     p.push_str(&fetched_values_section(d, input.rates));
 
-    p.push_str(&format!("\nCLASS\n{}.", r.class_label));
+    p.push_str(&format!("\n# CLASS\n{}.", r.class_label));
     if let Some(class) = d.fund.as_ref().and_then(|f| f.fund.asset_class.as_deref()) {
         p.push_str(&format!(" Reported asset class: {class}."));
     }
@@ -1271,7 +1271,7 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
     let has_tilt = !r.exposure_tilt.is_empty();
     if has_tilt {
         p.push_str(
-            "\nEXPOSURE TILT\nThe fund's largest weights, by sector where reported and \
+            "\n# EXPOSURE TILT\nThe fund's largest weights, by sector where reported and \
              otherwise by country.\n",
         );
         for (label, weight) in &r.exposure_tilt {
@@ -1287,12 +1287,12 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
         }
     }
     if let Some(f) = &d.fund {
-        p.push_str(&positioning_prompt_section(f));
+        p.push_str(&positioning_prompt_section(f, Tier::Block));
     }
 
     // The daily volatility is a COMPUTED line, so it renders once.
     p.push_str(&format!(
-        "\nRISK PROFILE\nAnnualized realized volatility: {} (a fraction; 0.14 means 14% a \
+        "\n# RISK PROFILE\nAnnualized realized volatility: {} (a fraction; 0.14 means 14% a \
          year).\n",
         opt(r.observable_risk),
     ));
@@ -1300,11 +1300,11 @@ pub fn role_risk_user_prompt(input: &RoleRiskInput) -> String {
 
     let has_gaps = !r.evidence_gaps.is_empty();
     if has_gaps {
-        p.push_str(&format!("\nEVIDENCE GAPS\n{}\n", r.evidence_gaps.join("; ")));
+        p.push_str(&format!("\n# EVIDENCE GAPS\n{}\n", r.evidence_gaps.join("; ")));
     }
 
     let metrics = fund_metrics(r, &d.financials);
-    p.push_str("\nCOMPUTED\nThe computed metrics, each with its unit.\n");
+    p.push_str("\n# COMPUTED\nThe computed metrics, each with its unit.\n");
     p.push_str(&computed_metrics_lines(true, &metrics));
 
     p.push_str(&market_analysis_section(d));
@@ -1365,12 +1365,13 @@ pub const THESIS_DOCUMENT_WORDS: (u32, u32) = (900, 1_800);
 /// The COT positioning line for a commodity / macro fund
 /// (`docs/portfolio-workflow.md` §Step 5; `docs/data-sources.md §CFTC`):
 /// context held out of every sub-score. Empty where no contract mapped.
-fn positioning_prompt_section(f: &crate::portfolio::fund::FundContext) -> String {
+fn positioning_prompt_section(f: &crate::portfolio::fund::FundContext, tier: Tier) -> String {
     let Some(p) = &f.positioning else {
         return String::new();
     };
+    let h = tier.mark();
     let mut s = format!(
-        "\nUNDERLYING POSITIONING (CFTC weekly, as of {})\n{} — speculator net {:+.0} \
+        "\n{h} UNDERLYING POSITIONING (CFTC weekly, as of {})\n{} — speculator net {:+.0} \
          contracts",
         p.report_date, p.contract, p.spec_net
     );
@@ -1455,8 +1456,9 @@ fn implied_expectations_prompt_section(e: &engine::EngineOutput) -> String {
 /// Every packet renders structure and ratios only — never contract counts or
 /// share-equivalents — so position size reaches the rung by no route. Empty
 /// where the holding carries no option legs.
-fn option_overlay_prompt_section(d: &HoldingDossier) -> String {
+fn option_overlay_prompt_section(d: &HoldingDossier, tier: Tier) -> String {
     use crate::portfolio::dossier::{OverlayClass, OverlayDirection};
+    let h = tier.mark();
     let Some(o) = &d.option_overlay else {
         return String::new();
     };
@@ -1467,7 +1469,7 @@ fn option_overlay_prompt_section(d: &HoldingDossier) -> String {
         OverlayClass::Other => "other (unrecognized or multi-leg)",
     };
     let mut s = format!(
-        "\nSAME-UNDERLYING OPTION OVERLAY (held option positions on this name): \
+        "\n{h} SAME-UNDERLYING OPTION OVERLAY (held option positions on this name): \
          classified {class}"
     );
     if let Some(cr) = o.coverage_ratio {
@@ -1555,7 +1557,7 @@ fn narrative_prompt_section(n: Option<&engine::NarrativeRead>) -> String {
         ),
     };
     let mut s = format!(
-        "\nNARRATIVE VS REALITY ({} days elapsed)\n{expansion_label} {}; {reality_label} {}. \
+        "\n## NARRATIVE VS REALITY ({} days elapsed)\n{expansion_label} {}; {reality_label} {}. \
          Read: {class_line}.\n",
         n.elapsed_days,
         pct(n.expansion),
@@ -1582,7 +1584,7 @@ fn short_interest_prompt_section(d: &HoldingDossier) -> String {
         _ => "prior settlement (gap)".to_string(),
     };
     format!(
-        "\nSHORT INTEREST (FINRA biweekly file, settlement {}; the file lags its \
+        "\n## SHORT INTEREST (FINRA biweekly file, settlement {}; the file lags its \
          settlement by about 7 business days)\n{} shares short ({trend}), average \
          daily volume {}, days to cover {}\n",
         si.settlement_date,
@@ -1599,12 +1601,13 @@ fn short_interest_prompt_section(d: &HoldingDossier) -> String {
 /// The run-level commodity context for a commodity-linked holding
 /// (`docs/portfolio-workflow.md` §Step 5): evidence, never a score input. Empty
 /// where no prints matched the sector.
-fn commodity_prompt_section(d: &HoldingDossier) -> String {
+fn commodity_prompt_section(d: &HoldingDossier, tier: Tier) -> String {
     if d.commodity_context.is_empty() {
         return String::new();
     }
-    let mut s = String::from(
-        "\nCOMMODITY PRICES (matched to this holding's sector; each as of its print date, \
+    let h = tier.mark();
+    let mut s = format!(
+        "\n{h} COMMODITY PRICES (matched to this holding's sector; each as of its print date, \
          and a monthly series lags)\n",
     );
     for p in &d.commodity_context {
@@ -1631,20 +1634,20 @@ fn commodity_prompt_section(d: &HoldingDossier) -> String {
 /// prompts (`docs/portfolio-analysis.md` §Starting parameters): a tripped
 /// trigger names its rule as evidence and an engine-arm bound, never a clamp
 /// on the model's values. Empty where the sweep never ran.
-fn forensic_prompt_section(d: &HoldingDossier, stage: PromptStage) -> String {
+fn forensic_prompt_section(d: &HoldingDossier, stage: PromptStage, tier: Tier) -> String {
     use crate::portfolio::ForensicFilingState;
+    let h = tier.mark();
     match &d.filing_events {
         None => String::new(),
-        Some(ForensicFilingState::Clear) => {
-            "\nFORENSIC FILINGS (8-K sweep)\nClean — no restatement (Item 4.02) or \
+        Some(ForensicFilingState::Clear) => format!(
+            "\n{h} FORENSIC FILINGS (8-K sweep)\nClean — no restatement (Item 4.02) or \
              auditor-change (Item 4.01) filing inside the lookback.\n"
-                .to_string()
-        }
+        ),
         Some(ForensicFilingState::Unknown { reason, .. }) => format!(
-            "\nFORENSIC FILINGS (8-K sweep)\nUnknown — {reason}. Not a clean check.\n"
+            "\n{h} FORENSIC FILINGS (8-K sweep)\nUnknown — {reason}. Not a clean check.\n"
         ),
         Some(ForensicFilingState::Events { events }) => {
-            let mut s = String::from("\nFORENSIC FILINGS (8-K sweep)\nEvents found:\n");
+            let mut s = format!("\n{h} FORENSIC FILINGS (8-K sweep)\nEvents found:\n");
             for ev in events {
                 s.push_str(&format!(
                     "- {} — filed {} ({}; {})\n",
@@ -1685,12 +1688,12 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
     p.push_str(&fetched_values_section(d, input.rates));
 
     p.push_str(
-        "\nCOMPUTED\nThe computed reads follow under their labels, up to MARKET \
-         ANALYSIS; each is derived from the fetched data by fixed formulas.\n",
+        "\n# COMPUTED\nThe computed reads follow under their labels; each is derived from the \
+         fetched data by fixed formulas.\n",
     );
 
     if let Some(f) = &d.fund {
-        p.push_str("\nFUND\n");
+        p.push_str("\n## FUND\n");
         if let Some(label) = &e.fund_class_label {
             p.push_str(&format!("Class: {label}."));
             if let Some(class) = f.fund.asset_class.as_deref() {
@@ -1739,10 +1742,10 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
         if !f.fund.gaps.is_empty() {
             p.push_str(&format!("Evidence gaps: {}.\n", f.fund.gaps.join("; ")));
         }
-        p.push_str(&positioning_prompt_section(f));
+        p.push_str(&positioning_prompt_section(f, Tier::Group));
     }
 
-    p.push_str("\nMETRICS\n");
+    p.push_str("\n## METRICS\n");
     p.push_str(&statement_basis_line(
         d.financials.statement_basis,
         d.financials.equity_source,
@@ -1767,7 +1770,7 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
         String::new()
     };
     p.push_str(&format!(
-        "\nSCORES\nFour scores from 0 to 100, higher is better on every axis: quality; \
+        "\n## SCORES\nFour scores from 0 to 100, higher is better on every axis: quality; \
          valuation, where higher means more attractive; momentum; risk, where higher means \
          more resilient. The grade is a letter derived from the quality, valuation and risk \
          scores.{factor_gloss}\n\
@@ -1785,7 +1788,7 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
     // Each band carries its method clause so the three-year leg is weighed as
     // the extrapolation it is (`docs/portfolio-analysis.md` §Starting
     // parameters).
-    p.push_str("\nPRICE BANDS (USD)\n");
+    p.push_str("\n## PRICE BANDS (USD)\n");
     if let Some(tm) = &e.price_targets.three_month {
         p.push_str(&format!(
             "- three-month: bear {:.2} / base {:.2} / bull {:.2}. Method: {}\n",
@@ -1822,12 +1825,12 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
 
     p.push_str(&narrative_prompt_section(input.narrative));
     if let Some(overlay) = input.pre_profit {
-        p.push_str(&pre_profit_prompt_section(overlay, PromptStage::Thesis));
+        p.push_str(&pre_profit_prompt_section(overlay, PromptStage::Thesis, Tier::Group));
     }
 
     let s = &d.options_signal;
     p.push_str(&format!(
-        "\nOPTIONS ACTIVITY\nput/call volume {}, put/call open interest {}, implied volatility {}, \
+        "\n## OPTIONS ACTIVITY\nput/call volume {}, put/call open interest {}, implied volatility {}, \
          IV skew {} (mean put IV minus mean call IV, in IV's decimal unit; positive means \
          puts are richer).\n",
         opt(s.put_call_volume),
@@ -1837,15 +1840,15 @@ pub fn thesis_user_prompt(input: &ThesisInput) -> String {
     ));
     p.push_str(&put_call_backdrop_prompt_section(d));
     p.push_str(&short_interest_prompt_section(d));
-    p.push_str(&option_overlay_prompt_section(d));
-    p.push_str(&forensic_prompt_section(d, PromptStage::Thesis));
+    p.push_str(&option_overlay_prompt_section(d, Tier::Group));
+    p.push_str(&forensic_prompt_section(d, PromptStage::Thesis, Tier::Group));
     if let Some(flags) = input.soft_forensic {
         p.push_str(&soft_forensic_prompt_section(flags));
     }
-    p.push_str(&commodity_prompt_section(d));
+    p.push_str(&commodity_prompt_section(d, Tier::Group));
     if let Some(f) = input.tech_pre_flag.filter(|f| f.fired) {
         p.push_str(&format!(
-            "\nSECTOR-RELATIVE MOVE\n{:+.1}% versus {} over {} sessions since the prior \
+            "\n## SECTOR-RELATIVE MOVE\n{:+.1}% versus {} over {} sessions since the prior \
              analysis, beyond the ±{:.1}% threshold (two times the interval-scaled realized \
              volatility). A possible third-party repricing event; the cause is not known.\n",
             f.relative_move * 100.0,
@@ -1872,7 +1875,7 @@ fn hurdle_read_section(h: &engine::HurdleRead) -> String {
     let scorable = h.state != crate::portfolio::HurdleState::Unscorable;
     match (scorable, h.hurdle_rate, h.tr_bear, h.tr_base, h.tr_bull) {
         (true, Some(rate), Some(bear), Some(base), Some(bull)) => format!(
-            "\nCAPITAL EFFICIENCY\nThe computed twelve-month total return in each scenario (the \
+            "\n## CAPITAL EFFICIENCY\nThe computed twelve-month total return in each scenario (the \
              move from the current price to the scenario price, plus forward income per share, \
              as a fraction of the current price) and the hurdle rate it is measured against, \
              with the read: clears when even the bear case clears the hurdle, fails when even \
@@ -1884,7 +1887,7 @@ fn hurdle_read_section(h: &engine::HurdleRead) -> String {
             rate * 100.0,
             format!("{:?}", h.state).to_lowercase(),
         ),
-        _ => "\nCAPITAL EFFICIENCY\nNo assessment.\n".to_string(),
+        _ => "\n## CAPITAL EFFICIENCY\nNo assessment.\n".to_string(),
     }
 }
 
@@ -1915,7 +1918,7 @@ fn soft_forensic_prompt_section(f: &SoftForensicFlags) -> String {
     let w = &f.working_capital_build;
     let n = &f.net_income_vs_operating_cash_flow;
     format!(
-        "\nSOFT FORENSIC FLAGS\nFour statement tests, each fired, clear, or unevaluable where an \
+        "\n## SOFT FORENSIC FLAGS\nFour statement tests, each fired, clear, or unevaluable where an \
          input is missing (never read as clear).\n\
          - Altman Z below {ALTMAN_Z_DISTRESS}: {} (Z {}).\n\
          - Piotroski F-score at or below {PIOTROSKI_WEAK:.0}: {} (score {}).\n\
@@ -1999,8 +2002,8 @@ fn document_section(
     doc: &str,
 ) -> String {
     let mut p = match written {
-        Some(date) => format!("\n{heading} (written {date})\n"),
-        None => format!("\n{heading}\n"),
+        Some(date) => format!("\n# {heading} (written {date})\n"),
+        None => format!("\n# {heading}\n"),
     };
     match split {
         Some(SplitContext::Rebased { factor, split }) => {
@@ -2069,7 +2072,7 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
         crate::portfolio::AssetClass::Etf | crate::portfolio::AssetClass::MutualFund
     );
     let group = |p: &mut String, label: &str, rows: Vec<String>| {
-        p.push_str(&format!("\n{label}\n"));
+        p.push_str(&format!("\n## {label}\n"));
         if rows.is_empty() {
             p.push_str("- (gap)\n");
             return;
@@ -2080,7 +2083,7 @@ pub(crate) fn fetched_values_section(d: &HoldingDossier, rates: &RateAnchors) ->
         }
     };
     let mut p = String::from(
-        "\nFETCHED VALUES\nThe holding's data (USD; B is billions, M is millions; a yield or a \
+        "\n# FETCHED VALUES\nThe holding's data (USD; B is billions, M is millions; a yield or a \
          return as a percentage); a missing figure reads (gap). The rows follow under their \
          labels.\n",
     );
@@ -2674,7 +2677,7 @@ fn market_analysis_section(d: &HoldingDossier) -> String {
         .first()
         .map(|s| s.created_at.chars().take(10).collect::<String>());
     if let Some(sections) = &d.house_view.latest_sections {
-        p.push_str("\nMARKET ANALYSIS\n");
+        p.push_str("\n# MARKET ANALYSIS\n");
         p.push_str(&match (&latest_date, d.house_view.recent_summaries.len()) {
             (Some(date), n) if n > 1 => format!(
                 "A market-level analysis dated {date}, followed by the stance of the {n} most \
@@ -2686,7 +2689,7 @@ fn market_analysis_section(d: &HoldingDossier) -> String {
         p.push_str(sections);
         p.push('\n');
     } else if !d.house_view.recent_summaries.is_empty() {
-        p.push_str("\nMARKET ANALYSIS\nThe stance of the most recent market-level analyses.\n");
+        p.push_str("\n# MARKET ANALYSIS\nThe stance of the most recent market-level analyses.\n");
     }
     for s in &d.house_view.recent_summaries {
         p.push_str(&format!(
@@ -2874,7 +2877,7 @@ pub fn appendix_user_prompt() -> String {
          or low) and the expected share price it states at three months, twelve months and \
          three years, in USD. A field is null where the document states no value. Return \
          them as one JSON object in the shape below, with no code fence and no surrounding \
-         text.\n\nRETURN SHAPE (every value is a placeholder)\n{}\n",
+         text.\n\n# RETURN SHAPE (every value is a placeholder)\n{}\n",
         crate::portfolio::appendix_return_shape()
     )
 }
@@ -3114,26 +3117,25 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     match &input.subject {
         ActionSubject::Priced { graded, engine, pre_profit } => {
             p.push_str(&verdict_section(d, Some(&graded.appendix), &graded.thesis_document));
-            p.push_str(&format!(
-                "\nCOMPUTED\nThe computed reads follow under their labels, up to {}; \
-                 each is derived from the holding's data by fixed formulas.\n",
-                if prior_action.is_empty() { "SUPPORTED ACTIONS" } else { "PRIOR ACTION" }
-            ));
+            p.push_str(
+                "\n# COMPUTED\nThe computed reads follow under their labels; each is derived \
+                 from the holding's data by fixed formulas.\n",
+            );
             p.push_str(&engine_rung_section(graded));
             p.push_str(&grade_section(graded));
             p.push_str(&price_bands_section(d, graded, engine));
             p.push_str(&capital_efficiency_section(&engine.hurdle));
-            p.push_str(&forensic_prompt_section(d, PromptStage::Action));
+            p.push_str(&forensic_prompt_section(d, PromptStage::Action, Tier::Group));
             if let Some(overlay) = pre_profit {
-                p.push_str(&pre_profit_prompt_section(overlay, PromptStage::Action));
+                p.push_str(&pre_profit_prompt_section(overlay, PromptStage::Action, Tier::Group));
             }
-            p.push_str(&option_overlay_prompt_section(d));
-            p.push_str(&commodity_prompt_section(d));
+            p.push_str(&option_overlay_prompt_section(d, Tier::Group));
+            p.push_str(&commodity_prompt_section(d, Tier::Group));
         }
         ActionSubject::RoleRisk { verdict } => {
             // The branch's computed surface stays as top-level sections, as on
             // the thesis message.
-            p.push_str(&format!("\nCLASS\n{}\n", verdict.class_label));
+            p.push_str(&format!("\n# CLASS\n{}\n", verdict.class_label));
             if !verdict.exposure_tilt.is_empty() {
                 let tilt: Vec<String> = verdict
                     .exposure_tilt
@@ -3141,10 +3143,10 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                     .take(5)
                     .map(|w| format!("{} {:.0}%", w.label, w.weight * 100.0))
                     .collect();
-                p.push_str(&format!("\nEXPOSURE TILT\n{}\n", tilt.join(", ")));
+                p.push_str(&format!("\n# EXPOSURE TILT\n{}\n", tilt.join(", ")));
             }
             p.push_str(&format!(
-                "\nRISK PROFILE\nExpense drag: {} of assets per year. \
+                "\n# RISK PROFILE\nExpense drag: {} of assets per year. \
                  Observable risk: {} (annualized realized volatility). Structural flag \
                  (leveraged / inverse or option-overlay path dependency): {}.\n",
                 fmt_expense_ratio(verdict.expense_drag),
@@ -3159,12 +3161,12 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
                 }
             }
             if !verdict.evidence_gaps.is_empty() {
-                p.push_str(&format!("\nEVIDENCE GAPS\n{}\n", verdict.evidence_gaps.join("; ")));
+                p.push_str(&format!("\n# EVIDENCE GAPS\n{}\n", verdict.evidence_gaps.join("; ")));
             }
             p.push_str(&verdict_section(d, None, &verdict.thesis_document));
-            p.push_str(&forensic_prompt_section(d, PromptStage::Action));
-            p.push_str(&option_overlay_prompt_section(d));
-            p.push_str(&commodity_prompt_section(d));
+            p.push_str(&forensic_prompt_section(d, PromptStage::Action, Tier::Block));
+            p.push_str(&option_overlay_prompt_section(d, Tier::Block));
+            p.push_str(&commodity_prompt_section(d, Tier::Block));
         }
     }
     p.push_str(&prior_action);
@@ -3173,7 +3175,7 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     // (`outside_set_annotation`), never barred.
     let set: Vec<&str> = input.engine_set.iter().map(Action::as_kebab).collect();
     p.push_str(&format!(
-        "\nSUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed \
+        "\n# SUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed \
          in full: {}. A rung not listed is outside that rule.\n",
         set.join(", ")
     ));
@@ -3183,7 +3185,7 @@ pub fn action_user_prompt(input: &ActionInput) -> String {
     // fixed (`with_tax_caveat`), never by the decision.
     let profile = input.profile.display();
     p.push_str(&format!(
-        "\nINVESTOR PROFILE\n- objective: {}\n- risk tolerance: {}\n- horizon: {}\n",
+        "\n# INVESTOR PROFILE\n- objective: {}\n- risk tolerance: {}\n- horizon: {}\n",
         profile.objective, profile.risk_tolerance, profile.horizon,
     ));
     p.push_str(&action_task_section(input));
@@ -3234,7 +3236,7 @@ fn position_section(d: &HoldingDossier) -> String {
         (PositionChange::Decreased, None) => "decreased".to_string(),
     };
     format!(
-        "\nPOSITION\nThe holding as the account carries it: the shares held, the total cost \
+        "\n# POSITION\nThe holding as the account carries it: the shares held, the total cost \
          basis, the market value, the unrealized gain or loss (the market value less the cost \
          basis, and as a share of a positive cost basis; not available where no basis is \
          reported) and the change in the shares held since the last pull — new where the last \
@@ -3295,7 +3297,7 @@ fn fmt_price_move(spot: Option<f64>, v: f64) -> String {
 /// the output item (`docs/portfolio-analysis.md` §Portfolio action).
 fn engine_rung_section(graded: &GradedVerdict) -> String {
     format!(
-        "\nCOMPUTED ACTION\nThe rung a fixed rule gives from the computed reads: {}.\n",
+        "\n## COMPUTED ACTION\nThe rung a fixed rule gives from the computed reads: {}.\n",
         graded.engine_rung.as_kebab()
     )
 }
@@ -3303,7 +3305,7 @@ fn engine_rung_section(graded: &GradedVerdict) -> String {
 /// The sub-scores and the risk tier render on the thesis message alone.
 fn grade_section(graded: &GradedVerdict) -> String {
     format!(
-        "\nGRADE\nA letter from A to F, derived from the computed quality, valuation and risk \
+        "\n## GRADE\nA letter from A to F, derived from the computed quality, valuation and risk \
          scores.\n{}{}.\n",
         graded.grade.as_str(),
         if graded.low_confidence_grade {
@@ -3329,7 +3331,7 @@ fn price_bands_section(
     };
     let a = &graded.appendix;
     let mut p = String::from(
-        "\nPRICE BANDS (USD, with the move each implies from the current price; the analyst's \
+        "\n## PRICE BANDS (USD, with the move each implies from the current price; the analyst's \
          expected price from VERDICT beside each)\n",
     );
     match &graded.price_targets.three_month {
@@ -3383,7 +3385,7 @@ fn price_bands_section(
 /// VERDICT: the packet never says the read came from the same model
 /// (`docs/portfolio-analysis.md` §Portfolio action).
 fn verdict_section(d: &HoldingDossier, appendix: Option<&ThesisAppendix>, document: &str) -> String {
-    let mut p = String::from("\nVERDICT\n");
+    let mut p = String::from("\n# VERDICT\n");
     if let Some(a) = appendix {
         let spot = usable_spot(d);
         let price = |v: Option<f64>| match v {
@@ -3422,7 +3424,7 @@ fn capital_efficiency_section(h: &engine::HurdleRead) -> String {
     let scorable = h.state != crate::portfolio::HurdleState::Unscorable;
     match (scorable, h.hurdle_rate, h.tr_bear, h.tr_base, h.tr_bull) {
         (true, Some(rate), Some(bear), Some(base), Some(bull)) => format!(
-            "\nCAPITAL EFFICIENCY\nThe computed twelve-month total return in each scenario (the \
+            "\n## CAPITAL EFFICIENCY\nThe computed twelve-month total return in each scenario (the \
              move from the current price to the scenario price, plus forward income per share, \
              as a fraction of the current price) and the hurdle rate it is measured against.\n\
              bear {:+.1}% / base {:+.1}% / bull {:+.1}%; hurdle {:.1}%.\n",
@@ -3431,7 +3433,7 @@ fn capital_efficiency_section(h: &engine::HurdleRead) -> String {
             bull * 100.0,
             rate * 100.0,
         ),
-        _ => "\nCAPITAL EFFICIENCY\nNo assessment.\n".to_string(),
+        _ => "\n## CAPITAL EFFICIENCY\nNo assessment.\n".to_string(),
     }
 }
 
@@ -3449,7 +3451,7 @@ fn prior_action_section(d: &HoldingDossier) -> String {
     };
     match prior.action_source {
         ActionSource::ModelChosen => {
-            let mut p = format!("\nPRIOR ACTION\n{}, chosen in the prior analysis.\n", action.as_kebab());
+            let mut p = format!("\n# PRIOR ACTION\n{}, chosen in the prior analysis.\n", action.as_kebab());
             let rationale = crate::portfolio::carried_rationale(prior)
                 .map(investment_sentence)
                 .unwrap_or("")
@@ -3460,7 +3462,7 @@ fn prior_action_section(d: &HoldingDossier) -> String {
             p
         }
         ActionSource::RuleDemoted => format!(
-            "\nPRIOR ACTION\n{}, set by rule after the prior analysis, not chosen in it.\n",
+            "\n# PRIOR ACTION\n{}, set by rule after the prior analysis, not chosen in it.\n",
             action.as_kebab()
         ),
     }
@@ -3543,7 +3545,7 @@ fn action_task_section(input: &ActionInput) -> String {
     }
     p.push('\n');
     p.push_str(&format!(
-        "\nRETURN SHAPE (every value is a placeholder)\n{}\n",
+        "\n# RETURN SHAPE (every value is a placeholder)\n{}\n",
         crate::portfolio::action_return_shape()
     ));
     p
@@ -3559,14 +3561,33 @@ enum PromptStage {
     Action,
 }
 
+/// The heading tier a shared section renders at (`docs/local-models.md`
+/// §Prompt posture): a block of the part, or a group inside a block. Only the
+/// sections that sit under COMPUTED on the priced branch and at the top level
+/// on the role/risk branch take it; every other heading's tier is fixed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tier {
+    Block,
+    Group,
+}
+
+impl Tier {
+    fn mark(self) -> &'static str {
+        match self {
+            Tier::Block => "#",
+            Tier::Group => "##",
+        }
+    }
+}
+
 /// The pre-profit overlay for both 6f packets (`docs/portfolio-workflow.md`
 /// §Step 6f); the consequence lines on the thesis packet only
 /// ([`PromptStage`]).
-fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage) -> String {
+fn pre_profit_prompt_section(o: &PreProfitOverlay, stage: PromptStage, tier: Tier) -> String {
     use crate::portfolio::pre_profit::FinancingState;
     let i = &o.statement_inputs;
     let mut p = String::new();
-    p.push_str("\nPRE-PROFIT EXECUTION AND FINANCING\n");
+    p.push_str(&format!("\n{} PRE-PROFIT EXECUTION AND FINANCING\n", tier.mark()));
     let financing = match o.financing_state {
         FinancingState::NotBurning => "not-burning (TTM free cash flow non-negative)".to_string(),
         FinancingState::Unscorable => "unscorable (a required input is missing)".to_string(),
@@ -4650,7 +4671,7 @@ pub(crate) mod tests {
     /// The action packet with its POSITION block cut out, so a test can pin
     /// that a repriced position changes nothing else.
     pub(crate) fn without_position(packet: &str) -> String {
-        let start = packet.find("\nPOSITION\n").expect("a POSITION block");
+        let start = packet.find("\n# POSITION\n").expect("a POSITION block");
         let end = start + 1 + packet[start + 1..].find("\n\n").expect("the block's end");
         format!("{}{}", &packet[..start], &packet[end..])
     }
@@ -5668,7 +5689,7 @@ pub(crate) mod tests {
         let message = capture.0.take().expect("the thesis message rendered");
         assert!(
             message.contains(&format!(
-                "\nPRIOR THESIS (written 2026-08-03)\nA share split after this document was written \
+                "\n# PRIOR THESIS (written 2026-08-03)\nA share split after this document was written \
                  re-based the share price by a factor of 0.2500: multiply the prices the document \
                  states by that factor to read them on today's basis. The document is as written.\n{document}"
             )),
@@ -5714,7 +5735,7 @@ pub(crate) mod tests {
         let message = capture.0.take().expect("the thesis message rendered");
         assert!(
             message.contains(
-                "\nPRIOR THESIS (written 2026-08-03)\nWhether a share split re-based the share \
+                "\n# PRIOR THESIS (written 2026-08-03)\nWhether a share split re-based the share \
                  price after this document was written could not be verified: the daily closes \
                  under QUOTE AND CLOSES do not include the last close before the session it was \
                  written on. The document is as written; its prices may be on a pre-split basis.\nThesis: hold AAPL"
@@ -5738,7 +5759,7 @@ pub(crate) mod tests {
         let capture = ThesisCapture::default();
         let (_v3, a3) = analyze_holding(&capture, &d3, &rates(), "2026-08-05").unwrap();
         let message = capture.0.take().expect("the thesis message rendered");
-        assert!(message.contains(&format!("\nPRIOR THESIS (written 2026-08-04)\n{doc_b}")), "{message}");
+        assert!(message.contains(&format!("\n# PRIOR THESIS (written 2026-08-04)\n{doc_b}")), "{message}");
         assert!(
             !message.contains("by a factor of") && !message.contains("could not be verified"),
             "{message}"
@@ -5809,12 +5830,12 @@ pub(crate) mod tests {
         let docs = format!("{}{}", brief.prior_analysis, brief.prior_thesis);
         assert!(
             docs.starts_with(
-                "\nPRIOR ANALYSIS (written 2026-08-01)\nA share split after this document was \
+                "\n# PRIOR ANALYSIS (written 2026-08-01)\nA share split after this document was \
                  written re-based the share price by a factor of 0.5000: "
             ),
             "{docs}"
         );
-        let thesis_at = docs.find("\nPRIOR THESIS (written 2026-08-03)\n").expect("PRIOR THESIS follows");
+        let thesis_at = docs.find("\n# PRIOR THESIS (written 2026-08-03)\n").expect("PRIOR THESIS follows");
         assert!(docs[..thesis_at].ends_with("The prior analysis, verbatim.\n"), "{docs}");
         assert!(!docs[thesis_at..].contains("re-based the share price"), "the thesis line is the verdict's own: {docs}");
         assert!(docs[thesis_at..].contains("Thesis: hold AAPL "), "{docs}");
@@ -5829,7 +5850,7 @@ pub(crate) mod tests {
         assert!(prior_analysis_section(&d).contains("could not be verified"), "{}", prior_analysis_section(&d));
         d.prior_analysis.as_mut().unwrap().anchor = None;
         let bare = prior_analysis_section(&d);
-        assert!(bare.starts_with("\nPRIOR ANALYSIS (written 2026-08-01)\nThe prior analysis, verbatim.\n"), "{bare}");
+        assert!(bare.starts_with("\n# PRIOR ANALYSIS (written 2026-08-01)\nThe prior analysis, verbatim.\n"), "{bare}");
         let engine_output = match engine::analyze(&d.financials, &rates(), Default::default()) {
             EngineVerdict::Analyzed(o) => o,
             other => panic!("{other:?}"),
@@ -5847,11 +5868,11 @@ pub(crate) mod tests {
             review: None,
         });
         assert!(!thesis.contains("PRIOR ANALYSIS"), "{thesis}");
-        assert!(thesis.contains("\nANALYSIS\nThis run's analysis.\n") && thesis.contains("\nPRIOR THESIS (written 2026-08-03)\n"), "{thesis}");
+        assert!(thesis.contains("\n# ANALYSIS\nThis run's analysis.\n") && thesis.contains("\n# PRIOR THESIS (written 2026-08-03)\n"), "{thesis}");
         d.prior_analysis = None;
         let brief = research_brief(&d, rates_static(), None);
         let docs = format!("{}{}", brief.prior_analysis, brief.prior_thesis);
-        assert!(docs.starts_with("\nPRIOR THESIS (written 2026-08-03)\n") && !docs.contains("PRIOR ANALYSIS"), "{docs}");
+        assert!(docs.starts_with("\n# PRIOR THESIS (written 2026-08-03)\n") && !docs.contains("PRIOR ANALYSIS"), "{docs}");
     }
 
     /// The tests' shorthand for "this run's analysis": written on the fixture's
@@ -5897,16 +5918,16 @@ pub(crate) mod tests {
         let thesis = thesis_user_prompt(&input(carried_on(&d)));
         assert!(
             thesis.contains(
-                "\nANALYSIS (written 2026-07-01)\nA share split after this document was written \
+                "\n# ANALYSIS (written 2026-07-01)\nA share split after this document was written \
                  re-based the share price by a factor of 0.5000: multiply the prices the document \
                  states by that factor to read them on today's basis. The document is as written.\nThe \
                  carried analysis.\n"
             ),
             "{thesis}"
         );
-        assert!(!thesis.contains("\nANALYSIS\n"), "{thesis}");
+        assert!(!thesis.contains("\n# ANALYSIS\n"), "{thesis}");
         let fresh = thesis_user_prompt(&input(analysis_record("This run's analysis.")));
-        assert!(fresh.contains("\nANALYSIS\nThis run's analysis.\n"), "{fresh}");
+        assert!(fresh.contains("\n# ANALYSIS\nThis run's analysis.\n"), "{fresh}");
         assert!(!fresh.contains("re-based the share price") && !fresh.contains("ANALYSIS (written"), "{fresh}");
         let fund = fund_dossier(bond_fund());
         let role = role_risk_user_prompt(&RoleRiskInput {
@@ -5918,7 +5939,7 @@ pub(crate) mod tests {
             review: None,
         });
         assert!(
-            role.contains("\nANALYSIS (written 2026-07-01)\nA share split after this document was written re-based the share price by a factor of 0.5000: "),
+            role.contains("\n# ANALYSIS (written 2026-07-01)\nA share split after this document was written re-based the share price by a factor of 0.5000: "),
             "{role}"
         );
         assert!(role.contains("The document is as written.\nThe carried analysis.\n"), "{role}");
@@ -5970,7 +5991,7 @@ pub(crate) mod tests {
         assert!(analysis.ends_with("\n\nContrary evidence\nNothing contrary."), "{analysis}");
         assert_eq!(record.distillation, distill::DistillationRecord::none());
         let message = analyst.0.take().expect("the thesis message was captured");
-        assert!(message.contains(&format!("\nANALYSIS\n{analysis}\n")), "{message}");
+        assert!(message.contains(&format!("\n# ANALYSIS\n{analysis}\n")), "{message}");
         // The default seam refuses an unscripted analysis call, naming the stage.
         struct Bare;
         impl HoldingAnalyst for Bare {
@@ -6027,7 +6048,7 @@ pub(crate) mod tests {
         });
         assert!(
             interp.contains(
-                "\nCOMMODITY PRICES (matched to this holding's sector; each as of its print \
+                "\n## COMMODITY PRICES (matched to this holding's sector; each as of its print \
                  date, and a monthly series lags)\n"
             ),
             "{interp}"
@@ -6243,56 +6264,56 @@ pub(crate) mod tests {
         }];
         let block = fetched_values_section(&d, rates_static());
         let expected = [
-            "\nPROFILE\n- name: Apple Inc.\n- exchange: NASDAQ\n- sector: Technology\n\
+            "\n## PROFILE\n- name: Apple Inc.\n- exchange: NASDAQ\n- sector: Technology\n\
              - industry: Consumer Electronics\n- market capitalization: 3000.0B\n\
              - shares outstanding: 15.0B\n",
-            "\nSTATEMENTS\nQuarterly statements as reported, newest first (period end, then \
+            "\n## STATEMENTS\nQuarterly statements as reported, newest first (period end, then \
              the figure)\n- revenue: 2026-06-30 100.0B; 2026-03-31 99.0B; ",
             "\n- diluted EPS: 2026-06-30 1.55; 2026-03-31 1.54; ",
             "\n- cash and equivalents: 2026-06-30 60.0B; ",
-            "\nCONSENSUS\n- consensus EPS by fiscal period end, as published: 2027-06-30 6.50\n",
-            "\nDIVIDENDS\n- dividends, latest ex-dates first (ex-date, amount per share): \
+            "\n## CONSENSUS\n- consensus EPS by fiscal period end, as published: 2027-06-30 6.50\n",
+            "\n## DIVIDENDS\n- dividends, latest ex-dates first (ex-date, amount per share): \
              2026-08-11 0.26 (paid 2026-08-14); 2026-05-12 0.25\n",
-            "\nQUOTE AND CLOSES\n- 52-week range as served: low 170.00, high 260.00\n- daily \
+            "\n## QUOTE AND CLOSES\n- 52-week range as served: low 170.00, high 260.00\n- daily \
              closes: 17 sessions from 2022-09-30 to \
              2026-07-15\n- close three months before the analysis date: 190.00 (2026-06-30)\n\
              - close twelve months before the analysis date: 178.00 (2025-09-30)\n- close \
              three years before the analysis date: 146.00 (2023-09-30)\n",
-            "\nFILINGS\n8-K filings of the trailing twelve months, newest first (filing date: \
+            "\n## FILINGS\n8-K filings of the trailing twelve months, newest first (filing date: \
              items)\n- 2026-07-31: 2.02, 9.01\n- 2026-05-02 (8-K/A): (no items)\n",
-            "\nSHORT INTEREST PRINT\n- settlement: 2026-09-30 (FINRA)\n- shares short: 5.0M\n\
+            "\n## SHORT INTEREST PRINT\n- settlement: 2026-09-30 (FINRA)\n- shares short: 5.0M\n\
              - shares short at the prior settlement: 4.0M\n- average daily volume: \
              2.0M\n- days to cover: 2.50\n",
-            "\nSTREET\n- price targets: consensus 323.82, median 325.00, low 253.00, high \
+            "\n## STREET\n- price targets: consensus 323.82, median 325.00, low 253.00, high \
              400.00\n- targets published: last month 3 averaging 380.00; last quarter 10 \
              averaging 322.60; last year 58 averaging 293.43\n- analyst ratings: strong buy 1, \
              buy 69, hold 33, sell 7, strong sell 0; consensus Buy\nRating actions, newest \
              first (date: firm, previous grade to new grade, action)\n- 2026-05-26: B of A \
              Securities, Buy to Buy, maintain\n",
-            "\nINSIDERS AND CONGRESS\nInsider trades, newest first (transaction date: name, \
+            "\n## INSIDERS AND CONGRESS\nInsider trades, newest first (transaction date: name, \
              role, type, shares at price, filing date)\n- 2026-06-05: BOLDUC JOHN, director, \
              P-Purchase, 3570 shares at 6.77, filed 2026-06-06\n- insider statistics, 2026 Q2: \
              5 acquiring and 35 disposing transactions; 272855 shares acquired, 880558 \
              disposed\nCongressional trades, newest first (transaction date: chamber, member, \
              owner, type, amount, disclosure date)\n- 2026-04-17: Senate, Shelley Moore \
              Capito, Spouse, Sale, $1,001 - $15,000, disclosed 2026-05-07\n",
-            "\nEARNINGS\nSurprises, newest first (announcement date: EPS actual vs estimate, \
+            "\n## EARNINGS\nSurprises, newest first (announcement date: EPS actual vs estimate, \
              revenue actual)\n- 2026-07-22: EPS 1.10 vs 1.00 estimated, revenue 90.0B\n- next \
              earnings: 2026-10-29 (EPS estimate 1.20)\n",
-            "\nVALUATION\n- trailing-twelve-month ratios: P/E 32.89; EV/EBITDA 23.42; \
+            "\n## VALUATION\n- trailing-twelve-month ratios: P/E 32.89; EV/EBITDA 23.42; \
              EV/sales 8.13; P/B 47.37; FCF yield 3.1%; ROIC 45.2%; ROE 145.3%; net \
              debt/EBITDA 0.48\n- owner earnings (FY2025 Q1, period end 2024-12-28): 27.7B; \
              1.83 per share\n- enterprise value (2024-09-28): 3570.0B; market capitalization \
              3500.0B; total debt 106.6B; cash 29.9B\n- float (2026-06-05): float shares 14.7B; \
              shares outstanding 14.7B; free float 99.8%\n",
-            "\nM&A\nSEC merger registration filings, trailing twelve months; a filing follows \
+            "\n## M&A\nSEC merger registration filings, trailing twelve months; a filing follows \
              a deal's announcement, typically by several weeks, and covers deals paid at least \
              partly in stock\n- target of Global Net Lease, Inc., filed 2026-06-01 \
              (https://sec.gov/x)\n",
-            "\nSEGMENTS\nRevenue by product, newest fiscal year first\n- FY2024 (period end \
+            "\n## SEGMENTS\nRevenue by product, newest fiscal year first\n- FY2024 (period end \
              2024-09-28): iPhone 201.2B, Mac 30.0B\nRevenue by geography, newest fiscal year \
              first\n- FY2024 (period end 2024-09-28): Americas 167.0B\n",
-            "\nRATES\n- Treasury yields (FRED): 10-year ",
+            "\n## RATES\n- Treasury yields (FRED): 10-year ",
         ];
         let mut cursor = 0;
         for line in expected {
@@ -6376,11 +6397,11 @@ pub(crate) mod tests {
             "SEGMENTS",
         ] {
             assert!(
-                block.contains(&format!("\n{label}\n- (gap)\n")),
+                block.contains(&format!("\n## {label}\n- (gap)\n")),
                 "{label} with no source is not a gap:\n{block}"
             );
         }
-        assert!(!block.contains("\nWEIGHTS\n"), "{block}");
+        assert!(!block.contains("\n## WEIGHTS\n"), "{block}");
         for absent in [
             "52-week",
             "the live print",
@@ -6403,8 +6424,8 @@ pub(crate) mod tests {
         let mut d = d;
         d.evidence = Some(crate::portfolio::evidence::CompanyEvidence::empty("AAPL"));
         let block = fetched_values_section(&d, rates_static());
-        assert!(block.contains("\nSTREET\n- (gap)\n"), "{block}");
-        assert!(block.contains("\nVALUATION\n- (gap)\n"), "{block}");
+        assert!(block.contains("\n## STREET\n- (gap)\n"), "{block}");
+        assert!(block.contains("\n## VALUATION\n- (gap)\n"), "{block}");
         assert!(!block.contains("trailing-twelve-month ratios"), "{block}");
         // A fund renders its own groups alone. The countries are served
         // smallest first, so the cut must sort.
@@ -6426,10 +6447,10 @@ pub(crate) mod tests {
             "M&A",
             "SEGMENTS",
         ] {
-            assert!(!block.contains(&format!("\n{label}\n")), "{label} on a fund:\n{block}");
+            assert!(!block.contains(&format!("\n## {label}\n")), "{label} on a fund:\n{block}");
         }
-        assert!(block.contains("\nDIVIDENDS\n"), "{block}");
-        assert!(block.contains("\nWEIGHTS\n- sectors: Sector 0 5.0%, "), "{block}");
+        assert!(block.contains("\n## DIVIDENDS\n"), "{block}");
+        assert!(block.contains("\n## WEIGHTS\n- sectors: Sector 0 5.0%, "), "{block}");
         assert!(block.contains("Sector 11 5.0%\n"), "{block}");
         assert!(
             block.contains("- countries, largest first: Country 11 12.0%, Country 10 11.0%"),
@@ -6548,8 +6569,8 @@ pub(crate) mod tests {
             narrative: None,
             review: None,
         });
-        let start = user.find("\nSCORES\n").unwrap();
-        let end = user.find("\nPRICE BANDS (USD)\n").unwrap();
+        let start = user.find("\n## SCORES\n").unwrap();
+        let end = user.find("\n## PRICE BANDS (USD)\n").unwrap();
         user[start..end].to_string()
     }
 
@@ -6683,7 +6704,7 @@ pub(crate) mod tests {
             narrative: None,
             review: None,
         });
-        let block = &user[user.find("\nSCORES\n").unwrap()..user.find("\nPRICE BANDS (USD)\n").unwrap()];
+        let block = &user[user.find("\n## SCORES\n").unwrap()..user.find("\n## PRICE BANDS (USD)\n").unwrap()];
         assert!(block.contains("risk scores.\nquality 50, valuation "), "{block}");
         assert!(!block.contains("Each score is the mean"), "{block}");
         assert!(!block.contains("\nquality\n"), "{block}");
@@ -6711,9 +6732,9 @@ pub(crate) mod tests {
             other => panic!("{other:?}"),
         };
         let block = research_brief(&d, rates_static(), None).fetched_values;
-        assert!(block.starts_with("\nFETCHED VALUES\n"), "{block}");
+        assert!(block.starts_with("\n# FETCHED VALUES\n"), "{block}");
         for line in [
-            "\nSTATEMENTS\nQuarterly statements as reported, newest first (period end, then \
+            "\n## STATEMENTS\nQuarterly statements as reported, newest first (period end, then \
              the figure)\n- revenue: 2026-06-30 100.0B; 2026-03-31 99.0B; ",
             "\n- gross profit: 2026-06-30 45.0B; ",
             "\n- operating income: 2026-06-30 (gap); 2026-03-31 (gap); ",
@@ -6788,7 +6809,7 @@ pub(crate) mod tests {
         let user = prompt(Some(&fired));
         assert!(
             user.contains(
-                "\nSECTOR-RELATIVE MOVE\n-12.0% versus XLK over 4 sessions since the prior \
+                "\n## SECTOR-RELATIVE MOVE\n-12.0% versus XLK over 4 sessions since the prior \
                  analysis, beyond the ±8.0% threshold (two times the interval-scaled realized \
                  volatility). A possible third-party repricing event; the cause is not known.\n"
             ),
@@ -7045,7 +7066,7 @@ pub(crate) mod tests {
         });
         assert!(
             interp.contains(
-                "\nFORENSIC FILINGS (8-K sweep)\nEvents found:\n- restatement (Item 4.02 \
+                "\n## FORENSIC FILINGS (8-K sweep)\nEvents found:\n- restatement (Item 4.02 \
                  non-reliance) — filed 2026-07-20 (8-K accession 0000320193-26-000042; \
                  filing-declared item code)\n"
             ),
@@ -7075,12 +7096,12 @@ pub(crate) mod tests {
             engine_set: &engine_set,
             profile: &d.profile,
         });
-        assert!(action.contains("\nFORENSIC FILINGS (8-K sweep)\nEvents found:\n"), "{action}");
+        assert!(action.contains("\n## FORENSIC FILINGS (8-K sweep)\nEvents found:\n"), "{action}");
         // The rule sentence renders on the thesis packet only; the action
         // packet carries the narrowed set on its own line.
         assert!(!action.contains("By rule:"), "{action}");
         assert!(
-            action.contains("\nSUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed in full: sell-all, trim, hold. A rung not listed is outside that rule.\n"),
+            action.contains("\n# SUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed in full: sell-all, trim, hold. A rung not listed is outside that rule.\n"),
             "{action}"
         );
         assert!(!action.contains("HARD TRIGGER TRIPPED"), "{action}");
@@ -7116,7 +7137,7 @@ pub(crate) mod tests {
         });
         assert!(
             interp.contains(
-                "\nFORENSIC FILINGS (8-K sweep)\nUnknown — no CIK mapping for AAPL. Not a clean \
+                "\n## FORENSIC FILINGS (8-K sweep)\nUnknown — no CIK mapping for AAPL. Not a clean \
                  check.\n"
             ),
             "{interp}"
@@ -7152,18 +7173,18 @@ pub(crate) mod tests {
              the shape to return."
         );
         let (part1, part2) = user.split_once("\n======== PART 2: TASK ========\n").unwrap();
-        assert!(part1.starts_with("======== PART 1: INPUTS ========\nHOLDING\n"), "{part1}");
+        assert!(part1.starts_with("======== PART 1: INPUTS ========\n\n# HOLDING\n"), "{part1}");
         let sections = [
-            "POSITION\n",
-            "VERDICT\n",
-            "COMPUTED\n",
-            "COMPUTED ACTION\n",
-            "GRADE\n",
-            "PRICE BANDS (USD, with the move each implies from the current price; the analyst's \
+            "# POSITION\n",
+            "# VERDICT\n",
+            "# COMPUTED\n",
+            "## COMPUTED ACTION\n",
+            "## GRADE\n",
+            "## PRICE BANDS (USD, with the move each implies from the current price; the analyst's \
              expected price from VERDICT beside each)\n",
-            "CAPITAL EFFICIENCY\n",
-            "SUPPORTED ACTIONS\n",
-            "INVESTOR PROFILE\n",
+            "## CAPITAL EFFICIENCY\n",
+            "# SUPPORTED ACTIONS\n",
+            "# INVESTOR PROFILE\n",
         ];
         let mut last = 0;
         for section in sections {
@@ -7175,7 +7196,7 @@ pub(crate) mod tests {
         }
         assert!(
             part1.contains(
-                "\nPOSITION\nThe holding as the account carries it: the shares held, the total \
+                "\n# POSITION\nThe holding as the account carries it: the shares held, the total \
                  cost basis, the market value, the unrealized gain or loss (the market value \
                  less the cost basis, and as a share of a positive cost basis; not available \
                  where no basis is reported) and the change in the shares held since the last \
@@ -7186,18 +7207,16 @@ pub(crate) mod tests {
             ),
             "{part1}"
         );
-        // On a debut COMPUTED runs to SUPPORTED ACTIONS, there being no PRIOR
-        // ACTION.
         assert!(
             part1.contains(
-                "\nCOMPUTED\nThe computed reads follow under their labels, up to SUPPORTED \
-                 ACTIONS; each is derived from the holding's data by fixed formulas.\n"
+                "\n# COMPUTED\nThe computed reads follow under their labels; each is derived \
+                 from the holding's data by fixed formulas.\n"
             ),
             "{part1}"
         );
         assert!(
             part1.contains(&format!(
-                "\nCOMPUTED ACTION\nThe rung a fixed rule gives from the computed reads: {}.\n",
+                "\n## COMPUTED ACTION\nThe rung a fixed rule gives from the computed reads: {}.\n",
                 graded.engine_rung.as_kebab()
             )),
             "{part1}"
@@ -7222,7 +7241,7 @@ pub(crate) mod tests {
         );
         assert!(
             part2.ends_with(&format!(
-                "\nRETURN SHAPE (every value is a placeholder)\n{}\n",
+                "\n# RETURN SHAPE (every value is a placeholder)\n{}\n",
                 crate::portfolio::action_return_shape()
             )),
             "{part2}"
@@ -7247,7 +7266,7 @@ pub(crate) mod tests {
         assert_ne!(leg(engine_12.base), leg(model_12));
         assert!(
             user.contains(&format!(
-                "\nVERDICT\nAn analyst's read of the holding's data and research: the conviction, \
+                "\n# VERDICT\nAn analyst's read of the holding's data and research: the conviction, \
                  the expected share price at each horizon (USD, with the move each implies from \
                  the current price) and the thesis document.\nConviction: {}. Expected share \
                  price: three-month {}, twelve-month {}, three-year {}.\nThesis document:\n{}",
@@ -7264,7 +7283,7 @@ pub(crate) mod tests {
         assert!(user.contains("- three-year: bear ") && user.contains("extrapolation"), "{user}");
         assert!(
             user.contains(&format!(
-                "\nGRADE\nA letter from A to F, derived from the computed quality, valuation and \
+                "\n## GRADE\nA letter from A to F, derived from the computed quality, valuation and \
                  risk scores.\n{}.\n",
                 graded.grade.as_str()
             )),
@@ -7275,7 +7294,7 @@ pub(crate) mod tests {
         let set: Vec<&str> = engine_set.iter().map(Action::as_kebab).collect();
         assert!(
             user.contains(&format!(
-                "\nSUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, \
+                "\n# SUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, \
                  listed in full: {}. A rung not listed is outside that rule.\n",
                 set.join(", ")
             )),
@@ -7336,14 +7355,14 @@ pub(crate) mod tests {
         // A rule-demoted prior carries no rationale and anchors no firmness
         // clause.
         assert!(
-            exempt.contains("\nPRIOR ACTION\nhold, set by rule after the prior analysis, not chosen in it.\n\nSUPPORTED ACTIONS\n"),
+            exempt.contains("\n# PRIOR ACTION\nhold, set by rule after the prior analysis, not chosen in it.\n\n# SUPPORTED ACTIONS\n"),
             "{exempt}"
         );
         assert!(!exempt.contains("Rationale:"), "{exempt}");
         assert!(!exempt.contains("chosen in the prior analysis."), "{exempt}");
         assert!(!exempt.contains("Move from PRIOR ACTION"), "{exempt}");
         assert!(!exempt.contains("rule-demoted"), "{exempt}");
-        assert!(exempt.contains("under their labels, up to PRIOR ACTION; each"), "{exempt}");
+        assert!(exempt.contains("under their labels; each is derived from the holding\'s data"), "{exempt}");
         // The two renders are byte-identical, so the tax posture cannot reach
         // the rung by any route.
         for token in ["tax", "Tax", "P/L"] {
@@ -7386,11 +7405,11 @@ pub(crate) mod tests {
             assert_eq!(prompt.matches("Name the returns you weighed by their values").count(), 1);
             let h = &engine.hurdle;
             if state == crate::portfolio::HurdleState::Unscorable {
-                assert!(prompt.contains("\nCAPITAL EFFICIENCY\nNo assessment.\n"), "{prompt}");
+                assert!(prompt.contains("\n## CAPITAL EFFICIENCY\nNo assessment.\n"), "{prompt}");
             } else {
                 assert!(
                     prompt.contains(&format!(
-                        "\nCAPITAL EFFICIENCY\nThe computed twelve-month total return in each scenario \
+                        "\n## CAPITAL EFFICIENCY\nThe computed twelve-month total return in each scenario \
                          (the move from the current price to the scenario price, plus forward income \
                          per share, as a fraction of the current price) and the hurdle rate it is \
                          measured against.\nbear {:+.1}% / base {:+.1}% / bull {:+.1}%; hurdle {:.1}%.\n",
@@ -7410,14 +7429,14 @@ pub(crate) mod tests {
             assert_eq!(prompt.matches("Where even the bull case under CAPITAL EFFICIENCY misses the hurdle").count(), 1, "{prompt}");
             assert!(
                 prompt.contains(&format!(
-                    "\nGRADE\nA letter from A to F, derived from the computed quality, valuation and risk scores.\n{}; one of those scores is imputed, so the letter is low-confidence.\n",
+                    "\n## GRADE\nA letter from A to F, derived from the computed quality, valuation and risk scores.\n{}; one of those scores is imputed, so the letter is low-confidence.\n",
                     low.grade.as_str()
                 )),
                 "{prompt}"
             );
             assert!(
                 prompt.contains(&format!(
-                    "\nPRIOR ACTION\n{}, chosen in the prior analysis.\nRationale: Stub action: the grade-mapped rung inside the engine set.\n",
+                    "\n# PRIOR ACTION\n{}, chosen in the prior analysis.\nRationale: Stub action: the grade-mapped rung inside the engine set.\n",
                     graded.action.as_kebab()
                 )),
                 "{prompt}"
@@ -7433,7 +7452,7 @@ pub(crate) mod tests {
                 dossier: &d, subject: ActionSubject::Priced { graded: &low, engine: &no_rate, pre_profit: None },
                 engine_set: &[Action::Hold], profile: &d.profile,
             });
-            assert!(prompt.contains("\nCAPITAL EFFICIENCY\nNo assessment.\n"), "{prompt}");
+            assert!(prompt.contains("\n## CAPITAL EFFICIENCY\nNo assessment.\n"), "{prompt}");
             assert!(!prompt.contains("; hurdle "), "{prompt}");
         }
     }
@@ -7464,7 +7483,7 @@ pub(crate) mod tests {
         };
         let base = interp(&d, None);
         assert!(!base.contains("SHORT INTEREST (FINRA biweekly file"), "{base}");
-        assert!(base.contains("\nSHORT INTEREST PRINT\n- (gap)\n"), "{base}");
+        assert!(base.contains("\n## SHORT INTEREST PRINT\n- (gap)\n"), "{base}");
         assert!(!base.contains("SAME-UNDERLYING OPTION OVERLAY"), "{base}");
         assert!(!base.contains("NARRATIVE VS REALITY"), "{base}");
         d.short_interest = Some(crate::finra::ShortInterestRead {
@@ -7544,7 +7563,7 @@ pub(crate) mod tests {
         // Each stamp moves with every change to its prompts or persisted
         // shapes, so an interrupted pre-change run cannot resume into the new
         // contract; the pins here move with each bump.
-        assert_eq!(PROMPT_VERSION, "portfolio-v84");
+        assert_eq!(PROMPT_VERSION, "portfolio-v85");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v26"
@@ -7604,7 +7623,7 @@ pub(crate) mod tests {
             profile: &d.profile,
         });
         assert!(
-            user.contains(&format!("\nPRIOR ACTION\n{}, chosen in the prior analysis.\n", prior_action.as_kebab())),
+            user.contains(&format!("\n# PRIOR ACTION\n{}, chosen in the prior analysis.\n", prior_action.as_kebab())),
             "{user}"
         );
         // The prior rationale renders less the app's caveat.
@@ -7781,7 +7800,7 @@ pub(crate) mod tests {
         });
         // Named for what it is, never by product name.
         assert!(
-            user.contains("\nMARKET ANALYSIS\nA market-level analysis.\nThesis: risk-off.\n"),
+            user.contains("\n# MARKET ANALYSIS\nA market-level analysis.\nThesis: risk-off.\n"),
             "{user}"
         );
         assert!(user.contains("from FETCHED VALUES, COMPUTED, ANALYSIS and MARKET ANALYSIS."), "{user}");
@@ -7801,7 +7820,7 @@ pub(crate) mod tests {
             narrative: None,
             review: None,
         });
-        assert!(!bare_user.contains("\nMARKET ANALYSIS\n"), "{bare_user}");
+        assert!(!bare_user.contains("\n# MARKET ANALYSIS\n"), "{bare_user}");
 
         let readout = RoleRiskReadout {
             class_label: "equity fund below the US-exposure guard".into(),
@@ -7822,7 +7841,7 @@ pub(crate) mod tests {
             review: None,
         });
         assert!(
-            role.contains("\nMARKET ANALYSIS\nA market-level analysis.\nThesis: risk-off.\n"),
+            role.contains("\n# MARKET ANALYSIS\nA market-level analysis.\nThesis: risk-off.\n"),
             "{role}"
         );
         assert!(role.contains("from CLASS, RISK PROFILE, FETCHED VALUES, COMPUTED, ANALYSIS and MARKET ANALYSIS."), "{role}");
@@ -7853,7 +7872,7 @@ pub(crate) mod tests {
         let overlay = prompt_for(Some(FundStructuralKind::OptionOverlay));
         assert!(
             overlay.contains(
-                "\nCLASS\nequity fund below the US-exposure guard. Reported asset class: Equity.\n\
+                "\n# CLASS\nequity fund below the US-exposure guard. Reported asset class: Equity.\n\
                  Structure: option overlay; the options reshape the return path.\n"
             ),
             "{overlay}"
@@ -7948,15 +7967,15 @@ pub(crate) mod tests {
             profile: &d.profile,
         });
         assert!(action.contains("\nPRICE VS NAV: -7.2% (discount)"), "{action}");
-        assert!(action.contains("\nCLASS\nclosed-end fund\n"), "{action}");
+        assert!(action.contains("\n# CLASS\nclosed-end fund\n"), "{action}");
         assert!(
-            action.contains("\nVERDICT\nAn analyst's read of the holding's data and research: the thesis document.\nThesis document:\nRole: an income sleeve.\n"),
+            action.contains("\n# VERDICT\nAn analyst's read of the holding's data and research: the thesis document.\nThesis document:\nRole: an income sleeve.\n"),
             "{action}"
         );
-        assert_eq!(action.matches("\nPOSITION\n").count(), 1, "{action}");
-        assert!(!action.contains("\nCOMPUTED\n"), "{action}");
+        assert_eq!(action.matches("\n# POSITION\n").count(), 1, "{action}");
+        assert!(!action.contains("\n# COMPUTED\n"), "{action}");
         assert!(
-            action.contains("\nSUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed in full: sell-all, trim, hold. A rung not listed is outside that rule.\n"),
+            action.contains("\n# SUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed in full: sell-all, trim, hold. A rung not listed is outside that rule.\n"),
             "{action}"
         );
         assert!(
@@ -7984,6 +8003,35 @@ pub(crate) mod tests {
         assert!(!action_gap.contains("PRICE VS NAV:"), "{action_gap}");
     }
 
+
+    #[test]
+    fn the_role_risk_action_renders_the_shared_sections_as_top_level_blocks() {
+        let mut d = fund_dossier(us_equity_fund());
+        d.filing_events = Some(crate::portfolio::ForensicFilingState::Clear);
+        let rr = crate::portfolio::RoleRiskVerdict {
+            class_label: "bond fund".into(),
+            thesis_document: "Role: a duration sleeve.".into(),
+            exposure_tilt: vec![],
+            expense_drag: None,
+            observable_risk: None,
+            structural_flag: false,
+            is_cef: false,
+            nav_premium: None,
+            evidence_gaps: vec![],
+            action: crate::portfolio::Action::Hold,
+            action_rationale: String::new(),
+        };
+        let action = action_user_prompt(&ActionInput {
+            dossier: &d,
+            subject: ActionSubject::RoleRisk { verdict: &rr },
+            engine_set: &crate::portfolio::ROLE_RISK_ACTIONS,
+            profile: &d.profile,
+        });
+        // No COMPUTED block on this branch, so the shared section is a block,
+        // not a group.
+        assert!(action.contains("\n# FORENSIC FILINGS (8-K sweep)\nClean"), "{action}");
+        assert!(!action.contains("\n## FORENSIC FILINGS"), "{action}");
+    }
     #[test]
     fn the_priced_fund_prompt_renders_the_closed_end_arm() {
         // Structurally unreachable for a real CEF (pricing needs weightings the
@@ -8063,7 +8111,7 @@ pub(crate) mod tests {
         let positive = prompt(&d);
         assert!(
             positive.contains(&format!(
-                "\nOPTIONS ACTIVITY\nput/call volume 1.200, put/call open interest 1.100, implied \
+                "\n## OPTIONS ACTIVITY\nput/call volume 1.200, put/call open interest 1.100, implied \
                  volatility 0.300, IV skew +0.030 {CONVENTION}"
             )),
             "{positive}"
@@ -8143,7 +8191,7 @@ pub(crate) mod tests {
         assert!(capped.contains("US share of holdings: 100%."), "{capped}");
         let gap = prompt_for(vec![]);
         assert!(gap.contains("US share of holdings: (gap)."), "{gap}");
-        assert!(us.contains("\nPRICE BANDS (USD)\n- three-month: bear "), "{us}");
+        assert!(us.contains("\n## PRICE BANDS (USD)\n- three-month: bear "), "{us}");
         let twelve = us.find("- twelve-month: bear ").unwrap_or_else(|| panic!("{us}"));
         let line = us[twelve..].lines().next().unwrap();
         assert!(line.contains(". Method: ") && line.contains(" × ") && line.contains("percentile"), "{line}");
@@ -8198,7 +8246,7 @@ pub(crate) mod tests {
             narrative: None,
             review: None,
         });
-        assert!(interp.contains("\nFUND\nUS share of holdings: 99%.\n"), "{interp}");
+        assert!(interp.contains("\n## FUND\nUS share of holdings: 99%.\n"), "{interp}");
         assert!(interp.contains("\n- asset class: Equity\n- expense ratio: 0.03%\n"), "{interp}");
         assert_eq!(interp.matches("0.03%").count(), 1, "renders once: {interp}");
         assert!(!interp.contains("FUND CONTEXT") && !interp.contains("fund expense ratio:"), "{interp}");
@@ -8223,7 +8271,7 @@ pub(crate) mod tests {
             profile: &d.profile,
         });
         assert!(
-            action.contains("\nRISK PROFILE\nExpense drag: 0.03% of assets per year. Observable risk:"),
+            action.contains("\n# RISK PROFILE\nExpense drag: 0.03% of assets per year. Observable risk:"),
             "{action}"
         );
         assert_eq!(action.matches("0.03%").count(), 1, "renders once: {action}");
@@ -8258,9 +8306,13 @@ pub(crate) mod tests {
             analysis: analysis_record("No research findings."),
             review: None,
         });
-        const SECTION: &str = "\nUNDERLYING POSITIONING (CFTC weekly, as of 2026-08-11)\nGold — \
-                               speculator net +200000 contracts (50.0% of OI long), w/w +4000\n";
-        assert!(role.contains(SECTION), "{role}");
+        // A top-level block on the role/risk message, a group under COMPUTED
+        // on the priced fund's.
+        const ROLE_SECTION: &str = "\n# UNDERLYING POSITIONING (CFTC weekly, as of 2026-08-11)\nGold — \
+                                    speculator net +200000 contracts (50.0% of OI long), w/w +4000\n";
+        const FUND_SECTION: &str = "\n## UNDERLYING POSITIONING (CFTC weekly, as of 2026-08-11)\nGold — \
+                                    speculator net +200000 contracts (50.0% of OI long), w/w +4000\n";
+        assert!(role.contains(ROLE_SECTION), "{role}");
         // No layer or score-input narration.
         for narration in ["snapshot", "never a score input", "layer (c)"] {
             assert!(!role.contains(narration), "`{narration}` leaked: {role}");
@@ -8281,10 +8333,10 @@ pub(crate) mod tests {
             narrative: None,
             review: None,
         });
-        assert!(interp.contains(SECTION), "{interp}");
-        let fund_section = interp.find("\nFUND\n").expect("fund section");
-        let positioning = interp.find(SECTION).expect("positioning line");
-        let metrics = interp.find("\nMETRICS\n").expect("metrics section");
+        assert!(interp.contains(FUND_SECTION), "{interp}");
+        let fund_section = interp.find("\n## FUND\n").expect("fund section");
+        let positioning = interp.find(FUND_SECTION).expect("positioning line");
+        let metrics = interp.find("\n## METRICS\n").expect("metrics section");
         assert!(fund_section < positioning && positioning < metrics, "{interp}");
 
         let bare = fund_dossier(us_equity_fund());
@@ -8628,8 +8680,8 @@ pub(crate) mod tests {
     #[test]
     fn the_analysis_request_is_a_thinking_prose_call_on_the_reasoner() {
         let brief = HoldingBrief {
-            header: "HOLDING\nAAPL (Apple).\nPrice: $195.00 per share.\nDate: 2026-08-03.\n".into(),
-            fetched_values: "\nFETCHED VALUES\nQuote: 195.00.\n".into(),
+            header: "\n# HOLDING\nAAPL (Apple).\nPrice: $195.00 per share.\nDate: 2026-08-03.\n".into(),
+            fetched_values: "\n# FETCHED VALUES\nQuote: 195.00.\n".into(),
             leads: vec![],
             prior_analysis: String::new(),
             prior_thesis: String::new(),
@@ -8662,11 +8714,11 @@ pub(crate) mod tests {
             req.messages[0].content
         );
         assert!(
-            req.messages[1].content.starts_with("======== PART 1: INPUTS ========\nHOLDING\nAAPL (Apple).\n"),
+            req.messages[1].content.starts_with("======== PART 1: INPUTS ========\n\n# HOLDING\nAAPL (Apple).\n"),
             "{}",
             req.messages[1].content
         );
-        assert!(req.messages[1].content.contains("\nWRITE-UPS\n"), "{}", req.messages[1].content);
+        assert!(req.messages[1].content.contains("\n# WRITE-UPS\n"), "{}", req.messages[1].content);
         assert_eq!(StubAnalyst.analyze(&input).unwrap(), "Competitive / business position\nShare held.");
 
         let d_input = distill::DistillInput {
@@ -8684,7 +8736,7 @@ pub(crate) mod tests {
         assert!(d_req.tools.is_none() && d_req.format_schema.is_none());
         assert!(
             d_req.messages[1].content.contains(
-                "\nWRITE-UPS\nThe research on this holding, one write-up per topic.\n"
+                "\n# WRITE-UPS\nThe research on this holding, one write-up per topic.\n"
             ),
             "{}",
             d_req.messages[1].content
@@ -8755,7 +8807,7 @@ pub(crate) mod tests {
 
     fn stand_in_distill_input(write_ups: &[distill::WriteUp]) -> distill::DistillInput<'_> {
         distill::DistillInput {
-            header: "HOLDING\nAAPL (Apple).\nPrice: $195.00 per share.\nDate: 2026-08-03.\n",
+            header: "\n# HOLDING\nAAPL (Apple).\nPrice: $195.00 per share.\nDate: 2026-08-03.\n",
             subject: distill::DistillSubject::Merged(write_ups),
             stage: "distill AAPL".into(),
         }
@@ -8893,7 +8945,7 @@ pub(crate) mod tests {
         let (v1, a1) = analyze_holding(&cap, &d1, &rates(), "2026-08-03").unwrap();
         assert!(cap.reviews.borrow().is_empty());
         let debut = cap.thesis.borrow().clone().unwrap();
-        assert!(!debut.contains("\nREVIEW\n"), "{debut}");
+        assert!(!debut.contains("\n# REVIEW\n"), "{debut}");
         assert_eq!((a1.review.as_deref(), a1.accuracy_read_through), (None, None));
 
         let mut d2 = dossier(AssetClass::Stock, strong_financials());
@@ -8909,11 +8961,11 @@ pub(crate) mod tests {
         let cap = ReviewCapture::default();
         let (_, a2) = analyze_holding(&cap, &d2, &rates(), "2026-08-04").unwrap();
         assert_eq!(cap.reviews.borrow().len(), 1);
-        assert!(cap.reviews.borrow()[0].contains("\nREALIZED\n"));
+        assert!(cap.reviews.borrow()[0].contains("\n# REALIZED\n"));
         let thesis = cap.thesis.borrow().clone().unwrap();
         let at = |h: &str| thesis.find(h).unwrap_or_else(|| panic!("{h}:\n{thesis}"));
-        assert!(at("\nANALYSIS") < at("\nREVIEW\nThe review of AAPL.\n"));
-        assert!(at("\nREVIEW\n") < at("\nPRIOR THESIS"));
+        assert!(at("\n# ANALYSIS") < at("\n# REVIEW\nThe review of AAPL.\n"));
+        assert!(at("\n# REVIEW\n") < at("\n# PRIOR THESIS"));
         assert!(
             thesis.contains("and how the prior read held up, drawing on REVIEW and PRIOR THESIS"),
             "{thesis}"
@@ -8967,9 +9019,9 @@ pub(crate) mod tests {
         let reviews = cap.reviews.borrow();
         assert_eq!(reviews.len(), 1);
         assert!(reviews[0].contains("- NAV per share: "), "{}", reviews[0]);
-        assert!(!reviews[0].contains("ACCURACY SCORES"), "{}", reviews[0]);
+        assert!(!reviews[0].contains("ACCURACY RECORD"), "{}", reviews[0]);
         let message = cap.role_risk.borrow().clone().unwrap();
-        assert!(message.find("\nREVIEW\n").unwrap() < message.find("\nPRIOR THESIS").unwrap());
+        assert!(message.find("\n# REVIEW\n").unwrap() < message.find("\n# PRIOR THESIS").unwrap());
         assert!(message.contains("drawing on REVIEW and PRIOR THESIS"), "{message}");
         assert_eq!(a2.review.as_deref(), Some("The review of BND."));
         // A role read states no price, so its review reads no accuracy record.
@@ -9120,7 +9172,7 @@ pub(crate) mod tests {
         d.position.description = "Phillips 66".to_string();
         d.company_name = Some("Phillips 66 Company".to_string());
         let h = holding_header(&d);
-        assert!(h.starts_with("HOLDING\nAAPL (Phillips 66).\n"), "{h}");
+        assert!(h.starts_with("\n# HOLDING\nAAPL (Phillips 66).\n"), "{h}");
         assert!(h.contains("Price: $195.00 per share.\n"), "{h}");
         assert!(h.ends_with("Date: 2026-07-28.\n"), "{h}");
         assert!(!h.contains("Current price"), "{h}");
@@ -9245,7 +9297,7 @@ pub(crate) mod tests {
         let user = &debut_req.messages[1].content;
         assert!(!user.contains("PRIOR THESIS") && !user.contains("drawing on PRIOR THESIS"), "{user}");
         assert!(user.contains("\n6. A summary paragraph — the financial read, why those prices and that conviction.\n"), "{user}");
-        let metrics = user.split("\nMETRICS\n").nth(1).unwrap().split("\nSCORES\n").next().unwrap();
+        let metrics = user.split("\n## METRICS\n").nth(1).unwrap().split("\n## SCORES\n").next().unwrap();
         assert!(metrics.contains("- price / earnings multiple: ") && !metrics.contains("fund expense ratio"), "{metrics}");
         for absent in ["This is the first analysis of this holding.", "self_assessment", "what_changed", "CONTINUITY:", "RETURN SHAPE"] {
             assert!(!user.contains(absent), "`{absent}` leaked: {user}");
@@ -9276,21 +9328,21 @@ pub(crate) mod tests {
         let cont_req = thesis_request("qwen", &input(&cont, &engine_output));
         assert!(cont_req.format_schema.is_none());
         let user = &cont_req.messages[1].content;
-        assert!(user.contains("\nPRIOR THESIS (written 2026-08-03)\nThesis: hold AAPL "), "{user}");
+        assert!(user.contains("\n# PRIOR THESIS (written 2026-08-03)\nThesis: hold AAPL "), "{user}");
         assert!(user.contains(", and what changed since the prior analysis, drawing on PRIOR THESIS.\n"), "{user}");
         assert!(user.contains("\n- close on the prior analysis date 2026-08-03: "), "{user}");
         let (part1, _) = user.split_once("======== PART 2: TASK ========").unwrap();
-        let fetched = part1.split("\nFETCHED VALUES\n").nth(1).unwrap().split("\nCOMPUTED\n").next().unwrap();
-        assert!(fetched.contains("\nCONSENSUS\n- consensus EPS by fiscal period end, as published: "), "{fetched}");
+        let fetched = part1.split("\n# FETCHED VALUES\n").nth(1).unwrap().split("\n# COMPUTED\n").next().unwrap();
+        assert!(fetched.contains("\n## CONSENSUS\n- consensus EPS by fiscal period end, as published: "), "{fetched}");
         assert!(!fetched.contains("blended"), "{fetched}");
-        let metrics = part1.split("\nMETRICS\n").nth(1).unwrap().split("\nSCORES\n").next().unwrap();
+        let metrics = part1.split("\n## METRICS\n").nth(1).unwrap().split("\n## SCORES\n").next().unwrap();
         assert!(metrics.contains("- forward consensus, next twelve months blended over "), "{metrics}");
 
         let fund = fund_dossier(us_equity_fund());
         let fund_req = thesis_request("qwen", &input(&fund, &engine_output));
         assert!(fund_req.messages[0].content.starts_with("You are an investment analyst writing the thesis document"), "{}", fund_req.messages[0].content);
         let user = &fund_req.messages[1].content;
-        let metrics = user.split("\nMETRICS\n").nth(1).unwrap().split("\nSCORES\n").next().unwrap();
+        let metrics = user.split("\n## METRICS\n").nth(1).unwrap().split("\n## SCORES\n").next().unwrap();
         assert!(metrics.contains("- daily realized return volatility: ") && !metrics.contains("price / earnings multiple") && !metrics.contains("fund expense ratio"), "{metrics}");
         assert!(user.contains("\n- expense ratio: 0.03%\n"), "{user}");
 
@@ -9334,7 +9386,7 @@ pub(crate) mod tests {
             let user = thesis_user_prompt(&input(&d, &engine_output));
             match expected {
                 Some(doc) => {
-                    assert!(user.contains(&format!("\nPRIOR THESIS (written 2026-08-03)\n{doc}")), "{user}");
+                    assert!(user.contains(&format!("\n# PRIOR THESIS (written 2026-08-03)\n{doc}")), "{user}");
                     assert!(user.contains("drawing on PRIOR THESIS"), "{user}");
                 }
                 None => assert!(!user.contains("PRIOR THESIS"), "{user}"),
@@ -9429,9 +9481,9 @@ pub(crate) mod tests {
         }
         let user = thesis_user_prompt(&input(&d, &engine_output, Some(&flags)));
         let (part1, _) = user.split_once("======== PART 2: TASK ========").unwrap();
-        let computed = part1.find("\nCOMPUTED\n").expect("COMPUTED");
-        let section = part1.find("\nSOFT FORENSIC FLAGS\n").expect("the section");
-        let analysis = part1.find("\nANALYSIS\n").expect("ANALYSIS");
+        let computed = part1.find("\n# COMPUTED\n").expect("COMPUTED");
+        let section = part1.find("\n## SOFT FORENSIC FLAGS\n").expect("the section");
+        let analysis = part1.find("\n# ANALYSIS\n").expect("ANALYSIS");
         assert!(computed < section && section < analysis, "{part1}");
         assert!(part1.contains("- Altman Z below 1.8: fired (Z 1.21).\n"), "{part1}");
         assert!(part1.contains("- Piotroski F-score at or below 3: clear (score 7).\n"), "{part1}");
@@ -9550,7 +9602,7 @@ pub(crate) mod tests {
             narrative: None,
             review: None,
         });
-        assert!(user.contains("\nPRE-PROFIT EXECUTION AND FINANCING\n"), "{user}");
+        assert!(user.contains("\n## PRE-PROFIT EXECUTION AND FINANCING\n"), "{user}");
         // No arm narration or binding language aimed at the model.
         assert!(!user.contains("computed conviction capped"), "{user}");
         for narration in [
@@ -9574,8 +9626,8 @@ pub(crate) mod tests {
         assert!(overlay.consequences.bar_add_family);
         assert!(!overlay.consequences.exit_family_only);
 
-        let interp = pre_profit_prompt_section(&overlay, PromptStage::Thesis);
-        let action = pre_profit_prompt_section(&overlay, PromptStage::Action);
+        let interp = pre_profit_prompt_section(&overlay, PromptStage::Thesis, Tier::Group);
+        let action = pre_profit_prompt_section(&overlay, PromptStage::Action, Tier::Group);
         assert!(
             interp.contains("- the computed action set excludes adding, on the financing rule.\n"),
             "{interp}"
@@ -9693,7 +9745,7 @@ pub(crate) mod tests {
         assert!(!action.contains("conviction capped"), "{action}");
         assert!(!action.contains("computed action set"), "{action}");
         assert!(
-            action.contains("\nSUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed in full: sell-all, trim. A rung not listed is outside that rule.\n"),
+            action.contains("\n# SUPPORTED ACTIONS\nThe rungs a fixed rule over the holding's reads supports, listed in full: sell-all, trim. A rung not listed is outside that rule.\n"),
             "{action}"
         );
         assert!(!action.contains("CONVICTION CEILING"), "{action}");
@@ -9810,7 +9862,7 @@ pub(crate) mod tests {
             profile: &d.profile,
         });
         assert_eq!(user.matches("higher is better on every axis").count(), 0, "{user}");
-        assert_eq!(user.matches("\nSUPPORTED ACTIONS\n").count(), 1, "{user}");
+        assert_eq!(user.matches("\n# SUPPORTED ACTIONS\n").count(), 1, "{user}");
         for absent in [
             "The full ladder is yours", "its own pick", "ENGINE SET", "ENGINE ADMISSION FACTS",
             "restriction", "not a bound", "departure", "Its selected action",
@@ -9818,7 +9870,7 @@ pub(crate) mod tests {
             assert!(!user.contains(absent), "{absent}: {user}");
         }
         // The overlay renders structure and ratios, never the held share count.
-        assert_eq!(user.matches("\nPOSITION\n").count(), 1, "{user}");
+        assert_eq!(user.matches("\n# POSITION\n").count(), 1, "{user}");
         for once in ["Shares held: 100.", "Cost basis: $14,000.00.", "Market value: $19,500.00."] {
             assert_eq!(user.matches(once).count(), 1, "{once}: {user}");
         }
@@ -9826,7 +9878,7 @@ pub(crate) mod tests {
             assert!(!user.contains(absent), "{absent}: {user}");
         }
         assert!(
-            user.starts_with("======== PART 1: INPUTS ========\nHOLDING\nAAPL (Apple).\nPrice: $195.00 per share.\n"),
+            user.starts_with("======== PART 1: INPUTS ========\n\n# HOLDING\nAAPL (Apple).\nPrice: $195.00 per share.\n"),
             "{user}"
         );
         assert!(user.contains("covering 100% of the held shares; net delta -70% of the held shares"), "{user}");
@@ -9931,7 +9983,7 @@ pub(crate) mod tests {
         );
         assert!(!values(&d).contains("Unrealized gain:"), "{}", values(&d));
         let s = position_section(&d);
-        assert!(s.starts_with("\nPOSITION\nThe holding as the account carries it: "), "{s}");
+        assert!(s.starts_with("\n# POSITION\nThe holding as the account carries it: "), "{s}");
         assert!(s.contains("as a share of a positive cost basis; not available where no basis is reported)"), "{s}");
         assert_eq!(s.trim_start().lines().count(), 3, "{s}");
     }
@@ -9968,7 +10020,7 @@ pub(crate) mod tests {
             narrative: None,
             review: None,
         });
-        for absent in ["\nPOSITION\n", "Shares held:", "Cost basis:", "Market value:", "Unrealized"] {
+        for absent in ["\n# POSITION\n", "Shares held:", "Cost basis:", "Market value:", "Unrealized"] {
             assert!(!interp.contains(absent), "{absent}: {interp}");
         }
     }

@@ -1,6 +1,6 @@
 # Analysis — fund, first analysis
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v83`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v85`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: BND, the synthetic total bond market ETF the fixed evidence set carries for the role/risk branch.
 The analysis call is a thinking call with no grammar: Part 1 the holding header and FETCHED VALUES as the brief carries them, on a continuity run PRIOR ANALYSIS, then WRITE-UPS; Part 2 what the analysis states and its length band. The analysis is the only research artifact the next run reads.
@@ -18,7 +18,7 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 1661 chars — the messages and tools as serialized |
+| Prompt material | 1687 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -27,42 +27,43 @@ You are an investment analyst writing the analysis of one holding's research for
 Part 1 of the message gives the inputs. Part 2 says what the analysis covers and how to return it.
 ~~~~
 
-## User message (1349 chars)
+## User message (1374 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
-HOLDING
+
+# HOLDING
 BND (VANGUARD TOTAL BOND MARKET ETF).
 Price: $72.38 per share.
 Date: 2026-09-16.
 
-FETCHED VALUES
+# FETCHED VALUES
 The holding's data (USD; B is billions, M is millions; a yield or a return as a percentage); a
 missing figure reads (gap). The rows follow under their labels.
 
-PROFILE
+## PROFILE
 - name: Vanguard Total Bond Market ETF
 - asset class: Fixed Income
 - expense ratio: 0.03%
 - assets under management: 340.0B
 - NAV: 72.41
 
-WEIGHTS
+## WEIGHTS
 - countries, largest first: United States 94.0%, Supranational 2.0%, Canada 1.0%
 
-DIVIDENDS
+## DIVIDENDS
 - (gap)
 
-QUOTE AND CLOSES
+## QUOTE AND CLOSES
 - daily closes: 21 sessions from 2026-08-14 to 2026-09-14
 
-RATES
+## RATES
 - Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%
 
-WRITE-UPS
+# WRITE-UPS
 The research on this holding, one write-up per topic.
 
-Exposure profile
+## Exposure profile
 [stub: the fund's exposure-profile write-up]
 
 ======== PART 2: TASK ========

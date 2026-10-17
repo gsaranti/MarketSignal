@@ -1273,9 +1273,9 @@ fn examples() -> Vec<Example> {
             holding: "TSLA, on a continuity run over the prior position of 2026-09-02",
             sentences: lines(&[
                 review_common,
-                "REALIZED carries the price now with its move and the path since, each prior expected price at its horizon date, the accuracy scores with whether the prior analysis read each, the checks written since the prior analysis, and the computed reads then and now.",
-                "The accuracy record here is synthetic, layered for this example alone: four earlier forecasts, two checks the prior analysis read and two this run wrote after it — one scored, one with no forecast at its horizon — so the three-month scores read both ways and the lines show both outcomes.",
-                "The prior here is attempt 6's persisted verdict, re-dated to 2026-09-02, with a hand-written prior spot 3% under today's; its twelve-month price has not reached its date.",
+                "REALIZED carries the price now with its move and the path since, the accuracy record with whether the prior analysis read each score, the checks written since the prior analysis, and the computed reads then and now.",
+                "The accuracy record here is synthetic, layered for this example alone: four earlier analyses' expected prices, two checks the prior analysis read and two this run wrote after it — one scored, and one for a horizon with no price, which the review leaves out — so the three-month scores read both ways.",
+                "The prior here is attempt 6's persisted verdict, re-dated to 2026-09-02, with a hand-written prior spot 3% under today's.",
                 "Under COMPUTED READS the four scores, then and now alike, are the synthetic factor composite's means of the thesis-document files, not attempt 6's persisted scores; the prior shares the verdict they were written onto.",
             ]),
             stage: "review TSLA".into(),
@@ -1295,7 +1295,7 @@ fn examples() -> Vec<Example> {
             holding: "SPMO, on a continuity run over the prior position of 2026-09-02, its fund context synthetic",
             sentences: lines(&[
                 review_common,
-                "A priced fund takes the same call; with no check landed since the prior analysis, the fixed sentence says the scores shown are the ones it read. The prior's read-through mark here is hand-written.",
+                "A priced fund takes the same call; with no check written since the prior analysis, the fixed sentence says the scores shown are the ones it read. The prior's read-through mark here is hand-written.",
             ]),
             stage: "review SPMO".into(),
             request: pipeline::review_request(REASONER, &review_input(&spmo, &d, &analysis)),
@@ -1709,7 +1709,7 @@ fn render_messages(messages: &[ChatMessage]) -> String {
                 users += 1;
                 if users == 1 {
                     out.push_str(&format!("## User message ({n} chars)\n\n"));
-                } else if m.content.starts_with("SEARCHING\n") {
+                } else if m.content.starts_with("# SEARCHING\n") {
                     out.push_str("## Appended user message (the turn countdown)\n\n");
                 } else {
                     out.push_str(&format!("## Appended user message ({n} chars)\n\n"));
@@ -1759,7 +1759,7 @@ fn render(ex: &Example) -> String {
         out.push_str("Under FETCHED VALUES, the issuer line, the quarterly statements and the consensus, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments are synthetic values layered onto the fixture for these examples alone, their names stubbed; the closes are the fixed set's, as is the price under HOLDING.\n");
         out.push_str("The statements are sized to the engine's persisted metrics and the consensus to its band driver, and the surprises' EPS, the ratio lines, the enterprise-value row and the segments agree with the statements.\n");
     }
-    if ex.request.messages.iter().any(|m| m.content.contains("\nSCORES\n") && m.content.contains("\nquality\n- ")) {
+    if ex.request.messages.iter().any(|m| m.content.contains("\n## SCORES\n") && m.content.contains("\nquality\n- ")) {
         out.push_str("Under SCORES, the factor lines and the return and cost of capital they name are synthetic values layered onto the fixture for these examples alone, scored through the live bands; the four scores are their means.\n");
     }
     if ex.request.messages.iter().any(|m| m.content.contains("SPMO (Invesco S&P 500 Momentum ETF)")) {

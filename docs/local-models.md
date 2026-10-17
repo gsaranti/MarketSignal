@@ -138,6 +138,7 @@ Ungoverned prompt content does not belong: app or downstream-consumer architectu
 Within the governed constraints, the model draws the inference from the supplied facts; the prompt does not add an unruled conclusion for it to reproduce.
 The research pass's gathering degradation is a persisted gap only; the write-up states what the evidence leaves unanswered ([web-research.md §The research loop](web-research.md#the-research-loop-and-context-management)).
 No Portfolio prompt names an app concept: each is one message in two parts, the data with its glosses and then the task, a typed call closing on a placeholder-only return shape, and none carries pipeline-architecture narration, meta-reasoning, or an ungoverned how-to-weigh nudge.
+Within each part a block heads with `# LABEL` and a group inside a block with `## LABEL`, so where a block ends is read from the next heading's depth and never assumed.
 This is the same "informs, never dictates" stance the suite takes with values (§Context-memory discipline) and with source quality ([web-research.md §Source quality and evidence weighting](web-research.md#source-quality-and-evidence-weighting)): the app surfaces the fact and the model judges.
 
 ## Context-memory discipline

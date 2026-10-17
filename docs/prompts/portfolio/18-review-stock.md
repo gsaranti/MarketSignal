@@ -1,12 +1,12 @@
 # Self-review — stock, continuity run
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v84`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v85`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, on a continuity run over the prior position of 2026-09-02.
 The review is a thinking call with no grammar, on a continuity run only: Part 1 the holding header and FETCHED VALUES, this run's ANALYSIS, then PRIOR POSITION and PRIOR THESIS, then REALIZED; Part 2 what the review covers, in order, and its length band. The review reaches this run's thesis document alone.
-REALIZED carries the price now with its move and the path since, each prior expected price at its horizon date, the accuracy scores with whether the prior analysis read each, the checks written since the prior analysis, and the computed reads then and now.
-The accuracy record here is synthetic, layered for this example alone: four earlier forecasts, two checks the prior analysis read and two this run wrote after it — one scored, one with no forecast at its horizon — so the three-month scores read both ways and the lines show both outcomes.
-The prior here is attempt 6's persisted verdict, re-dated to 2026-09-02, with a hand-written prior spot 3% under today's; its twelve-month price has not reached its date.
+REALIZED carries the price now with its move and the path since, the accuracy record with whether the prior analysis read each score, the checks written since the prior analysis, and the computed reads then and now.
+The accuracy record here is synthetic, layered for this example alone: four earlier analyses' expected prices, two checks the prior analysis read and two this run wrote after it — one scored, and one for a horizon with no price, which the review leaves out — so the three-month scores read both ways.
+The prior here is attempt 6's persisted verdict, re-dated to 2026-09-02, with a hand-written prior spot 3% under today's.
 Under COMPUTED READS the four scores, then and now alike, are the synthetic factor composite's means of the thesis-document files, not attempt 6's persisted scores; the prior shares the verdict they were written onto.
 Every `[stub: …]` marks a parsed article or research field whose prose the run fills; the dates, URLs and headers around it are as rendered.
 Under FETCHED VALUES, the issuer line, the quarterly statements and the consensus, the 52-week range, the 8-K list, the short-interest print, the street, insider and congressional rows, the surprises, the ratio lines, owner earnings, enterprise value, the float, the M&A match and the segments are synthetic values layered onto the fixture for these examples alone, their names stubbed; the closes are the fixed set's, as is the price under HOLDING.
@@ -23,7 +23,7 @@ The statements are sized to the engine's persisted metrics and the consensus to 
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":65536,"presence_penalty":1.5,"temperature":1.0,"top_k":20,"top_p":0.95}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 13451 chars — the messages and tools as serialized |
+| Prompt material | 13429 chars — the messages and tools as serialized |
 
 ## System message
 
@@ -32,20 +32,21 @@ You are an investment analyst reviewing the prior position on one holding for a 
 Part 1 of the message gives the inputs. Part 2 says what the review covers and how to return it.
 ~~~~
 
-## User message (13004 chars)
+## User message (12988 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
-HOLDING
+
+# HOLDING
 TSLA (Tesla, Inc.).
 Price: $358.97 per share.
 Date: 2026-09-16.
 
-FETCHED VALUES
+# FETCHED VALUES
 The holding's data (USD; B is billions, M is millions; a yield or a return as a percentage); a
 missing figure reads (gap). The rows follow under their labels.
 
-PROFILE
+## PROFILE
 - name: Tesla, Inc.
 - exchange: NASDAQ
 - sector: Consumer Cyclical
@@ -53,7 +54,7 @@ PROFILE
 - market capitalization: 1260.0B
 - shares outstanding: 3.5B
 
-STATEMENTS
+## STATEMENTS
 Quarterly statements as reported, newest first (period end, then the figure)
 - revenue: 2026-06-30 22.5B; 2026-03-31 19.3B; 2025-12-31 25.7B; 2025-09-30 25.2B; 2025-06-30 20.1B;
 2025-03-31 17.3B; 2024-12-31 23.0B; 2024-09-30 22.5B
@@ -80,31 +81,31 @@ Quarterly statements as reported, newest first (period end, then the figure)
 - cash and equivalents: 2026-06-30 33.0B; 2026-03-31 31.5B; 2025-12-31 30.8B; 2025-09-30 29.9B;
 2025-06-30 28.7B; 2025-03-31 27.4B; 2024-12-31 26.1B; 2024-09-30 25.0B
 
-CONSENSUS
+## CONSENSUS
 - consensus EPS by fiscal period end, as published: 2026-12-31 1.71; 2027-12-31 2.27
 
-DIVIDENDS
+## DIVIDENDS
 - (gap)
 
-QUOTE AND CLOSES
+## QUOTE AND CLOSES
 - 52-week range as served: low 215.38, high 430.76
 - daily closes: 3 sessions from 2026-09-01 to 2026-09-14
 - close on the prior analysis date 2026-09-02: 348.20
 
-FILINGS
+## FILINGS
 8-K filings of the trailing twelve months, newest first (filing date: items)
 - 2026-07-23: 2.02, 9.01
 - 2026-05-15 (8-K/A): 5.02
 - 2026-04-22: 2.02, 9.01
 
-SHORT INTEREST PRINT
+## SHORT INTEREST PRINT
 - settlement: 2026-08-31 (FINRA)
 - shares short: 80.0M
 - shares short at the prior settlement: 76.0M
 - average daily volume: 95.0M
 - days to cover: 0.84
 
-STREET
+## STREET
 - price targets: consensus 387.69, median 394.87, low 179.49, high 717.94
 - targets published: last month 4 averaging 412.82; last quarter 15 averaging 384.10; last year 48
 averaging 358.97
@@ -114,7 +115,7 @@ Rating actions, newest first (date: firm, previous grade to new grade, action)
 - 2026-07-24: [stub: grading firm], Buy to Buy, maintain
 - 2026-04-23: [stub: grading firm], (gap) to Hold, initiate
 
-INSIDERS AND CONGRESS
+## INSIDERS AND CONGRESS
 Insider trades, newest first (transaction date: name, role, type, shares at price, filing date)
 - 2026-09-05: [stub: insider name], officer, S-Sale, 10000 shares at 351.79, filed 2026-09-08
 - 2026-08-20: [stub: insider name], director, A-Award, 2500 shares at 0.00, filed 2026-08-21
@@ -127,7 +128,7 @@ disclosure date)
 - 2026-08-14: House, [stub: member], Joint, Purchase, $1,001 - $15,000, disclosed 2026-09-02
 - 2026-06-03: Senate, [stub: member], Spouse, Sale, $15,001 - $50,000, disclosed 2026-07-01
 
-EARNINGS
+## EARNINGS
 Surprises, newest first (announcement date: EPS actual vs estimate, revenue actual)
 - 2026-07-22: EPS 0.34 vs 0.37 estimated, revenue 22.5B
 - 2026-04-22: EPS 0.17 vs 0.25 estimated, revenue 19.3B
@@ -135,19 +136,19 @@ Surprises, newest first (announcement date: EPS actual vs estimate, revenue actu
 - 2025-10-22: EPS 0.20 vs 0.16 estimated, revenue 25.2B
 - next earnings: 2026-10-21 (EPS estimate 0.55)
 
-VALUATION
+## VALUATION
 - trailing-twelve-month ratios: P/E 370.07; EV/EBITDA 124.79; EV/sales 13.33; P/B 16.22; FCF yield
 0.2%; ROIC 8.3%; ROE 4.4%; net debt/EBITDA -2.48
 - owner earnings (FY2026 Q2, period end 2026-06-30): 2.1B; 0.60 per share
 - enterprise value (2026-06-30): 1235.4B; market capitalization 1260.0B; total debt 8.4B; cash 33.0B
 - float (2026-09-01): float shares 3.0B; shares outstanding 3.5B; free float 86.9%
 
-M&A
+## M&A
 SEC merger registration filings, trailing twelve months; a filing follows a deal's announcement,
 typically by several weeks, and covers deals paid at least partly in stock
 - acquirer of [stub: counterparty], filed 2026-05-20
 
-SEGMENTS
+## SEGMENTS
 Revenue by product, newest fiscal year first
 - FY2025 (period end 2025-12-31): Automotive 68.5B, Services and other 10.3B, Energy generation and
 storage 9.5B
@@ -157,14 +158,14 @@ Revenue by geography, newest fiscal year first
 - FY2025 (period end 2025-12-31): United States 41.5B, Other 27.0B, China 19.8B
 - FY2024 (period end 2024-12-31): United States 42.0B, Other 25.5B, China 18.5B
 
-RATES
+## RATES
 - Treasury yields (FRED): 10-year 4.50%, 2-year 4.00%
 
-ANALYSIS
+# ANALYSIS
 [stub: this run's analysis — the research consolidated across the topics, as the analysis call
 returned it]
 
-PRIOR POSITION
+# PRIOR POSITION
 The position stated at the prior analysis: its date, the price then, the action with its rationale,
 the conviction, and the expected share price at each horizon with the horizon's date.
 Date: 2026-09-02.
@@ -177,7 +178,7 @@ Expected price at three months: none stated (2026-12-02).
 Expected price at twelve months: $145.00 by 2027-09-02.
 Expected price at three years: none stated (2029-09-02).
 
-PRIOR THESIS (written 2026-09-02)
+# PRIOR THESIS (written 2026-09-02)
 Thesis: Investment thesis rests on Robotaxi monetization within 12-24 months justifying premium
 multiple, with safety scandal resolution and margin stabilization as near-term catalysts; core EV
 business provides downside floor at ~$180/share (base case earnings power) but offers limited upside
@@ -214,45 +215,38 @@ four fatalities). My bear target ($92) applies a distress multiple to core auto 
 credits. Bull case ($398) requires successful Robotaxi launch with approved commercial operations by
 Q1-CY27; this is possible but not probable given regulatory and technical execution risks.
 
-REALIZED
-What has happened since the prior analysis, computed from the daily closes and the stored records,
-under the labels below.
+# REALIZED
+What has happened since the prior analysis, computed from the daily closes and the stored records.
 
-PRICE
+## PRICE
 Now: $358.97 per share, +3.1% since the prior analysis (from the close of $348.20 on 2026-09-01).
 Closes since the prior analysis: high $358.97 on 2026-09-14, low $348.20 on 2026-09-02.
 
-EXPECTED PRICES
-Each expected price under PRIOR POSITION at its horizon date: once the date has passed, the close on
-it — or the last close within 5 sessions before it — and the score, 100 × (1 − |expected − close| ÷
-close), floored at 0; a date not yet passed reads not reached, with the path so far under PRICE.
-- three months: none stated.
-- twelve months (2027-09-02): not reached.
-- three years: none stated.
-
-ACCURACY SCORES
-How the expected prices stated on this holding have scored once their horizon dates passed, at each
-horizon, for the analyst's prices and for the computed base values: the mean of the per-check
-scores, each 100 × (1 − |expected − close| ÷ close), floored at 0, so 0 to 100; no score yet before
-the first check. Each score names the date of the check that last moved it and whether the prior
-analysis read it.
+## ACCURACY RECORD
+The running mean, at each horizon, of the scores of the expected prices stated at earlier analyses
+of this holding, one mean for the analyst's prices and one for the computed base values (the base of
+the price band a fixed formula derives from the holding's data). A score is 100 × (1 − |expected −
+close| ÷ close), floored at 0, so 0 to 100. The close is the one on the price's horizon date, or the
+last close within 5 sessions before it. No score yet before the first. Each mean names the date it
+last moved and whether the prior analysis read it.
 - three months: analyst 92.9 over 3 checks, last moved 2026-09-16, not read by the prior analysis;
 computed base 93.3 over 2 checks, last moved 2026-08-04, read by the prior analysis.
 - twelve months: analyst no score yet; computed base no score yet.
 - three years: analyst no score yet; computed base no score yet.
 
-CHECKS SINCE THE PRIOR ANALYSIS
-Every line landed after the prior analysis was written; none was read before. One line per forecast
-and horizon, newest horizon date first: the forecast's date, the horizon and its date, the close
-read, and each expected price with its score.
-- forecast of 2026-06-10, three months (2026-09-10): not scored — no price was stated at this
-horizon.
-- forecast of 2026-06-08, three months (2026-09-08): close $352.40 on 2026-09-08; analyst $380.00,
+## CHECKS SINCE THE PRIOR ANALYSIS
+The checks added to the record since the prior analysis was written, so it saw none of them. A check
+is one horizon of an earlier analysis of this holding: the analyst's expected price and the computed
+base value, each scored against that horizon's close as under ACCURACY RECORD. A price that was not
+stated reads none stated, and a check with no usable close says why it was not scored. Newest
+horizon date first.
+- analysis of 2026-06-08, three months (2026-09-08): close $352.40 on 2026-09-08; analyst $380.00,
 score 92.2; computed base none stated.
 
-COMPUTED READS
-The computed reads at the prior analysis beside today's, then → now; the prior price bands on
-today's price basis.
+## COMPUTED READS
+The reads fixed formulas derive from the holding's data — the grade, scores, risk tier, capital
+efficiency, price bands and metrics — at the prior analysis beside today's, then → now; the prior
+price bands on today's price basis.
 - grade: F → F.
 - scores (0 to 100, higher is better; valuation higher means more attractive, risk higher means more
 resilient): quality 27 → 27; valuation 12 → 12; momentum 58 → 58; risk 39 → 39.
@@ -273,7 +267,8 @@ first line. It covers, in this order:
 1. Each expected price under PRIOR POSITION against what happened, from REALIZED.
 
 2. Each falsifier and each trigger the document under PRIOR THESIS names — whether the falsifier
-tripped or the trigger fired, by the numbers under FETCHED VALUES, ANALYSIS and REALIZED.
+tripped or the trigger fired, or whether that cannot be told, from what is under FETCHED VALUES,
+ANALYSIS and REALIZED.
 
 3. Whether the thesis survives.
 
