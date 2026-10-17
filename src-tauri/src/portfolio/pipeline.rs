@@ -7544,7 +7544,7 @@ pub(crate) mod tests {
         // Each stamp moves with every change to its prompts or persisted
         // shapes, so an interrupted pre-change run cannot resume into the new
         // contract; the pins here move with each bump.
-        assert_eq!(PROMPT_VERSION, "portfolio-v81");
+        assert_eq!(PROMPT_VERSION, "portfolio-v82");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v26"
@@ -8684,7 +8684,7 @@ pub(crate) mod tests {
         assert!(d_req.tools.is_none() && d_req.format_schema.is_none());
         assert!(
             d_req.messages[1].content.contains(
-                "\nWRITE-UPS\nThe write-ups on this holding, each under its topic, the \
+                "\nWRITE-UPS\nThe research on this holding, one write-up per topic, the \
                  contrary-evidence write-up last.\n"
             ),
             "{}",

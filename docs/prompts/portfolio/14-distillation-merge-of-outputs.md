@@ -1,6 +1,6 @@
 # Distillation — the merge of the per-write-up outputs
 
-*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v81`; regenerate rather than edit (`docs/prompts/README.md`).*
+*Generated from the code by `fixed_evidence::prompt_examples`; last changed at `portfolio-v82`; regenerate rather than edit (`docs/prompts/README.md`).*
 
 Holding: TSLA, a stock of the fixed evidence set (attempt 6, reconstructed), on its first analysis.
 A distillation is a non-thinking call with no grammar on the resident reasoner (the fast tier where the roster has one), issued only where the analysis prompt is over budget; the shape is the orchestrator's choice from size, never the model's, and the write-ups persist on the audit as written.
@@ -18,16 +18,17 @@ Every `[stub: …]` marks a parsed article or research field whose prose the run
 | Options | `{"min_p":0.0,"num_ctx":131072,"num_predict":12288,"presence_penalty":1.5,"temperature":0.7,"top_k":20,"top_p":0.8}` |
 | Output protocol | free text: no tools, no grammar |
 | Residency | `keep_alive: -1` (stays resident) |
-| Prompt material | 1310 chars — the messages and tools as serialized |
+| Prompt material | 1355 chars — the messages and tools as serialized |
 
 ## System message
 
 ~~~~text
-You are an investment analyst shortening research write-ups on one holding for a portfolio review.
-Part 1 of the message gives the inputs. Part 2 says what the document keeps and how to return it.
+You are an investment analyst shortening research write-ups on one holding into one shorter document
+for a portfolio review. Part 1 of the message gives the inputs. Part 2 says what the document keeps
+and how to return it.
 ~~~~
 
-## User message (1017 chars)
+## User message (1036 chars)
 
 ~~~~text
 ======== PART 1: INPUTS ========
@@ -37,7 +38,7 @@ Price: $358.97 per share.
 Date: 2026-09-16.
 
 WRITE-UPS
-The write-ups on this holding, each already shortened, each under its topic, the contrary-evidence
+The research on this holding, one write-up per topic, each already shortened, the contrary-evidence
 write-up last.
 
 Competitive / business position
@@ -51,11 +52,11 @@ Contrary evidence
 
 ======== PART 2: TASK ========
 
-Write a shorter document as plain text — no code fence, no JSON, no heading before the first line.
-It keeps every dated figure the write-ups under WRITE-UPS state, with the date or period and the
-source each is given, every disagreement between pages they note, and every question they leave
-open. It adds nothing the write-ups under WRITE-UPS do not say: this is consolidation, not new
-reasoning.
+Consolidate the write-ups under WRITE-UPS into one shorter document as plain text — no code fence,
+no JSON, no heading before the first line. It states what they establish in fewer words: every dated
+figure they quote, with the date or period and the source each is given, every disagreement between
+pages they note, and what they leave unanswered. It adds nothing they do not say: consolidation, not
+new reasoning.
 
 The document runs at most half the length of the write-ups and at most 1,200 words.
 ~~~~

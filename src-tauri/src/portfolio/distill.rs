@@ -173,6 +173,9 @@ pub type AnalysisPrompt = DistillPrompt;
 const PART_1: &str = "======== PART 1: INPUTS ========\n";
 const PART_2: &str = "\n======== PART 2: TASK ========\n\n";
 const PLAIN: &str = "as plain text — no code fence, no JSON, no heading before the first line";
+/// The WRITE-UPS block's gloss: the same block reads the same wherever it renders.
+const WRITE_UPS_GLOSS: &str = "\nWRITE-UPS\nThe research on this holding, one write-up per topic, \
+the contrary-evidence write-up last.\n";
 
 fn write_ups_block(write_ups: &[WriteUp]) -> String {
     let mut out = String::new();
@@ -185,48 +188,52 @@ fn write_ups_block(write_ups: &[WriteUp]) -> String {
 /// The distillation prompt (`docs/portfolio-workflow.md` §Step 6d); its length
 /// band is in `docs/portfolio-analysis.md` §Starting parameters.
 pub fn distillation_prompt(input: &DistillInput<'_>) -> DistillPrompt {
-    let system = "You are an investment analyst shortening research write-ups on one holding for \
-a portfolio review. Part 1 of the message gives the inputs. Part 2 says what the document keeps \
-and how to return it."
+    let system = "You are an investment analyst shortening research write-ups on one holding into \
+one shorter document for a portfolio review. Part 1 of the message gives the inputs. Part 2 says \
+what the document keeps and how to return it."
         .to_string();
     let mut user = String::from(PART_1);
     user.push_str(input.header);
-    let (subject_word, plural) = match input.subject {
+    let plural = match input.subject {
         DistillSubject::Merged(write_ups) => {
-            user.push_str(
-                "\nWRITE-UPS\nThe write-ups on this holding, each under its topic, the \
-                 contrary-evidence write-up last.\n",
-            );
+            user.push_str(WRITE_UPS_GLOSS);
             user.push_str(&write_ups_block(write_ups));
-            ("the write-ups under WRITE-UPS", true)
+            true
         }
         DistillSubject::Single(write_up) => {
             user.push_str("\nWRITE-UP\nOne write-up on this holding, under its topic.\n");
             user.push_str(&write_ups_block(std::slice::from_ref(write_up)));
-            ("the write-up under WRITE-UP", false)
+            false
         }
         DistillSubject::MergedDistillates(outputs) => {
             user.push_str(
-                "\nWRITE-UPS\nThe write-ups on this holding, each already shortened, each \
-                 under its topic, the contrary-evidence write-up last.\n",
+                "\nWRITE-UPS\nThe research on this holding, one write-up per topic, each already \
+                 shortened, the contrary-evidence write-up last.\n",
             );
             user.push_str(&write_ups_block(outputs));
-            ("the write-ups under WRITE-UPS", true)
+            true
         }
     };
-    let (states, notes, leaves, do_not, length_of) = if plural {
-        ("state", "they note", "they leave", "do not", "the write-ups")
-    } else {
-        ("states", "it notes", "it leaves", "does not", "the write-up")
-    };
     user.push_str(PART_2);
-    user.push_str(&format!(
-        "Write a shorter document {PLAIN}. It keeps every dated figure {subject_word} {states}, \
-         with the date or period and the source each is given, every disagreement between pages \
-         {notes}, and every question {leaves} open. It adds nothing {subject_word} {do_not} \
-         say: this is consolidation, not new reasoning.\n\n\
-         The document runs at most half the length of {length_of} and at most 1,200 words.\n"
-    ));
+    if plural {
+        user.push_str(&format!(
+            "Consolidate the write-ups under WRITE-UPS into one shorter document {PLAIN}. It states \
+             what they establish in fewer words: every dated figure they quote, with the date or \
+             period and the source each is given, every disagreement between pages they note, and \
+             what they leave unanswered. It adds nothing they do not say: consolidation, not new \
+             reasoning.\n\n\
+             The document runs at most half the length of the write-ups and at most 1,200 words.\n"
+        ));
+    } else {
+        user.push_str(&format!(
+            "Condense the content under WRITE-UP into a shorter document {PLAIN}. It states what \
+             the write-up establishes in fewer words: every dated figure it quotes, with the date \
+             or period and the source each is given, every disagreement between pages it notes, \
+             and what it leaves unanswered. The document adds nothing the write-up does not say: \
+             consolidation, not new reasoning.\n\n\
+             The document runs at most half the length of the write-up and at most 1,200 words.\n"
+        ));
+    }
     DistillPrompt { system, user }
 }
 
@@ -242,10 +249,7 @@ and how to return it."
     user.push_str(input.prior_analysis);
     match input.write_ups {
         WriteUps::AsWritten(write_ups) => {
-            user.push_str(
-                "\nWRITE-UPS\nThe research on this holding, one write-up per topic, the \
-                 contrary-evidence write-up last.\n",
-            );
+            user.push_str(WRITE_UPS_GLOSS);
             user.push_str(&write_ups_block(write_ups));
         }
         WriteUps::Distilled(distillate) => {
@@ -644,18 +648,18 @@ mod tests {
             subject: DistillSubject::Merged(&ws),
             stage: "distill WID".into(),
         });
-        assert!(merged.system.starts_with("You are an investment analyst shortening research write-ups"), "{}", merged.system);
-        assert!(merged.user.starts_with(&format!("{PART_1}{header}\nWRITE-UPS\nThe write-ups on this holding, each under its topic, the contrary-evidence write-up last.\n\nCompetitive / business position\nShare held.\n")), "{}", merged.user);
+        assert!(merged.system.starts_with("You are an investment analyst shortening research write-ups on one holding into one shorter document"), "{}", merged.system);
+        assert!(merged.user.starts_with(&format!("{PART_1}{header}\nWRITE-UPS\nThe research on this holding, one write-up per topic, the contrary-evidence write-up last.\n\nCompetitive / business position\nShare held.\n")), "{}", merged.user);
         assert!(merged.user.contains("\nContrary evidence\nNothing contradicts the share read.\n"), "{}", merged.user);
         let (_, task) = merged.user.split_once(PART_2).unwrap();
         assert_eq!(
             task,
-            "Write a shorter document as plain text — no code fence, no JSON, no heading before the \
-             first line. It keeps every dated figure the write-ups under WRITE-UPS state, with the \
-             date or period and the source each is given, every disagreement between pages they \
-             note, and every question they leave open. It adds nothing the write-ups under \
-             WRITE-UPS do not say: this is consolidation, not new reasoning.\n\nThe document runs \
-             at most half the length of the write-ups and at most 1,200 words.\n"
+            "Consolidate the write-ups under WRITE-UPS into one shorter document as plain text — no \
+             code fence, no JSON, no heading before the first line. It states what they establish \
+             in fewer words: every dated figure they quote, with the date or period and the source \
+             each is given, every disagreement between pages they note, and what they leave \
+             unanswered. It adds nothing they do not say: consolidation, not new reasoning.\n\n\
+             The document runs at most half the length of the write-ups and at most 1,200 words.\n"
         );
         let single = distillation_prompt(&DistillInput {
             header,
@@ -666,10 +670,12 @@ mod tests {
         assert!(!single.user.contains("Share held."), "{}", single.user);
         assert!(
             single.user.contains(
-                "every dated figure the write-up under WRITE-UP states, with the date or period \
-                 and the source each is given, every disagreement between pages it notes, and \
-                 every question it leaves open. It adds nothing the write-up under WRITE-UP does \
-                 not say: "
+                "Condense the content under WRITE-UP into a shorter document as plain text — no \
+                 code fence, no JSON, no heading before the first line. It states what the \
+                 write-up establishes in fewer words: every dated figure it quotes, with the date \
+                 or period and the source each is given, every disagreement between pages it \
+                 notes, and what it leaves unanswered. The document adds nothing the write-up \
+                 does not say: consolidation, not new reasoning.\n\n"
             ),
             "{}",
             single.user
@@ -681,7 +687,7 @@ mod tests {
             subject: DistillSubject::MergedDistillates(&outputs),
             stage: "distill WID merge".into(),
         });
-        assert!(merge.user.contains("\nWRITE-UPS\nThe write-ups on this holding, each already shortened, each under its topic, the contrary-evidence write-up last.\n\nCompetitive / business position\nshort competitive-position\n"), "{}", merge.user);
+        assert!(merge.user.contains("\nWRITE-UPS\nThe research on this holding, one write-up per topic, each already shortened, the contrary-evidence write-up last.\n\nCompetitive / business position\nshort competitive-position\n"), "{}", merge.user);
     }
 
     #[test]
@@ -816,7 +822,7 @@ mod tests {
         assert_eq!(out.distillation, DistillationRecord { shape: DistillationShape::Merged, calls: 1 });
         let calls = model.calls.take();
         assert_eq!(calls.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), vec!["distill WID", "analysis WID"]);
-        assert!(calls[0].1.contains("\nWRITE-UPS\nThe write-ups on this holding, each under its topic, the contrary-evidence write-up last.\n\nCompetitive / business position\nShare held.\n\nCatalysts and risks\n"), "{}", calls[0].1);
+        assert!(calls[0].1.contains("\nWRITE-UPS\nThe research on this holding, one write-up per topic, the contrary-evidence write-up last.\n\nCompetitive / business position\nShare held.\n\nCatalysts and risks\n"), "{}", calls[0].1);
         assert!(calls[1].1.contains("\nWRITE-UPS\nThe research on this holding, the topics' write-ups shortened into one document.\n\ndistillate of distill WID\n"), "{}", calls[1].1);
         assert!(!calls[1].1.contains("Share held."), "the analysis reads the distillate, not the write-ups: {}", calls[1].1);
 
@@ -861,7 +867,7 @@ mod tests {
             ]
         );
         assert!(calls[0].1.contains("\nWRITE-UP\nOne write-up on this holding, under its topic.\n\nCompetitive / business position\nShare held.\n"), "{}", calls[0].1);
-        assert!(calls[3].1.contains("each already shortened, each under its topic, the contrary-evidence write-up last.\n\nCompetitive / business position\ndistillate of distill WID competitive-position\n"), "{}", calls[3].1);
+        assert!(calls[3].1.contains("one write-up per topic, each already shortened, the contrary-evidence write-up last.\n\nCompetitive / business position\ndistillate of distill WID competitive-position\n"), "{}", calls[3].1);
         assert!(calls[3].1.contains("\nContrary evidence\ndistillate of distill WID disconfirming\n"), "{}", calls[3].1);
         assert!(calls[4].1.contains("\nPRIOR ANALYSIS (written 2026-08-01)\nThe prior analysis.\n"), "{}", calls[4].1);
         assert!(calls[4].1.contains("\n\ndistillate of distill WID merge\n"), "{}", calls[4].1);
