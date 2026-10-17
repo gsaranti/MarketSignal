@@ -2006,24 +2006,24 @@ fn document_section(
         Some(SplitContext::Rebased { factor, split }) => {
             let named = match split {
                 Some(s) => format!(
-                    "A {}-for-{} share split on {} ",
+                    "A {}-for-{} share split on {}, after this document was written, ",
                     fmt_split_leg(s.numerator),
                     fmt_split_leg(s.denominator),
                     s.date.format("%Y-%m-%d")
                 ),
-                None => "A share split ".to_string(),
+                None => "A share split after this document was written ".to_string(),
             };
             p.push_str(&format!(
-                "{named}since this document was written re-based the price series by a \
-                 factor of {factor:.4}: multiply the prices it states by that factor to read \
-                 them on today's basis. The document is as written.\n"
+                "{named}re-based the share price by a factor of {factor:.4}: multiply the \
+                 prices the document states by that factor to read them on today's basis. \
+                 The document is as written.\n"
             ))
         }
         Some(SplitContext::Unverifiable) => p.push_str(
-            "Whether a share split re-based the price series since this document was written \
-             could not be verified: the close its prices were anchored to is missing \
-             from the fetched window. The document is as written; its prices may sit on a \
-             pre-split basis.\n",
+            "Whether a share split re-based the share price after this document was written \
+             could not be verified: the daily closes under QUOTE AND CLOSES do not include the \
+             last close before the session it was written on. The document is as written; its \
+             prices may be on a pre-split basis.\n",
         ),
         None => {}
     }
@@ -5668,9 +5668,9 @@ pub(crate) mod tests {
         let message = capture.0.take().expect("the thesis message rendered");
         assert!(
             message.contains(&format!(
-                "\nPRIOR THESIS (written 2026-08-03)\nA share split since this document was written \
-                 re-based the price series by a factor of 0.2500: multiply the prices it states by \
-                 that factor to read them on today's basis. The document is as written.\n{document}"
+                "\nPRIOR THESIS (written 2026-08-03)\nA share split after this document was written \
+                 re-based the share price by a factor of 0.2500: multiply the prices the document \
+                 states by that factor to read them on today's basis. The document is as written.\n{document}"
             )),
             "{message}"
         );
@@ -5714,10 +5714,10 @@ pub(crate) mod tests {
         let message = capture.0.take().expect("the thesis message rendered");
         assert!(
             message.contains(
-                "\nPRIOR THESIS (written 2026-08-03)\nWhether a share split re-based the price \
-                 series since this document was written could not be verified: the \
-                 close its prices were anchored to is missing from the fetched window. The \
-                 document is as written; its prices may sit on a pre-split basis.\nThesis: hold AAPL"
+                "\nPRIOR THESIS (written 2026-08-03)\nWhether a share split re-based the share \
+                 price after this document was written could not be verified: the daily closes \
+                 under QUOTE AND CLOSES do not include the last close before the session it was \
+                 written on. The document is as written; its prices may be on a pre-split basis.\nThesis: hold AAPL"
             ),
             "{message}"
         );
@@ -5809,14 +5809,14 @@ pub(crate) mod tests {
         let docs = format!("{}{}", brief.prior_analysis, brief.prior_thesis);
         assert!(
             docs.starts_with(
-                "\nPRIOR ANALYSIS (written 2026-08-01)\nA share split since this document was \
-                 written re-based the price series by a factor of 0.5000: "
+                "\nPRIOR ANALYSIS (written 2026-08-01)\nA share split after this document was \
+                 written re-based the share price by a factor of 0.5000: "
             ),
             "{docs}"
         );
         let thesis_at = docs.find("\nPRIOR THESIS (written 2026-08-03)\n").expect("PRIOR THESIS follows");
         assert!(docs[..thesis_at].ends_with("The prior analysis, verbatim.\n"), "{docs}");
-        assert!(!docs[thesis_at..].contains("re-based the price series"), "the thesis line is the verdict's own: {docs}");
+        assert!(!docs[thesis_at..].contains("re-based the share price"), "the thesis line is the verdict's own: {docs}");
         assert!(docs[thesis_at..].contains("Thesis: hold AAPL "), "{docs}");
         let section = prior_analysis_section(&d);
         assert!(docs.starts_with(&section) && section.ends_with("The prior analysis, verbatim.\n"), "{section}");
@@ -5897,9 +5897,9 @@ pub(crate) mod tests {
         let thesis = thesis_user_prompt(&input(carried_on(&d)));
         assert!(
             thesis.contains(
-                "\nANALYSIS (written 2026-07-01)\nA share split since this document was written \
-                 re-based the price series by a factor of 0.5000: multiply the prices it states \
-                 by that factor to read them on today's basis. The document is as written.\nThe \
+                "\nANALYSIS (written 2026-07-01)\nA share split after this document was written \
+                 re-based the share price by a factor of 0.5000: multiply the prices the document \
+                 states by that factor to read them on today's basis. The document is as written.\nThe \
                  carried analysis.\n"
             ),
             "{thesis}"
@@ -5907,7 +5907,7 @@ pub(crate) mod tests {
         assert!(!thesis.contains("\nANALYSIS\n"), "{thesis}");
         let fresh = thesis_user_prompt(&input(analysis_record("This run's analysis.")));
         assert!(fresh.contains("\nANALYSIS\nThis run's analysis.\n"), "{fresh}");
-        assert!(!fresh.contains("re-based the price series") && !fresh.contains("ANALYSIS (written"), "{fresh}");
+        assert!(!fresh.contains("re-based the share price") && !fresh.contains("ANALYSIS (written"), "{fresh}");
         let fund = fund_dossier(bond_fund());
         let role = role_risk_user_prompt(&RoleRiskInput {
             dossier: &fund,
@@ -5918,7 +5918,7 @@ pub(crate) mod tests {
             review: None,
         });
         assert!(
-            role.contains("\nANALYSIS (written 2026-07-01)\nA share split since this document was written re-based the price series by a factor of 0.5000: "),
+            role.contains("\nANALYSIS (written 2026-07-01)\nA share split after this document was written re-based the share price by a factor of 0.5000: "),
             "{role}"
         );
         assert!(role.contains("The document is as written.\nThe carried analysis.\n"), "{role}");
@@ -6479,8 +6479,8 @@ pub(crate) mod tests {
         );
         assert!(
             named.contains(
-                "A 3-for-1 share split on 2026-06-15 since this document was written re-based \
-                 the price series by a factor of 0.3333"
+                "A 3-for-1 share split on 2026-06-15, after this document was written, re-based \
+                 the share price by a factor of 0.3333"
             ),
             "{named}"
         );
@@ -6491,7 +6491,7 @@ pub(crate) mod tests {
             "doc",
         );
         assert!(
-            bare.contains("A share split since this document was written re-based"),
+            bare.contains("A share split after this document was written re-based"),
             "{bare}"
         );
         assert!(
@@ -7544,7 +7544,7 @@ pub(crate) mod tests {
         // Each stamp moves with every change to its prompts or persisted
         // shapes, so an interrupted pre-change run cannot resume into the new
         // contract; the pins here move with each bump.
-        assert_eq!(PROMPT_VERSION, "portfolio-v82");
+        assert_eq!(PROMPT_VERSION, "portfolio-v83");
         assert_eq!(
             crate::portfolio::store::CHECKPOINT_FORMAT_VERSION,
             "checkpoint-v26"
@@ -8657,7 +8657,7 @@ pub(crate) mod tests {
         assert_eq!(req.messages.len(), 2);
         assert_eq!(req.messages[0].role, "system");
         assert!(
-            req.messages[0].content.starts_with("You are an investment analyst consolidating one holding's research"),
+            req.messages[0].content.starts_with("You are an investment analyst writing the analysis of one holding's research"),
             "{}",
             req.messages[0].content
         );
@@ -8684,8 +8684,7 @@ pub(crate) mod tests {
         assert!(d_req.tools.is_none() && d_req.format_schema.is_none());
         assert!(
             d_req.messages[1].content.contains(
-                "\nWRITE-UPS\nThe research on this holding, one write-up per topic, the \
-                 contrary-evidence write-up last.\n"
+                "\nWRITE-UPS\nThe research on this holding, one write-up per topic.\n"
             ),
             "{}",
             d_req.messages[1].content

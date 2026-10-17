@@ -297,7 +297,9 @@ The resident 122B in thinking mode; no grammar.
 **Prompt — input.**
 One message in two parts.
 Part 1, in page order: the holding header with the analysis date; FETCHED VALUES; on a continuity run PRIOR ANALYSIS, the prior run's analysis verbatim with its date and any split-context line ([§Step 6b](#step-6b-deterministic-financial-analysis)); then WRITE-UPS, this run's write-ups — or their distillate — each under its topic's heading, the disconfirming pass's last.
-Part 2 asks for the **analysis**: one document consolidating what this run's research established on the holding, each dated figure with its source, where sources disagree, what stays unanswered, and on a continuity run what the prior analysis said that this run's research confirms, revises or leaves untouched; a topic with no write-up this run keeps what the prior analysis says about it — the budget exhausted before the topic, the technology topic not triggered, the pre-profit topic lapsed — within the analysis's length band ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)).
+Part 2 asks for the **analysis**: one document stating what this run's research establishes on the holding when its topics are read together, each dated figure with its source, where sources disagree, and what stays unanswered, within the analysis's length band ([portfolio-analysis.md §Starting parameters](portfolio-analysis.md#starting-parameters-calibratable)).
+On a continuity run the task names PRIOR ANALYSIS as the analysis written for the holding on its date, background and the foundation the new analysis builds on.
+What it carries forward for a topic with no write-up this run — the budget exhausted before the topic, the technology topic not triggered, the pre-profit topic lapsed — is the model's judgment.
 
 **Returns.**
 The holding's **analysis** as prose, read as text and validated by nothing.

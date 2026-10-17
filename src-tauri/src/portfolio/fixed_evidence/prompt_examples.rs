@@ -1195,7 +1195,7 @@ fn examples() -> Vec<Example> {
             extras: vec![],
         });
     }
-    let analysis_common = "The analysis call is a thinking call with no grammar: Part 1 the holding header and FETCHED VALUES as the brief carries them, on a continuity run PRIOR ANALYSIS, then WRITE-UPS; Part 2 what the analysis consolidates and its length band. The analysis is the only research artifact the next run reads.";
+    let analysis_common = "The analysis call is a thinking call with no grammar: Part 1 the holding header and FETCHED VALUES as the brief carries them, on a continuity run PRIOR ANALYSIS, then WRITE-UPS; Part 2 what the analysis states and its length band. The analysis is the only research artifact the next run reads.";
     {
         let input = AnalysisInput {
             symbol: "TSLA",
@@ -1231,7 +1231,7 @@ fn examples() -> Vec<Example> {
             holding: "TSLA, on a continuity run over the prior analysis of 2026-09-02",
             sentences: lines(&[
                 analysis_common,
-                "On a continuity run the prior analysis renders verbatim as PRIOR ANALYSIS under its date, never distilled, and the task asks what it said that this run confirms, revises or leaves untouched; a topic with no write-up this run keeps what it says.",
+                "On a continuity run the prior analysis renders verbatim as PRIOR ANALYSIS under its date, never distilled, and the task names it as background and the foundation the new analysis builds on.",
             ]),
             stage: "analysis TSLA".into(),
             request: pipeline::analysis_request(REASONER, &input),

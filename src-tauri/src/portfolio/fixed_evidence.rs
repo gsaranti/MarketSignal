@@ -1172,7 +1172,7 @@ fn synthetic_role_risk_messages_are_two_parts_with_no_app_concept() {
         cont_user.contains("\nPRIOR THESIS (written 2026-09-03)\nRole: bond fund supplying United States exposure; held for its portfolio role.\n"),
         "{cont_user}"
     );
-    assert!(!cont_user.contains("A share split since this document was written"), "{cont_user}");
+    assert!(!cont_user.contains("A share split after this document was written"), "{cont_user}");
     assert!(!debut_user.contains("PRIOR THESIS"), "{debut_user}");
 }
 
