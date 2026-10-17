@@ -6,15 +6,15 @@ Trade Opportunities: the job spine, engine arm and gate — next in the backlog 
 
 ## What happened
 
-The prompt review's synthesis files (08–11) are reviewed and closed: slice 4 landed (`29190ec`, Metis approve-with-nits applied, Codex approved); the stamp is `portfolio-v81`.
-The synthesis EVIDENCE header dropped its page id — the write-up cites by address, nothing read the id back, and the id was the retired claims layer's residue (never reintroduce one).
-A synthesis page now renders exactly as the gathering shows it, through one shared header and quoted-text frame (`page_header` + `frame_page_text` in `research.rs`) that the tool result and the reuse block render through too, byte-identical; the EVIDENCE gloss names the url and title and lost its quoted-material sentence, each page's BEGIN line carrying it.
-Ruled with it: the synthesis shows an address whole and sizes it against the budget, never the tool result's placeholder, so a shown page is always citable by its address.
-Observed and accepted: a change to a description sentence shared across the examples re-stamps every file that carries it (23 files moved by two lines).
+The prompt review's distillation files (12–14) are reviewed and closed: slice 5 landed (`d4f1f8d`, Metis approve-with-nits applied, Codex P3 taken, Codex approved); the stamp is `portfolio-v82`.
+The distillation's role line names its output ("into one shorter document"), and the task opens with the purpose as the verb and the input named: "Consolidate the write-ups under WRITE-UPS into one shorter document", the keep list following "It states what they establish in fewer words".
+The single shape opens "Condense the content under WRITE-UP": a sentence never stacks one root word ("Rewrite the write-up under WRITE-UP" was refused for three "write"s), and a sentence with two pronouns for two nouns names the nouns instead.
+The lexicon of a downstream task follows the upstream prompt's phrases ("what they leave unanswered", "every dated figure they quote" — the synthesis task's own words).
+The WRITE-UPS block's gloss is one constant shared by the distillation's merged shape and the analysis, so files 15–17 did not move.
 
 ## Current state
 
-The prompt review continues at file 12, the first distillation prompt; files 12–14 are unread end to end; the next stamp is `portfolio-v82`.
+The prompt review continues at file 15, the first analysis prompt; files 15–17 are unread end to end; the next stamp is `portfolio-v83`.
 The TO spine stays next in the backlog and unplanned; the plan-task decides its task breakdown.
 The dev-run batch (every Portfolio item's dev run) and the big run are the user's call; the next big run starts testing afresh, every earlier attempt's findings retired.
 
@@ -48,6 +48,7 @@ Residue, grouped by what triggers it:
 17. FMP's rate-decision estimate and actual go unused while Fed events stay date-only.
 18. The deal trend is mostly noise at a weekly cadence.
 19. The retry's send timeout is tested at unit level only.
+20. A write-up may name FETCHED VALUES as a figure's source while the distillation prompt carries no such block; the task keeps the source as given and the analysis that reads the distillate carries the block.
 
 Standing reminders (not work): every stamp bump touches the pins in `prompt_version_is_stamped_for_the_model_arm_domain_gate`, and the offscreen card-render recipe lives in session memory.
 
@@ -57,5 +58,5 @@ None.
 
 ## Where to start
 
-`/metis-session-start`, then the prompt review on file 12: read it against `local-models.md §Prompt posture`, the consolidation contract in `portfolio-workflow.md §Step 6d`, the distillation paragraph of `web-research.md §The research loop` and the thresholds in `configuration.md §Research Context Management`, under the lexicon rule; put findings through the selector; land accepted changes, bump the stamp to `portfolio-v82` on the first, regenerate the set and read the diff; `/metis-review-task` then Codex review each slice; commit on the user's word. Then files 13–14 one at a time.
+`/metis-session-start`, then the prompt review on file 15: read it against `local-models.md §Prompt posture`, the analysis call's contract in `portfolio-workflow.md §Step 6d`, the consolidation paragraph of `web-research.md §The research loop` and the analysis's length band in `portfolio-analysis.md §Starting parameters`, under the lexicon rule; check the opening sentence names its input, every noun the system message uses is introduced, and the task's phrases are the write-ups' own; put findings through the selector; land accepted changes, bump the stamp to `portfolio-v83` on the first, regenerate the set and read the diff; `/metis-review-task` then Codex review each slice; commit on the user's word. Then files 16 (the continuity run: `§Step 6b`'s split-context line and the PRIOR ANALYSIS clause) and 17 one at a time.
 Never propose the run.
